@@ -1,0 +1,19 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+htmlcov/
+.coverage
+
+# Supabase CLI runtime state; config, migrations, schemas, and seed data are committed.
+supabase/.branches/
+supabase/.temp/
