@@ -5,9 +5,9 @@ notes into reviewable inventory transactions. Inventory writes are confirmed by 
 human, applied atomically, recorded in an immutable ledger, and reversible through
 compensating transactions.
 
-This repository is in the foundation stage. The current application exposes a health
-endpoint and establishes the project structure, configuration, dependency management,
-and architecture that subsequent features will use.
+This repository is in the prototype stage. It currently includes the application
+foundation, a health endpoint, and the first Supabase inventory schema with demo data,
+atomic stock application, immutable movements, and compensating reversals.
 
 ## Architecture principles
 
@@ -62,10 +62,12 @@ supabase --version
 ### 2. Get the source code
 
 ```bash
-git clone <repository-url> inventory-agent-v2
+git clone git@github.com:jwkodes/inventory-agent.git inventory-agent-v2
 cd inventory-agent-v2
 ```
 
+This command uses GitHub SSH authentication. If SSH is not configured, use
+`git clone https://github.com/jwkodes/inventory-agent.git inventory-agent-v2` instead.
 When working from an existing local checkout, just change into its directory.
 
 ### 3. Install Python and project dependencies
@@ -91,9 +93,10 @@ Never commit `.env`, Telegram bot tokens, OpenAI API keys, or Supabase secret ke
 
 ### 5. Start local Supabase
 
-The Supabase project files and database migrations will live under `supabase/`. The
-database scaffold is the next build phase; until `supabase/config.toml` exists, skip this
-step. Once it has been added, start the local stack with:
+Make sure Docker Desktop or another Docker-compatible engine is running first. The Docker
+CLI being installed is not sufficient; `docker info` must be able to reach the server.
+
+Start the local Supabase services:
 
 ```bash
 supabase start
@@ -105,6 +108,10 @@ into `.env`. Local Supabase Studio is normally available at
 <http://127.0.0.1:54323>.
 
 The local stack is for development only. Do not expose it to external traffic.
+
+The first `supabase start` downloads several container images and can take a few minutes.
+If it appears to wait indefinitely without output, confirm that Docker Desktop has fully
+started, then run the command again.
 
 ### 6. Run the API
 
@@ -135,6 +142,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
 uv run pytest
+supabase test db
+supabase db lint --local --schema public --fail-on error
 ```
 
 To apply safe formatting changes:
@@ -170,6 +179,7 @@ quality, latency, and cost will be measured against representative text and invo
 ```text
 .
 ├── docs/                  Architecture and engineering decisions
+├── supabase/              Local config, migrations, seed data, and database tests
 ├── src/inventory_agent/   Python application package
 ├── tests/                 Automated tests
 ├── .env.example           Safe configuration template
@@ -177,14 +187,42 @@ quality, latency, and cost will be measured against representative text and invo
 └── uv.lock                Fully resolved Python dependencies
 ```
 
-The `supabase/` directory will be added with the first database migration and will contain
-local configuration, migrations, seed data, and database tests.
+The committed `supabase/` directory contains local configuration, ordered SQL migrations,
+deterministic development seed data, and pgTAP database tests.
+
+## Local database workflow
+
+After pulling database changes, rebuild the local database and run its tests:
+
+```bash
+supabase start
+supabase db reset
+supabase test db
+```
+
+Useful commands:
+
+```bash
+supabase status                 # Show local URLs and keys
+supabase migration new <name>   # Create the next migration
+supabase db reset               # Replay migrations and seed data locally
+supabase stop                   # Stop services and preserve local data
+```
+
+Write schema changes as new files under `supabase/migrations/`; do not edit a migration
+that has already been shared or deployed. `supabase db reset` targets the local database
+by default. Never add `--linked` unless you intentionally mean to destroy and rebuild a
+remote development environment.
+
+The seed data creates one demo organization, manager, warehouse, ordinary products, a
+medicine lot with an expiry date, and colour/size clothing variants. It is development
+data only and must never be loaded into production.
 
 ## Build sequence
 
-1. Project setup and health endpoint — current
-2. Supabase schema, seed inventory, atomic apply, and reversal functions
-3. Telegram webhook authentication and idempotent event ingestion
+1. Project setup and health endpoint — complete
+2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
+3. Telegram webhook authentication and idempotent event ingestion — next
 4. Text intent extraction using a strict structured schema
 5. Exact identifier, alias, and fuzzy name matching
 6. Telegram confirmation, editing, cancellation, and reversal
