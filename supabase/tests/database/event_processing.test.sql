@@ -2,6 +2,16 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
+update public.organization_users
+set telegram_user_id = 100000001
+where id = '11000000-0000-0000-0000-000000000001';
+
+update public.source_events
+set status = 'processed',
+    processed_at = now()
+where provider = 'telegram'
+  and event_type = 'message';
+
 select plan(28);
 
 select has_table('public', 'processing_outbox', 'processing outbox exists');

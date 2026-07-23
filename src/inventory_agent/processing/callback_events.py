@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from inventory_agent.processing.models import TelegramCallbackEventContext
+from inventory_agent.processing.models import (
+    ProcessingOutcomeDraft,
+    ProcessingOutcomeType,
+    TelegramCallbackEventContext,
+)
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcome,
     CallbackOutcomeStatus,
@@ -15,7 +19,6 @@ from inventory_agent.telegram.confirmation import (
     ProposalConfirmationView,
     render_applied_transaction,
     render_proposal_confirmation,
-    render_reversal_reason_prompt,
 )
 
 
@@ -50,6 +53,11 @@ class ProposalViewRepository(Protocol):
         """Load current proposal lines after a variant selection."""
 
 
+class ProcessingOutbox(Protocol):
+    async def enqueue(self, draft: ProcessingOutcomeDraft) -> UUID:
+        """Persist one idempotent outbound Telegram message."""
+
+
 class TelegramMessageEditor(Protocol):
     async def edit_message_text(
         self,
@@ -80,11 +88,13 @@ class TelegramCallbackEventProcessor:
         dispatcher: CallbackDispatcher,
         proposal_views: ProposalViewRepository,
         message_editor: TelegramMessageEditor,
+        outbox: ProcessingOutbox,
     ) -> None:
         self._events = events
         self._dispatcher = dispatcher
         self._proposal_views = proposal_views
         self._message_editor = message_editor
+        self._outbox = outbox
 
     async def process_next(self) -> CallbackEventProcessingResult | None:
         context = await self._events.claim_next_callback_event()
@@ -105,6 +115,8 @@ class TelegramCallbackEventProcessor:
                 await self._render_completed_action(
                     action=outcome.action,
                     result_id=outcome.result_id,
+                    event_id=context.event_id,
+                    organization_id=context.organization_id,
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
                 )
@@ -130,6 +142,8 @@ class TelegramCallbackEventProcessor:
         *,
         action: CallbackAction | None,
         result_id: UUID | None,
+        event_id: UUID,
+        organization_id: UUID,
         chat_id: int,
         message_id: int,
     ) -> None:
@@ -156,9 +170,18 @@ class TelegramCallbackEventProcessor:
             text = "Proposal cancelled."
             keyboard = None
         elif action is CallbackAction.REVERSE_TRANSACTION:
-            message = render_reversal_reason_prompt(result_id)
-            text = message.text
-            keyboard = _keyboard(message)
+            await self._outbox.enqueue(
+                ProcessingOutcomeDraft(
+                    organization_id=organization_id,
+                    source_event_id=event_id,
+                    outcome_type=ProcessingOutcomeType.REVERSAL_REASON_REQUIRED,
+                    aggregate_id=result_id,
+                    chat_id=chat_id,
+                    payload={},
+                )
+            )
+            text = "Reversal requested. I sent a separate message asking for the reason."
+            keyboard = None
         elif action is CallbackAction.CONFIRM_REVERSAL:
             text = "Transaction reversed."
             keyboard = None

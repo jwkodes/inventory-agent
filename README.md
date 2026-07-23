@@ -385,6 +385,11 @@ For resolved lines, PostgreSQL validates the variant and derives the signed base
 quantity using the configured unit conversion. Unresolved lines retain their candidate
 evidence but have no stock delta, so they cannot be applied accidentally.
 
+The explicitly generic words `unit`, `units`, `item`, and `items` mean one unit of the
+matched SKU and receive a factor-one conversion. Package words such as `box`, `carton`,
+and `case` still require an organization-and-variant-specific conversion; the system does
+not guess package sizes.
+
 Telegram confirmation rendering uses compact opaque callback data containing only action
 codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully
 resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets candidate
@@ -402,9 +407,12 @@ database boundary.
 
 After an action, the worker edits the original Telegram message: selection refreshes the
 proposal and its buttons, confirmation reports that inventory was updated, and cancellation
-removes the buttons. Replayed identical edits are treated as success because Telegram may
-answer that the message is already unchanged. Callback failures retry after 30 seconds and
-become `failed` after the third unsuccessful attempt, matching text-event handling.
+removes the buttons. Starting a reversal is the exception: the original message reports
+that the request started, while a separate outbox-backed message asks for the reason so
+Telegram generates a new-message notification. Replayed identical edits are treated as
+success because Telegram may answer that the message is already unchanged. Callback
+failures retry after 30 seconds and become `failed` after the third unsuccessful attempt,
+matching text-event handling.
 
 Variant selection rechecks organization membership, verifies that the variant was actually
 offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and
@@ -415,17 +423,18 @@ implemented.
 
 After inventory is updated, the Telegram message offers a Reverse transaction button.
 Only an active manager or admin can start the flow. Pressing it creates or resumes a
-durable `transaction_reversal_requests` record and asks the same user, in the same chat,
-to reply with a reason. The next claimed text message is consumed as that reason before
-OpenAI interpretation, retained with its source event, and delivered back with final
-Confirm reversal and Cancel buttons.
+durable `transaction_reversal_requests` record. It enqueues and sends a separate Telegram
+message asking the same user, in the same chat, to reply with a reason; editing only the
+existing transaction message would not notify the user. The next claimed text message is
+consumed as that reason before OpenAI interpretation, retained with its source event, and
+delivered back with final Confirm reversal and Cancel buttons.
 
 Final confirmation calls `reverse_inventory_transaction` through an idempotent request
 function. PostgreSQL creates a new opposite transaction and movements atomically; it never
 edits or deletes the original ledger. The request retains its reason and compensating
 transaction ID. Cancellation changes no stock. Request creation, reason capture, final
-confirmation, cancellation, and Telegram message edits are safe to replay after a worker
-crash.
+confirmation, cancellation, Telegram message edits, and reason-prompt enqueueing are safe
+to replay after a worker crash.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
@@ -447,8 +456,8 @@ reason. If so, it durably captures the message and skips the model. Otherwise it
 5. Marks the source event `processed`; failures retain only a sanitized error and retry
    after 30 seconds, becoming `failed` after the third unsuccessful attempt.
 
-A captured reversal reason instead enqueues a `reversal_confirmation` outcome through the
-same durable outbox.
+The reversal button enqueues a `reversal_reason_required` outcome. A captured reversal
+reason later enqueues a `reversal_confirmation` outcome through the same durable outbox.
 
 Invoice-image events use the same claim lease, matching, proposal, and outbox path. Their
 original bytes and audit metadata are stored before model extraction.

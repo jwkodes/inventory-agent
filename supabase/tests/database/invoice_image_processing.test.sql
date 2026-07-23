@@ -2,6 +2,10 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
+update public.organization_users
+set telegram_user_id = 100000001
+where id = '11000000-0000-0000-0000-000000000001';
+
 select plan(11);
 
 select has_function(

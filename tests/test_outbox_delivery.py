@@ -101,6 +101,7 @@ def outcome(
             if outcome_type
             in {
                 ProcessingOutcomeType.PROPOSAL_READY,
+                ProcessingOutcomeType.REVERSAL_REASON_REQUIRED,
                 ProcessingOutcomeType.REVERSAL_CONFIRMATION,
             }
             else None
@@ -160,6 +161,20 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert "Wrong delivery was entered" in sender.messages[0][1]
+    assert sender.messages[0][2] is not None
+
+
+async def test_delivers_reversal_reason_as_separate_message_with_cancel_button() -> None:
+    repository = FakeRepository(outcome(ProcessingOutcomeType.REVERSAL_REASON_REQUIRED))
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert "Reply with the reason" in sender.messages[0][1]
     assert sender.messages[0][2] is not None
 
 

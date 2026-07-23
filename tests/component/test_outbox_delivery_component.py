@@ -41,6 +41,7 @@ ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 class RecordingTelegramSender:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
+        self.keyboards: list[list[list[dict[str, str]]] | None] = []
         self.answers: list[str] = []
         self.edits: list[tuple[int, int, str]] = []
 
@@ -52,6 +53,7 @@ class RecordingTelegramSender:
         inline_keyboard: list[list[dict[str, str]]] | None = None,
     ) -> int:
         self.messages.append((chat_id, text))
+        self.keyboards.append(inline_keyboard)
         return 991
 
     async def answer_callback_query(
@@ -176,6 +178,24 @@ def local_supabase() -> tuple[Settings, str]:
     return settings, secret_key
 
 
+async def active_telegram_user_id(client: httpx.AsyncClient) -> int:
+    response = await client.get(
+        "/organization_users",
+        params={
+            "select": "telegram_user_id",
+            "organization_id": f"eq.{ORGANIZATION_ID}",
+            "active": "eq.true",
+            "limit": "1",
+        },
+    )
+    response.raise_for_status()
+    rows = response.json()
+    assert isinstance(rows, list) and len(rows) == 1
+    telegram_user_id = rows[0]["telegram_user_id"]
+    assert isinstance(telegram_user_id, int)
+    return telegram_user_id
+
+
 async def test_delivery_crosses_python_and_local_supabase_boundaries() -> None:
     settings, secret_key = local_supabase()
 
@@ -248,6 +268,7 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
     async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
         create_event = await client.post(
             "/source_events",
             headers={"Prefer": "return=minimal"},
@@ -261,8 +282,8 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                     "update_id": 88001,
                     "message": {
                         "message_id": 88,
-                        "from": {"id": 100000001},
-                        "chat": {"id": 100000001},
+                        "from": {"id": telegram_user_id},
+                        "chat": {"id": telegram_user_id},
                         "text": "received three AMOX-500",
                     },
                 },
@@ -358,6 +379,7 @@ async def test_image_processing_crosses_storage_and_database_boundaries() -> Non
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
     async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
         create_event = await client.post(
             "/source_events",
             headers={"Prefer": "return=minimal"},
@@ -369,8 +391,8 @@ async def test_image_processing_crosses_storage_and_database_boundaries() -> Non
                 "event_type": "invoice_image",
                 "payload": {
                     "message": {
-                        "from": {"id": 100000001},
-                        "chat": {"id": 100000001},
+                        "from": {"id": telegram_user_id},
+                        "chat": {"id": telegram_user_id},
                         "caption": "delivery",
                         "photo": [
                             {
@@ -487,6 +509,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
     async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
         proposal_source = await client.post(
             "/source_events",
             headers={"Prefer": "return=minimal"},
@@ -546,7 +569,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                     "payload": {
                         "callback_query": {
                             "id": f"query-{callback_event_id}",
-                            "from": {"id": 100000001},
+                            "from": {"id": telegram_user_id},
                             "data": callback_data,
                             "message": {
                                 "message_id": 77,
@@ -580,6 +603,10 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                     secret_key=secret_key,
                 ),
                 message_editor=telegram,
+                outbox=SupabaseProcessingOutboxRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
             )
             result = await processor.process_next()
 
@@ -615,5 +642,72 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             cleanup = await client.delete(
                 "/source_events",
                 params={"id": f"eq.{proposal_event_id}"},
+            )
+            cleanup.raise_for_status()
+
+
+async def test_reversal_reason_outbox_delivers_as_a_separate_message() -> None:
+    settings, secret_key = local_supabase()
+    event_id = uuid4()
+    outbox_id = uuid4()
+    reversal_request_id = uuid4()
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
+        create_event = await client.post(
+            "/source_events",
+            headers={"Prefer": "return=minimal"},
+            json={
+                "id": str(event_id),
+                "organization_id": str(ORGANIZATION_ID),
+                "provider": "component_test",
+                "external_event_id": f"component-reversal-reason-{event_id}",
+                "event_type": "callback_query",
+                "status": "processed",
+                "processed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        create_event.raise_for_status()
+        create_outbox = await client.post(
+            "/processing_outbox",
+            headers={"Prefer": "return=minimal"},
+            json={
+                "id": str(outbox_id),
+                "organization_id": str(ORGANIZATION_ID),
+                "source_event_id": str(event_id),
+                "outcome_type": "reversal_reason_required",
+                "aggregate_id": str(reversal_request_id),
+                "chat_id": telegram_user_id,
+                "payload": {},
+            },
+        )
+        create_outbox.raise_for_status()
+
+        try:
+            telegram = RecordingTelegramSender()
+            delivery_result = await TelegramOutboxDeliveryWorker(
+                repository=SupabaseProcessingOutboxDeliveryRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                sender=telegram,
+            ).deliver_one(outbox_id)
+
+            assert delivery_result.status is OutboxDeliveryStatus.SENT
+            assert len(telegram.messages) == 1
+            assert telegram.messages[0][0] == telegram_user_id
+            assert "Reply with the reason" in telegram.messages[0][1]
+            assert telegram.keyboards[0] is not None
+            stored = await client.get(
+                "/processing_outbox",
+                params={"select": "status,attempts", "id": f"eq.{outbox_id}"},
+            )
+            stored.raise_for_status()
+            assert stored.json() == [{"status": "sent", "attempts": 1}]
+        finally:
+            cleanup = await client.delete(
+                "/source_events",
+                params={"id": f"eq.{event_id}"},
             )
             cleanup.raise_for_status()

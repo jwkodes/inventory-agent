@@ -1,5 +1,6 @@
 """Tests for the unified text-processing and delivery worker cycle."""
 
+import logging
 from uuid import UUID
 
 from inventory_agent.processing.callback_events import CallbackEventProcessingResult
@@ -11,7 +12,7 @@ from inventory_agent.processing.models import (
     TextEventProcessingStatus,
 )
 from inventory_agent.processing.text_events import TextEventProcessingError
-from inventory_agent.processing.worker import run_loop
+from inventory_agent.processing.worker import _configure_logging, run_loop
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcome,
     CallbackOutcomeStatus,
@@ -169,3 +170,9 @@ async def test_callback_is_processed_before_text_and_delivery() -> None:
     )
 
     assert events == ["callback", "image", "text", "delivery"]
+
+
+def test_worker_suppresses_http_client_request_urls() -> None:
+    _configure_logging()
+
+    assert logging.getLogger("httpx").level == logging.WARNING

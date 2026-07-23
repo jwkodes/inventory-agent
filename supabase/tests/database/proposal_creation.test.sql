@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(14);
+select plan(16);
 
 select has_function(
   'public',
@@ -76,6 +76,47 @@ select is(
   ),
   'each',
   'resolved lines store the item base unit'
+);
+
+select lives_ok(
+  $$
+    select public.create_inventory_proposal(
+      '10000000-0000-0000-0000-000000000001',
+      '12000000-0000-0000-0000-000000000001',
+      '50000000-0000-0000-0000-000000000001',
+      '11000000-0000-0000-0000-000000000001',
+      'receive_stock',
+      'proposal-test-generic-units',
+      '{"intent":"RECEIVE_STOCK"}',
+      'gpt-test',
+      'resp-test-generic-units',
+      'prompt-v1',
+      null,
+      '[{
+        "line_number": 1,
+        "source_text": "received three units of MILK-FULLCREAM-1L",
+        "requested_quantity": 3,
+        "requested_unit": "units",
+        "item_variant_id": "21000000-0000-0000-0000-000000000002",
+        "match_method": "exact_identifier",
+        "match_score": 1,
+        "match_evidence": {"source":"test"},
+        "attributes": {}
+      }]'
+    )
+  $$,
+  'generic units resolve to one matched SKU unit each'
+);
+
+select is(
+  (
+    select line.base_quantity_delta
+    from public.proposal_lines as line
+    join public.transaction_proposals as proposal on proposal.id = line.proposal_id
+    where proposal.idempotency_key = 'proposal-test-generic-units'
+  ),
+  3::numeric,
+  'generic units derive a factor-one base-unit delta'
 );
 
 select lives_ok(

@@ -159,6 +159,10 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        outbox = SupabaseProcessingOutboxRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         callback_processor = TelegramCallbackEventProcessor(
             events=event_repository,
             dispatcher=TelegramCallbackDispatcher(
@@ -171,6 +175,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             ),
             proposal_views=proposal_view_repository,
             message_editor=telegram_client,
+            outbox=outbox,
         )
         matcher = InventoryItemMatcher(
             repository=SupabaseInventoryCandidateRepository(
@@ -179,10 +184,6 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             )
         )
         proposals = SupabaseProposalRepository(
-            supabase_url=settings.supabase_url,
-            secret_key=secret_key,
-        )
-        outbox = SupabaseProcessingOutboxRepository(
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
@@ -252,8 +253,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.poll_seconds <= 0 or args.poll_seconds > 60:
         parser.error("--poll-seconds must be greater than 0 and no more than 60")
-    logging.basicConfig(level=logging.INFO)
+    _configure_logging()
     asyncio.run(run_worker(watch=args.watch, poll_seconds=args.poll_seconds))
+
+
+def _configure_logging() -> None:
+    """Keep provider URLs containing credentials out of application logs."""
+
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _required_secret(secret: SecretStr | None, variable_name: str) -> str:

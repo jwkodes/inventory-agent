@@ -93,21 +93,29 @@ class ExtractedInventoryCommand(BaseModel):
     clarification_question: str | None
 
     @model_validator(mode="after")
-    def validate_command_state(self) -> Self:
+    def normalize_command_state(self) -> Self:
+        """Turn recoverable model inconsistencies into a safe clarification state."""
+
         mutation_intents = {
             InventoryIntent.RECEIVE_STOCK,
             InventoryIntent.ISSUE_STOCK,
             InventoryIntent.ADJUST_STOCK,
         }
-        if self.intent is InventoryIntent.UNKNOWN and not self.needs_clarification:
-            raise ValueError("unknown intent requires clarification")
-        if self.needs_clarification and not self.clarification_question:
-            raise ValueError("clarification question is required")
-        if not self.needs_clarification and self.clarification_question is not None:
-            raise ValueError("clarification question must be null when clarification is not needed")
+        fallback_question: str | None = None
+        if self.intent is InventoryIntent.UNKNOWN:
+            fallback_question = "What inventory change would you like to make?"
         if self.intent in mutation_intents:
             if not self.lines:
-                raise ValueError("stock mutations require at least one line")
-            if any(line.quantity is None for line in self.lines):
-                raise ValueError("every stock mutation line requires a quantity")
+                fallback_question = "Which item and quantity should I use?"
+            elif any(line.quantity is None for line in self.lines):
+                fallback_question = "What quantity should I use for each item?"
+
+        if self.clarification_question:
+            self.needs_clarification = True
+        if fallback_question is not None:
+            self.needs_clarification = True
+            if not self.clarification_question:
+                self.clarification_question = fallback_question
+        if self.needs_clarification and not self.clarification_question:
+            self.clarification_question = "What inventory change would you like to make?"
         return self

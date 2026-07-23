@@ -8,7 +8,10 @@ from inventory_agent.processing.callback_events import (
     CallbackEventProcessingError,
     TelegramCallbackEventProcessor,
 )
-from inventory_agent.processing.models import TelegramCallbackEventContext
+from inventory_agent.processing.models import (
+    ProcessingOutcomeDraft,
+    TelegramCallbackEventContext,
+)
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcome,
     CallbackOutcomeStatus,
@@ -21,6 +24,7 @@ ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000010")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000010")
+OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000011")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000010")
 
 
@@ -102,6 +106,15 @@ class RecordingEditor:
             raise self.error
 
 
+class RecordingOutbox:
+    def __init__(self) -> None:
+        self.drafts: list[ProcessingOutcomeDraft] = []
+
+    async def enqueue(self, draft: ProcessingOutcomeDraft) -> UUID:
+        self.drafts.append(draft)
+        return OUTBOX_ID
+
+
 def context() -> TelegramCallbackEventContext:
     return TelegramCallbackEventContext(
         event_id=EVENT_ID,
@@ -132,6 +145,7 @@ async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() 
         ),
         proposal_views=views,
         message_editor=editor,
+        outbox=RecordingOutbox(),
     )
 
     result = await processor.process_next()
@@ -158,6 +172,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
         ),
         proposal_views=FakeProposalViews(),
         message_editor=editor,
+        outbox=RecordingOutbox(),
     )
 
     await processor.process_next()
@@ -172,6 +187,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
 async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()
+    outbox = RecordingOutbox()
     processor = TelegramCallbackEventProcessor(
         events=events,
         dispatcher=FakeDispatcher(
@@ -184,12 +200,24 @@ async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
         ),
         proposal_views=FakeProposalViews(),
         message_editor=editor,
+        outbox=outbox,
     )
 
     await processor.process_next()
 
-    assert "Reply with the reason" in editor.edits[0][2]
-    assert editor.edits[0][3] is not None
+    assert editor.edits == [
+        (
+            -100123,
+            77,
+            "Reversal requested. I sent a separate message asking for the reason.",
+            None,
+        )
+    ]
+    assert len(outbox.drafts) == 1
+    draft = outbox.drafts[0]
+    assert draft.source_event_id == EVENT_ID
+    assert draft.aggregate_id == PROPOSAL_ID
+    assert draft.outcome_type.value == "reversal_reason_required"
 
 
 async def test_confirmed_reversal_removes_buttons() -> None:
@@ -206,6 +234,7 @@ async def test_confirmed_reversal_removes_buttons() -> None:
         ),
         proposal_views=FakeProposalViews(),
         message_editor=editor,
+        outbox=RecordingOutbox(),
     )
 
     await processor.process_next()
@@ -228,6 +257,7 @@ async def test_invalid_callback_is_completed_without_editing_message() -> None:
         ),
         proposal_views=FakeProposalViews(),
         message_editor=editor,
+        outbox=RecordingOutbox(),
     )
 
     await processor.process_next()
@@ -250,6 +280,7 @@ async def test_edit_failure_is_sanitized_and_returned_to_event_retry_queue() -> 
         ),
         proposal_views=FakeProposalViews(),
         message_editor=RecordingEditor(RuntimeError("secret Telegram response")),
+        outbox=RecordingOutbox(),
     )
 
     with pytest.raises(CallbackEventProcessingError, match="processing failed"):
@@ -266,6 +297,7 @@ async def test_no_callback_event_is_idle() -> None:
         ),
         proposal_views=FakeProposalViews(),
         message_editor=RecordingEditor(),
+        outbox=RecordingOutbox(),
     )
 
     assert await processor.process_next() is None

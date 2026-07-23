@@ -2,7 +2,11 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(30);
+update public.organization_users
+set telegram_user_id = 100000001
+where id = '11000000-0000-0000-0000-000000000001';
+
+select plan(32);
 
 select has_table(
   'public',
@@ -140,6 +144,61 @@ select is(
   ),
   (select request_id from reversal_request),
   'repeated begin is idempotent'
+);
+
+insert into public.source_events (
+  id,
+  organization_id,
+  provider,
+  external_event_id,
+  event_type,
+  status,
+  payload,
+  processing_started_at,
+  processing_attempts
+)
+values (
+  '50000000-0000-0000-0000-000000000102',
+  '10000000-0000-0000-0000-000000000001',
+  'telegram',
+  'reversal-button-event',
+  'callback_query',
+  'processing',
+  '{
+    "callback_query": {
+      "id": "reversal-button-query",
+      "from": {"id": 100000001},
+      "message": {
+        "message_id": 77,
+        "chat": {"id": 100000001}
+      }
+    }
+  }'::jsonb,
+  now(),
+  1
+);
+
+select lives_ok(
+  $$
+    select public.enqueue_processing_outcome(
+      '10000000-0000-0000-0000-000000000001',
+      '50000000-0000-0000-0000-000000000102',
+      'reversal_reason_required',
+      (select request_id from reversal_request),
+      100000001,
+      '{}'::jsonb
+    )
+  $$,
+  'reversal callback can enqueue a separate reason-request notification'
+);
+select is(
+  (
+    select outbox.outcome_type::text
+    from public.processing_outbox as outbox
+    where outbox.source_event_id = '50000000-0000-0000-0000-000000000102'
+  ),
+  'reversal_reason_required',
+  'reason request is retained in the durable outbox'
 );
 
 insert into public.source_events (
