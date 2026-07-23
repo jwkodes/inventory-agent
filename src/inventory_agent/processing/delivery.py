@@ -64,7 +64,7 @@ class TelegramOutboxDeliveryWorker:
                     intent_label=_intent_label(view.intent),
                     lines=view.lines,
                 )
-                text = message.text
+                text = _with_agent_reply(message.text, outcome.payload)
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard
@@ -115,7 +115,7 @@ class TelegramOutboxDeliveryWorker:
                     request_id=outcome.aggregate_id,
                     reason=reason.strip(),
                 )
-                text = message.text
+                text = _with_agent_reply(message.text, outcome.payload)
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard
@@ -170,3 +170,10 @@ def _intent_label(intent: str) -> str:
         "adjust_stock": "stock adjustment",
     }
     return labels.get(intent, intent.replace("_", " "))
+
+
+def _with_agent_reply(rendered_text: str, payload: dict[str, object]) -> str:
+    agent_reply = payload.get("agent_reply")
+    if not isinstance(agent_reply, str) or not agent_reply.strip():
+        return rendered_text
+    return f"{agent_reply.strip()}\n\n{rendered_text}"

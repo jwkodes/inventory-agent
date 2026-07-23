@@ -32,12 +32,13 @@ proposal actions, and sends a new Telegram message after every successful action
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and data design.
 
-An isolated LLM-led orchestration experiment now lives on
-`experiment/llm-inventory-agent`. It gives one conversational model strict read and
-proposal tools while keeping all inventory writes unavailable. See
-[docs/AGENT_SPIKE.md](docs/AGENT_SPIKE.md) for its safety boundary, evaluation scenarios,
-commands, and initial results. It is not connected to the Telegram worker or Supabase
-inventory mutations.
+An opt-in LLM-led text path now lives on `experiment/llm-inventory-agent`. It gives one
+conversational model organization-scoped inventory and transaction reads plus tools that
+create pending stock or reversal proposals. The model cannot apply inventory; the existing
+Telegram confirmation buttons and atomic database functions remain the write boundary.
+Conversation history and the database IDs retrieved by the model are durable across worker
+restarts. See [docs/AGENT_SPIKE.md](docs/AGENT_SPIKE.md) for its safety boundary,
+evaluation scenarios, and initial results.
 
 ## Technology stack
 
@@ -290,6 +291,40 @@ seconds when all four queues are idle. Use `--poll-seconds N` to choose an inter
 greater than zero through 60 seconds. Without `--watch`, it runs one complete cycle, which
 is useful while debugging.
 
+To route Telegram text through the LLM-led agent, first apply the latest migrations, then
+set the feature flag in `.env`:
+
+```bash
+supabase migration up --local
+```
+
+```dotenv
+INVENTORY_AGENT_ENABLED=true
+INVENTORY_AGENT_MODEL=gpt-5.6-sol
+INVENTORY_AGENT_REASONING_EFFORT=low
+```
+
+Restart the worker after changing `.env`. This switch affects Telegram text only. Invoice
+images continue through the existing structured extraction and matching pipeline, while
+button confirmations, cancellations, catalog creation, transaction application, and
+reversal application continue through their existing deterministic handlers.
+
+The agent can:
+
+- read catalog variants and on-hand balances, using exact identifiers or the configured
+  semantic/fuzzy/hybrid retrieval strategy;
+- ask a natural follow-up question and continue from durable conversation history;
+- create an add or deduct proposal using only variants returned by an inventory read;
+- propose a new catalog item through the existing review and catalog-creation flow;
+- read the transaction ledger and create a reversal request using only a returned
+  transaction; and
+- answer inventory questions while declining unrelated chat.
+
+Every mutation remains pending until the user presses the Telegram confirmation button.
+The agent reply and the rendered review are sent together as a new Telegram message.
+Turning `INVENTORY_AGENT_ENABLED` back to `false` restores the previous structured text
+processor; no migration rollback is required.
+
 Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP document.
 The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
 downloading. The prototype deliberately leaves PDFs and voice notes for later slices;
@@ -328,10 +363,11 @@ The test suite deliberately separates these levels:
   boundaries. They are fast, deterministic, and run with `uv run pytest`.
 - Database component tests run migrations, constraints, and functions against the real
   local Supabase PostgreSQL using `supabase test db`.
-- Application component tests cross text and invoice-image processing, private Storage,
-  matching, proposal creation, outbox delivery, stored callback claiming, and cancellation
-  against real local Supabase while keeping OpenAI and Telegram fake. They are opt-in
-  because they require running infrastructure and create temporary rows and objects:
+- Application component tests cross structured and LLM-led text processing,
+  invoice-image processing, private Storage, matching, durable conversation storage,
+  proposal creation, outbox delivery, stored callback claiming, and cancellation against
+  real local Supabase while keeping OpenAI and Telegram fake. They are opt-in because they
+  require running infrastructure and create temporary rows and objects:
 
 ```bash
 RUN_COMPONENT_TESTS=1 uv run pytest -m component
@@ -377,8 +413,9 @@ Configuration is read from environment variables and `.env` by
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |
 | `OPENAI_MODEL` | Extraction and intent model | `gpt-5.6-luna` |
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |
-| `INVENTORY_AGENT_MODEL` | Isolated LLM-led agent evaluation model | `gpt-5.6-sol` |
-| `INVENTORY_AGENT_REASONING_EFFORT` | Reasoning level for the isolated agent | `low` |
+| `INVENTORY_AGENT_MODEL` | LLM-led Telegram text and spike-evaluation model | `gpt-5.6-sol` |
+| `INVENTORY_AGENT_REASONING_EFFORT` | Reasoning level for the LLM-led agent | `low` |
+| `INVENTORY_AGENT_ENABLED` | Route Telegram text through the LLM-led agent | `false` |
 | `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
 | `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |
@@ -576,11 +613,22 @@ two"), because those operations have different concurrency and reversal semantic
 to `processing` and resolves its organization member and active inventory location. A
 second worker cannot claim the same event. A claim abandoned for 15 minutes can be reclaimed
 after a worker crash, with every attempt counted for operations and audit. The Python
-processor first checks whether the same member and chat have a reversal waiting for a
-reason, then a candidate clarification, then catalog creation waiting for more details.
-A reversal reason is captured without a model call. Candidate replies are judged only
-against the candidates stored with that proposal, while catalog replies use the dedicated
-catalog Structured Output extractor. Otherwise it:
+processor first checks whether the same member and chat have a reversal or catalog flow
+waiting for more details.
+
+With `INVENTORY_AGENT_ENABLED=true`, ordinary text then enters a durable Responses API
+tool loop. The model can retrieve inventory or transactions and can create one pending
+proposal per message. PostgreSQL verifies organization membership, validates every
+retrieved ID again when the conversation is saved, and rejects a proposal containing an
+unread ID. The turn history, allowed IDs, final reply, proposal reference, provider
+response ID, and model name are saved in `inventory_agent_conversations`. A retry of the
+same source event reuses the saved turn rather than paying for or creating another model
+response.
+
+With the flag disabled, the structured processor checks candidate clarification before
+ordinary command extraction. In both modes, a reversal reason is captured without a model
+call and catalog replies use the dedicated catalog Structured Output extractor. The
+structured path otherwise:
 
 1. Extracts the strict, versioned command.
 2. Matches each mutation line within the organization's catalog.

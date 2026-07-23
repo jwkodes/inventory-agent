@@ -130,7 +130,12 @@ def outcome(
 
 
 async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
-    repository = FakeRepository(outcome(ProcessingOutcomeType.PROPOSAL_READY))
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.PROPOSAL_READY,
+            payload={"agent_reply": "I found the exact catalog item."},
+        )
+    )
     sender = FakeSender()
     worker = TelegramOutboxDeliveryWorker(repository=repository, sender=sender)
 
@@ -139,6 +144,7 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert result.status is OutboxDeliveryStatus.SENT
     assert result.telegram_message_id == 77
     assert repository.requested_proposals == [PROPOSAL_ID]
+    assert sender.messages[0][1].startswith("I found the exact catalog item.")
     assert "Review stock receipt" in sender.messages[0][1]
     assert sender.messages[0][2] is not None
     assert repository.finishes == [(OUTBOX_ID, True, None, 30)]
@@ -222,7 +228,10 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
     repository = FakeRepository(
         outcome(
             ProcessingOutcomeType.REVERSAL_CONFIRMATION,
-            payload={"reason": "Wrong delivery was entered"},
+            payload={
+                "reason": "Wrong delivery was entered",
+                "agent_reply": "I found the transaction to reverse.",
+            },
         )
     )
     sender = FakeSender()
@@ -233,6 +242,7 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
+    assert sender.messages[0][1].startswith("I found the transaction to reverse.")
     assert "Wrong delivery was entered" in sender.messages[0][1]
     assert sender.messages[0][2] is not None
 

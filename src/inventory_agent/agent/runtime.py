@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from openai.types.shared import ReasoningEffort
 
 from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
-from inventory_agent.agent.tools import INVENTORY_TOOL_DEFINITIONS, SimulatedInventoryTools
+from inventory_agent.agent.tools import INVENTORY_TOOL_DEFINITIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,17 @@ class AgentModel(Protocol):
         tools: list[dict[str, object]],
     ) -> ModelTurn:
         """Return one assistant turn, possibly containing function calls."""
+
+
+class InventoryAgentTools(Protocol):
+    async def execute(
+        self,
+        *,
+        call_id: str,
+        name: str,
+        arguments: dict[str, object],
+    ) -> str:
+        """Execute one inventory tool call and return a model-readable result."""
 
 
 class OpenAIResponsesAgentModel:
@@ -130,7 +141,8 @@ class InventoryAgentSession:
         self,
         *,
         model: AgentModel,
-        tools: SimulatedInventoryTools,
+        tools: InventoryAgentTools,
+        history: list[dict[str, object]] | None = None,
         max_tool_rounds: int = 6,
     ) -> None:
         if max_tool_rounds < 1:
@@ -138,7 +150,7 @@ class InventoryAgentSession:
         self._model = model
         self._tools = tools
         self._max_tool_rounds = max_tool_rounds
-        self._history: list[dict[str, object]] = []
+        self._history = list(history or [])
 
     @property
     def history(self) -> list[dict[str, object]]:

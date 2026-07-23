@@ -68,6 +68,7 @@ class ProcessingOutcomeType(StrEnum):
     REVERSAL_CONFIRMATION = "reversal_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNSUPPORTED_COMMAND = "unsupported_command"
+    AGENT_MESSAGE = "agent_message"
 
 
 class InventoryEventProcessingStatus(StrEnum):
@@ -79,6 +80,7 @@ class InventoryEventProcessingStatus(StrEnum):
     CATALOG_ITEM_CONFIRMATION = "catalog_item_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNSUPPORTED_COMMAND = "unsupported_command"
+    AGENT_MESSAGE = "agent_message"
 
 
 class InventoryEventProcessingResult(BaseModel):

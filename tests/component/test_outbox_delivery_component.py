@@ -1,6 +1,7 @@
 """Local-Supabase component test for durable Telegram outcome delivery."""
 
 import hashlib
+import json
 import os
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -9,6 +10,11 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
+from inventory_agent.agent.production_tools import (
+    GroundedAgentCatalogReader,
+)
+from inventory_agent.agent.repository import SupabaseAgentRepository
+from inventory_agent.agent.runtime import FunctionCall, ModelTurn
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
@@ -17,7 +23,8 @@ from inventory_agent.extraction.schema import ExtractedInventoryCommand
 from inventory_agent.matching.clarification import SupabaseMatchClarificationRepository
 from inventory_agent.matching.judge import CandidateJudgeOutput
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
-from inventory_agent.matching.service import InventoryItemMatcher
+from inventory_agent.matching.service import InventoryItemMatcher, MatchingStrategy
+from inventory_agent.processing.agent_text_events import TelegramAgentTextEventProcessor
 from inventory_agent.processing.callback_events import TelegramCallbackEventProcessor
 from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
@@ -107,6 +114,92 @@ class FixedCommandInterpreter:
             response_id="component-response",
             model="component-fake-model",
         )
+
+
+class ExactReceiptAgentModel:
+    """Exercise the real agent tool loop without calling OpenAI in CI."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def respond(
+        self,
+        *,
+        input_items: list[dict[str, object]],
+        instructions: str,
+        tools: list[dict[str, object]],
+    ) -> ModelTurn:
+        self.calls += 1
+        if self.calls == 1:
+            call = FunctionCall(
+                call_id="component-read",
+                name="read_inventory",
+                arguments={
+                    "query": None,
+                    "sku": "AMOX-500",
+                    "attributes": [],
+                    "include_zero_stock": True,
+                    "limit": 5,
+                },
+            )
+            return _agent_tool_turn(self.calls, call)
+        if self.calls == 2:
+            call = FunctionCall(
+                call_id="component-add",
+                name="propose_add_inventory",
+                arguments={
+                    "lines": [
+                        {
+                            "variant_id": "21000000-0000-0000-0000-000000000003",
+                            "new_item": None,
+                            "quantity": 3,
+                            "unit": "box",
+                            "attributes": [{"key": "expiry_date", "value": "2027-06-30"}],
+                        }
+                    ],
+                    "reason": "Telegram delivery",
+                },
+            )
+            return _agent_tool_turn(self.calls, call)
+        tool_outputs = [item for item in input_items if item.get("type") == "function_call_output"]
+        assert len(tool_outputs) == 2
+        assert '"ok":true' in str(tool_outputs[-1]["output"])
+        assert '"proposal_id":' in str(tool_outputs[-1]["output"])
+        return ModelTurn(
+            response_id="component-agent-final",
+            model="component-agent-model",
+            output_items=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "I prepared the receipt. Please confirm it.",
+                        }
+                    ],
+                }
+            ],
+            output_text="I prepared the receipt. Please confirm it.",
+            function_calls=[],
+        )
+
+
+def _agent_tool_turn(number: int, call: FunctionCall) -> ModelTurn:
+    return ModelTurn(
+        response_id=f"component-agent-{number}",
+        model="component-agent-model",
+        output_items=[
+            {
+                "type": "function_call",
+                "call_id": call.call_id,
+                "name": call.name,
+                "arguments": json.dumps(call.arguments),
+            }
+        ],
+        output_text="",
+        function_calls=[call],
+    )
 
 
 class UnusedCatalogDetailsInterpreter:
@@ -387,6 +480,167 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                 }
             ]
         finally:
+            delete_proposal = await client.delete(
+                "/transaction_proposals",
+                params={"source_event_id": f"eq.{event_id}"},
+            )
+            delete_proposal.raise_for_status()
+            cleanup = await client.delete(
+                "/source_events",
+                params={"id": f"eq.{event_id}"},
+            )
+            cleanup.raise_for_status()
+
+
+async def test_agent_text_processing_crosses_python_and_local_supabase_boundaries() -> None:
+    settings, secret_key = local_supabase()
+    event_id = uuid4()
+    component_chat_id = -(3_000_000_000 + event_id.int % 1_000_000_000)
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
+        create_event = await client.post(
+            "/source_events",
+            headers={"Prefer": "return=minimal"},
+            json={
+                "id": str(event_id),
+                "organization_id": str(ORGANIZATION_ID),
+                "provider": "telegram",
+                "external_event_id": f"component-agent-{event_id}",
+                "event_type": "message",
+                "payload": {
+                    "update_id": 88002,
+                    "message": {
+                        "message_id": 89,
+                        "from": {"id": telegram_user_id},
+                        "chat": {"id": component_chat_id},
+                        "text": "received three AMOX-500 expiring 30 June 2027",
+                    },
+                },
+            },
+        )
+        create_event.raise_for_status()
+        try:
+            events = SupabaseSourceEventWorkRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            agent_repository = SupabaseAgentRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            candidate_repository = SupabaseInventoryCandidateRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            model = ExactReceiptAgentModel()
+            processor = TelegramAgentTextEventProcessor(
+                events=events,
+                model=model,
+                conversations=agent_repository,
+                catalog_reader=GroundedAgentCatalogReader(
+                    candidates=candidate_repository,
+                    semantic=None,
+                    reads=agent_repository,
+                    strategy=MatchingStrategy.FUZZY,
+                ),
+                reads=agent_repository,
+                proposals=SupabaseProposalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                outbox=SupabaseProcessingOutboxRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                reversals=SupabaseReversalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                catalog=SupabaseCatalogItemCreationRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                catalog_interpreter=UnusedCatalogDetailsInterpreter(),  # type: ignore[arg-type]
+            )
+
+            result = await processor.process(event_id)
+
+            assert result.status is TextEventProcessingStatus.PROPOSAL_READY
+            assert result.proposal_id is not None
+            assert model.calls == 3
+
+            proposal = await client.get(
+                "/transaction_proposals",
+                params={
+                    "select": (
+                        "status,intent,notes,proposal_lines("
+                        "item_variant_id,base_quantity_delta,attributes)"
+                    ),
+                    "id": f"eq.{result.proposal_id}",
+                },
+            )
+            proposal.raise_for_status()
+            stored_proposal = proposal.json()[0]
+            assert stored_proposal["status"] == "pending_confirmation"
+            assert stored_proposal["intent"] == "receive_stock"
+            assert stored_proposal["notes"] == "Telegram delivery"
+            assert stored_proposal["proposal_lines"] == [
+                {
+                    "item_variant_id": "21000000-0000-0000-0000-000000000003",
+                    "base_quantity_delta": 3,
+                    "attributes": {"expiry_date": "2027-06-30"},
+                }
+            ]
+
+            conversation = await client.get(
+                "/inventory_agent_conversations",
+                params={
+                    "select": (
+                        "history,allowed_variant_ids,last_source_event_id,"
+                        "last_reply_text,last_proposal_id"
+                    ),
+                    "chat_id": f"eq.{component_chat_id}",
+                },
+            )
+            conversation.raise_for_status()
+            stored_conversation = conversation.json()[0]
+            assert len(stored_conversation["history"]) == 6
+            assert stored_conversation["allowed_variant_ids"] == [
+                "21000000-0000-0000-0000-000000000003"
+            ]
+            assert stored_conversation["last_source_event_id"] == str(event_id)
+            assert stored_conversation["last_reply_text"] == (
+                "I prepared the receipt. Please confirm it."
+            )
+            assert stored_conversation["last_proposal_id"] == str(result.proposal_id)
+
+            outbox = await client.get(
+                "/processing_outbox",
+                params={
+                    "select": "status,outcome_type,aggregate_id,payload",
+                    "source_event_id": f"eq.{event_id}",
+                },
+            )
+            outbox.raise_for_status()
+            assert outbox.json() == [
+                {
+                    "status": "pending",
+                    "outcome_type": "proposal_ready",
+                    "aggregate_id": str(result.proposal_id),
+                    "payload": {
+                        "proposal_id": str(result.proposal_id),
+                        "agent_reply": "I prepared the receipt. Please confirm it.",
+                    },
+                }
+            ]
+        finally:
+            delete_conversation = await client.delete(
+                "/inventory_agent_conversations",
+                params={"chat_id": f"eq.{component_chat_id}"},
+            )
+            delete_conversation.raise_for_status()
             delete_proposal = await client.delete(
                 "/transaction_proposals",
                 params={"source_event_id": f"eq.{event_id}"},

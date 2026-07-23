@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     inventory_agent_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
         "low"
     )
+    inventory_agent_enabled: bool = False
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dimensions: Literal[512] = 512
     inventory_matching_strategy: Literal["semantic", "fuzzy", "hybrid"] = "semantic"

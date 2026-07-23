@@ -1,6 +1,6 @@
 # LLM-led inventory agent spike
 
-Status: experimental, no-write evaluation  
+Status: experimental, opt-in Telegram text integration
 Branch: `experiment/llm-inventory-agent`  
 Started: 23 July 2026
 
@@ -17,8 +17,11 @@ This spike tests a different boundary:
 > action to propose. Application code decides whether that proposal is legal and whether it
 > may change inventory.
 
-Nothing in this package is connected to the production Telegram worker, Supabase proposal
-functions, or stock application functions.
+The first no-write simulator passed its initial five-scenario gate. The branch now also
+contains an opt-in Telegram text integration backed by Supabase. Its mutation tools create
+the same pending proposals and reversal requests as the existing application; they do not
+apply stock. Telegram callbacks and atomic database functions remain the only path from a
+pending proposal to an inventory change.
 
 ## Spike flow
 
@@ -41,27 +44,33 @@ Responses API inventory agent
                          +-- propose_reversal
                                   |
                                   v
-                         simulated proposal only
-                         no commit capability
+                         pending proposal only
+                         no apply capability
 ```
 
 The runtime sends tool results back to the model and permits another model/tool round.
-Every model output item is retained in the in-memory history, including function calls and
-reasoning items. A later natural-language reply therefore continues the same conversation.
+Every model output item is retained in history, including function calls and reasoning
+items. The simulator keeps that history in memory. The Telegram integration stores it in
+`inventory_agent_conversations`, together with grounded variant/transaction IDs and replay
+metadata, so a later natural-language reply continues after a worker restart.
 
 ## Safety properties enforced by code
 
 - Mutation-named tools create `awaiting_confirmation` proposals only.
-- There is no confirmation or commit tool in the spike.
-- A proposed existing variant ID must have been returned by `read_inventory` earlier in
-  the same session.
+- There is no confirmation, apply, or commit tool in the agent.
+- A proposed existing variant ID must have been returned by `read_inventory` in the
+  current durable conversation.
 - A proposed transaction reversal ID must have been returned by `read_transactions`
   earlier in the same session.
 - Deductions cannot create catalog items.
 - Quantities are positive `Decimal` values at the application boundary.
-- Repeated tool-call IDs return the original result instead of creating another proposal.
+- Repeated tool-call IDs return the original result during a turn; database proposal
+  idempotency also covers event replay.
 - Tool arguments use strict JSON schemas.
 - The session stops after a configured tool-round budget.
+- PostgreSQL revalidates active organization membership and every persisted variant and
+  transaction ID.
+- Only one stock or reversal proposal can be created for one user message.
 
 These checks are independent of the system prompt. A model instruction cannot bypass them.
 
@@ -76,6 +85,10 @@ uv run pytest tests/test_agent_tools.py tests/test_agent_runtime.py \
 
 These tests use a fake model and in-memory data. They do not call OpenAI, Telegram, or
 Supabase and do not spend API credits.
+
+The production adapters, durable conversation RPCs, and Telegram orchestration also have
+unit, database, and local-Supabase component coverage. See the canonical commands in the
+README.
 
 ## Run the billable live evaluation
 
@@ -143,24 +156,34 @@ pipeline handled poorly:
 - It can select and compose multiple reads and proposals.
 - It can remain inside the inventory domain.
 
-The result does not establish production reliability, cost, latency, tenant isolation, or
-safe database integration.
+The result did not by itself establish production reliability, cost, latency, tenant
+isolation, or safe database integration. The subsequent integration adds organization
+scoping, durable state, ID grounding, proposal-only writes, and component coverage, but it
+is still a prototype rather than a production-readiness claim.
 
-## Gate before replacing the current pipeline
+## Integration gate
 
-Do not connect this agent to live writes until all of the following exist:
+Completed on this branch:
 
-1. Organization-scoped Supabase read adapters with pagination and bounded results.
+1. Organization-scoped Supabase read adapters with bounded results.
 2. Durable application-owned conversation records and pending proposal references.
 3. Existing atomic proposal, confirmation, ledger, and reversal functions behind the
    tool boundary.
 4. Telegram callback confirmation outside the model loop.
-5. Tool-call, prompt, response, token, latency, and correction audit records.
-6. Prompt-injection and cross-tenant tests.
-7. A larger labelled evaluation set covering reads, additions, deductions, new catalog
-   items, variants, lots, serials, units, negative stock, reversals, and ambiguous replies.
-8. Side-by-side quality, latency, and cost measurements against the current pipeline.
+5. Deterministic unit and database tests plus a component test covering Telegram event,
+   grounded read, proposal creation, conversation persistence, and outbox enqueueing.
 
-The next implementation phase should replace only the conversational orchestration. The
-existing authentication, source-event ingestion, outbox, atomic proposal application,
-immutable ledger, confirmation callbacks, and compensating reversal functions remain.
+Still required before a production rollout:
+
+1. Complete tool-call, prompt, token, latency, correction, and operator audit reporting.
+2. A dedicated prompt-injection and adversarial cross-tenant test suite.
+3. A larger labelled evaluation set covering reads, additions, deductions, new catalog
+   items, variants, lots, serials, units, negative stock, reversals, and ambiguous replies.
+4. Side-by-side quality, latency, and cost measurements against the structured pipeline.
+5. Explicit pagination or a user-facing continuation flow for catalogs larger than one
+   bounded read.
+
+The feature flag replaces only text conversational orchestration. Existing authentication,
+source-event ingestion, invoice processing, outbox delivery, atomic proposal application,
+immutable ledger, confirmation callbacks, catalog creation, and compensating reversal
+functions remain.
