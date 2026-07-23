@@ -71,7 +71,20 @@ class TelegramTextEventProcessor:
                 event_id=event_id,
                 status=TextEventProcessingStatus.ALREADY_CLAIMED,
             )
+        return await self._process_claimed(context)
 
+    async def process_next(self) -> TextEventProcessingResult | None:
+        """Claim and process the oldest eligible event, or return None when idle."""
+
+        context = await self._events.claim_next_text_event()
+        if context is None:
+            return None
+        return await self._process_claimed(context)
+
+    async def _process_claimed(
+        self,
+        context: TelegramTextEventContext,
+    ) -> TextEventProcessingResult:
         try:
             extraction = await self._interpreter.interpret(context.message_text)
             command = extraction.command

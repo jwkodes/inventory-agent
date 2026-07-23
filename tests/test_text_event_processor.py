@@ -44,6 +44,9 @@ class FakeEvents:
         self.context = context
         self.finishes: list[tuple[UUID, bool, str | None]] = []
 
+    async def claim_next_text_event(self) -> TelegramTextEventContext | None:
+        return self.context
+
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
         assert event_id == EVENT_ID
         return self.context
@@ -284,6 +287,17 @@ async def test_already_claimed_event_does_not_repeat_work() -> None:
     assert proposals.drafts == []
     assert outbox.drafts == []
     assert events.finishes == []
+
+
+async def test_process_next_returns_none_when_worker_is_idle() -> None:
+    events = FakeEvents(None)
+    service, proposals, outbox = processor(events=events, interpreted=command())
+
+    result = await service.process_next()
+
+    assert result is None
+    assert proposals.drafts == []
+    assert outbox.drafts == []
 
 
 async def test_processing_failure_is_recorded_without_provider_error_details() -> None:

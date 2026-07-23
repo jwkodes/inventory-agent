@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(28);
 
 select has_table('public', 'processing_outbox', 'processing outbox exists');
 
@@ -25,6 +25,12 @@ select has_function(
   'enqueue_processing_outcome',
   array['uuid', 'uuid', 'processing_outcome_type', 'uuid', 'bigint', 'jsonb'],
   'durable outcome function exists'
+);
+select has_function(
+  'public',
+  'claim_next_telegram_text_event',
+  array[]::text[],
+  'claim-next function exists for continuous workers'
 );
 
 insert into public.source_events (
@@ -178,6 +184,97 @@ select is(
   ),
   1::bigint,
   'enqueue retry does not duplicate delivery work'
+);
+
+insert into public.source_events (
+  id,
+  organization_id,
+  provider,
+  external_event_id,
+  event_type,
+  payload
+)
+values (
+  '50000000-0000-0000-0000-000000000008',
+  '10000000-0000-0000-0000-000000000001',
+  'telegram',
+  'event-processing-claim-next',
+  'message',
+  '{
+    "message": {
+      "from": {"id": 100000001},
+      "chat": {"id": 100000001},
+      "text": "received one MILK-FULLCREAM-1L"
+    }
+  }'::jsonb
+);
+
+create temporary table next_claimed_event as
+select * from public.claim_next_telegram_text_event();
+
+select is(
+  (select event_id from next_claimed_event),
+  '50000000-0000-0000-0000-000000000008'::uuid,
+  'claim-next returns the oldest eligible Telegram text event'
+);
+select is(
+  (select message_text from next_claimed_event),
+  'received one MILK-FULLCREAM-1L',
+  'claim-next returns the message context'
+);
+select ok(
+  public.finish_source_event(
+    '50000000-0000-0000-0000-000000000008',
+    false,
+    'temporary model failure'
+  ),
+  'first processing failure is recorded'
+);
+select is(
+  (
+    select status::text from public.source_events
+    where id = '50000000-0000-0000-0000-000000000008'
+  ),
+  'received',
+  'first failure returns the event to the queue'
+);
+select is(
+  (select count(*) from public.claim_next_telegram_text_event()),
+  0::bigint,
+  'retry delay prevents an immediate reclaim'
+);
+
+update public.source_events
+set next_attempt_at = now() - interval '1 second',
+    processing_attempts = 2
+where id = '50000000-0000-0000-0000-000000000008';
+
+create temporary table final_claimed_event as
+select * from public.claim_next_telegram_text_event();
+
+select is(
+  (
+    select processing_attempts from public.source_events
+    where id = '50000000-0000-0000-0000-000000000008'
+  ),
+  3,
+  'the next claim records the third processing attempt'
+);
+select ok(
+  public.finish_source_event(
+    '50000000-0000-0000-0000-000000000008',
+    false,
+    'third model failure'
+  ),
+  'third processing failure is recorded'
+);
+select is(
+  (
+    select status::text from public.source_events
+    where id = '50000000-0000-0000-0000-000000000008'
+  ),
+  'failed',
+  'third failure dead-letters the source event'
 );
 
 select * from finish();

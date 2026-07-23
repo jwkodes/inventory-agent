@@ -9,7 +9,7 @@ This repository is in the prototype stage. It currently includes the application
 foundation, a health endpoint, the first Supabase inventory schema, atomic stock
 application, immutable movements, compensating reversals, and authenticated,
 idempotent Telegram webhook ingestion. A versioned Structured Outputs contract and
-OpenAI Responses API interpreter are ready for the text-processing worker.
+OpenAI Responses API interpreter run inside the continuous text-processing worker.
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
 then falls back to typo-tolerant PostgreSQL trigram candidates. The persisted text-event
 processor now joins extraction, matching, and idempotent proposal creation, and records
@@ -196,18 +196,19 @@ webhook is active. If the webhook URL changes, update `TELEGRAM_WEBHOOK_URL` and
 registration command. Never paste a real bot token or webhook secret into source files,
 terminal screenshots, issues, or chat.
 
-### 8. Run the outbound delivery worker
+### 8. Run the background worker
 
-The worker needs `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY` in `.env`.
-Run it in a separate terminal:
+The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
+`SUPABASE_SECRET_KEY` in `.env`. Run it in a separate terminal:
 
 ```bash
 uv run python -m inventory_agent.processing.worker --watch
 ```
 
-It polls every two seconds when idle. Use `--poll-seconds N` to choose an interval from
-greater than zero through 60 seconds. Without `--watch`, it claims and delivers at most one
-due outcome, which is useful while debugging.
+Each cycle claims at most one text event first, then one outbound result so a newly created
+proposal can be sent immediately. It polls every two seconds when both queues are idle. Use
+`--poll-seconds N` to choose an interval from greater than zero through 60 seconds. Without
+`--watch`, it runs one processing-and-delivery cycle, which is useful while debugging.
 
 ## Development checks
 
@@ -347,7 +348,8 @@ processor then:
 2. Matches each mutation line within the organization's catalog.
 3. Stores an idempotent proposal with either a resolved variant or selectable candidates.
 4. Enqueues a `proposal_ready`, `clarification_required`, or `unsupported_command` outcome.
-5. Marks the source event `processed`; failures are marked `failed` with a sanitized error.
+5. Marks the source event `processed`; failures retain only a sanitized error and retry
+   after 30 seconds, becoming `failed` after the third unsuccessful attempt.
 
 The `processing_outbox` is the durable boundary between interpretation and Telegram
 delivery. This matters because a Telegram outage must not cause the OpenAI call or proposal
@@ -364,7 +366,7 @@ available from the Bot API boundary.
 The prototype selects the organization's configured `settings.default_location_id` when
 it names an active location; otherwise it deterministically uses the first active location
 by code. Location selection from message hints and per-user defaults is not implemented yet.
-Failed events remain available for audit but are not automatically retried yet.
+Dead-lettered events remain available for audit and manual investigation.
 
 ## Repository layout
 

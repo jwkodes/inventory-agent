@@ -73,8 +73,9 @@ The text worker atomically claims a persisted event, resolves the organization m
 default active location, then runs extraction, matching, and proposal creation. It writes
 the outcome to `processing_outbox` before completing the source event. Proposal and outbox
 keys are idempotent, so a repeated processing attempt cannot create duplicate business or
-delivery records. A 15-minute claim lease permits recovery after a worker crash. A separate
-worker owns Telegram delivery and its retry policy.
+delivery records. A 15-minute claim lease permits recovery after a worker crash. Transient
+processing failures retry after 30 seconds and the third failure is retained for operations.
+The same runtime loop owns a separate delivery component and retry policy.
 
 The delivery worker claims due outbox records with row locking and `SKIP LOCKED`, preventing
 two healthy workers from delivering the same row concurrently. A claim abandoned for five

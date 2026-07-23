@@ -15,6 +15,9 @@ from inventory_agent.telegram.confirmation import ProposalConfirmationView
 
 
 class SourceEventWorkRepository(Protocol):
+    async def claim_next_text_event(self) -> TelegramTextEventContext | None:
+        """Claim the oldest eligible Telegram text event."""
+
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
         """Claim one received event, or return None when it is no longer claimable."""
 
@@ -65,11 +68,19 @@ class SupabaseSourceEventWorkRepository:
         self._timeout_seconds = timeout_seconds
         self._transport = transport
 
+    async def claim_next_text_event(self) -> TelegramTextEventContext | None:
+        response = await self._post_rpc("claim_next_telegram_text_event", {})
+        return self._parse_claim(response)
+
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
         response = await self._post_rpc(
             "claim_telegram_text_event",
             {"p_event_id": str(event_id)},
         )
+        return self._parse_claim(response)
+
+    @staticmethod
+    def _parse_claim(response: httpx.Response) -> TelegramTextEventContext | None:
         rows = response.json()
         if not isinstance(rows, list):
             raise ValueError("Supabase returned an invalid source event claim response")

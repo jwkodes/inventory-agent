@@ -1,53 +1,142 @@
-"""Command-line worker for delivering durable Telegram outcomes."""
+"""Command-line worker for text processing and Telegram outcome delivery."""
 
 import argparse
 import asyncio
 import logging
 from collections.abc import Sequence
+from typing import Protocol
 
+from openai import AsyncOpenAI
 from pydantic import SecretStr
 
 from inventory_agent.config import Settings
+from inventory_agent.extraction.interpreter import OpenAITextCommandInterpreter
+from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
+from inventory_agent.matching.service import InventoryItemMatcher
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
-from inventory_agent.processing.models import OutboxDeliveryStatus
-from inventory_agent.processing.repository import SupabaseProcessingOutboxDeliveryRepository
+from inventory_agent.processing.models import (
+    OutboxDeliveryResult,
+    OutboxDeliveryStatus,
+    TextEventProcessingResult,
+)
+from inventory_agent.processing.repository import (
+    SupabaseProcessingOutboxDeliveryRepository,
+    SupabaseProcessingOutboxRepository,
+    SupabaseSourceEventWorkRepository,
+)
+from inventory_agent.processing.text_events import (
+    TelegramTextEventProcessor,
+    TextEventProcessingError,
+)
+from inventory_agent.proposals.repository import SupabaseProposalRepository
 from inventory_agent.telegram.client import TelegramBotClient
 
 logger = logging.getLogger(__name__)
+
+
+class NextTextEventProcessor(Protocol):
+    async def process_next(self) -> TextEventProcessingResult | None:
+        """Process at most one eligible text event."""
+
+
+class NextOutboxDeliveryWorker(Protocol):
+    async def deliver_one(self) -> OutboxDeliveryResult:
+        """Deliver at most one due outbound outcome."""
+
+
+async def run_loop(
+    *,
+    text_processor: NextTextEventProcessor,
+    delivery_worker: NextOutboxDeliveryWorker,
+    watch: bool,
+    poll_seconds: float,
+) -> None:
+    """Process text before delivery so a new proposal can be sent in the same cycle."""
+
+    while True:
+        text_result: TextEventProcessingResult | None = None
+        try:
+            text_result = await text_processor.process_next()
+        except TextEventProcessingError:
+            logger.error("text_event_processing status=failed")
+        if text_result is not None:
+            logger.info(
+                "text_event_processing status=%s event_id=%s proposal_id=%s",
+                text_result.status,
+                text_result.event_id,
+                text_result.proposal_id,
+            )
+
+        delivery_result = await delivery_worker.deliver_one()
+        logger.info(
+            "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
+            delivery_result.status,
+            delivery_result.outbox_id,
+            delivery_result.telegram_message_id,
+        )
+        if not watch:
+            return
+        if text_result is None and delivery_result.status is OutboxDeliveryStatus.IDLE:
+            await asyncio.sleep(poll_seconds)
 
 
 async def run_worker(*, watch: bool, poll_seconds: float) -> None:
     settings = Settings()
     secret_key = _required_secret(settings.supabase_secret_key, "SUPABASE_SECRET_KEY")
     bot_token = _required_secret(settings.telegram_bot_token, "TELEGRAM_BOT_TOKEN")
-    worker = TelegramOutboxDeliveryWorker(
-        repository=SupabaseProcessingOutboxDeliveryRepository(
-            supabase_url=settings.supabase_url,
-            secret_key=secret_key,
-        ),
-        sender=TelegramBotClient(bot_token=bot_token),
-    )
-
-    while True:
-        result = await worker.deliver_one()
-        logger.info(
-            "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
-            result.status,
-            result.outbox_id,
-            result.telegram_message_id,
+    openai_api_key = _required_secret(settings.openai_api_key, "OPENAI_API_KEY")
+    openai_client = AsyncOpenAI(api_key=openai_api_key)
+    try:
+        text_processor = TelegramTextEventProcessor(
+            events=SupabaseSourceEventWorkRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            interpreter=OpenAITextCommandInterpreter(
+                client=openai_client,
+                model=settings.openai_model,
+                reasoning_effort=settings.openai_reasoning_effort,
+            ),
+            matcher=InventoryItemMatcher(
+                repository=SupabaseInventoryCandidateRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                )
+            ),
+            proposals=SupabaseProposalRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            outbox=SupabaseProcessingOutboxRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
         )
-        if not watch:
-            return
-        if result.status is OutboxDeliveryStatus.IDLE:
-            await asyncio.sleep(poll_seconds)
+        delivery_worker = TelegramOutboxDeliveryWorker(
+            repository=SupabaseProcessingOutboxDeliveryRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            sender=TelegramBotClient(bot_token=bot_token),
+        )
+        await run_loop(
+            text_processor=text_processor,
+            delivery_worker=delivery_worker,
+            watch=watch,
+            poll_seconds=poll_seconds,
+        )
+    finally:
+        await openai_client.close()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Deliver inventory-agent Telegram outcomes")
+    parser = argparse.ArgumentParser(
+        description="Process inventory text events and deliver Telegram outcomes"
+    )
     parser.add_argument(
         "--watch",
         action="store_true",
-        help="Keep polling instead of delivering at most one outcome",
+        help="Keep polling instead of running one processing and delivery cycle",
     )
     parser.add_argument(
         "--poll-seconds",
@@ -65,7 +154,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 def _required_secret(secret: SecretStr | None, variable_name: str) -> str:
     value = secret.get_secret_value() if secret is not None else ""
     if not value:
-        raise RuntimeError(f"{variable_name} is required by the delivery worker")
+        raise RuntimeError(f"{variable_name} is required by the worker")
     return value
 
 

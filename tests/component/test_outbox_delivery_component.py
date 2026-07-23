@@ -204,8 +204,9 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                 ),
             )
 
-            result = await processor.process(event_id)
+            result = await processor.process_next()
 
+            assert result is not None
             assert result.status is TextEventProcessingStatus.PROPOSAL_READY
             assert result.proposal_id is not None
             proposal = await client.get(
