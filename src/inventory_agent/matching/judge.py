@@ -1,6 +1,7 @@
 """Constrained LLM judgment of already-retrieved inventory candidates."""
 
 import json
+import re
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
@@ -139,7 +140,14 @@ class OpenAICandidateJudge:
         if judgment is None:
             raise CandidateJudgmentError("OpenAI response did not contain a candidate judgment")
         _validate_judgment(judgment, candidate_ids)
-        return judgment
+        guarded = enforce_discriminator_constraints(
+            judgment=judgment,
+            line=line,
+            candidates=candidates,
+            accumulated_attributes=accumulated_attributes,
+        )
+        _validate_judgment(guarded, candidate_ids)
+        return guarded
 
 
 def _validate_judgment(
@@ -160,3 +168,113 @@ def _validate_judgment(
         return
     if judgment.question is not None:
         raise CandidateJudgmentError("NO_MATCH judgment cannot include a question")
+
+
+def enforce_discriminator_constraints(
+    *,
+    judgment: CandidateJudgeOutput,
+    line: ExtractedCommandLine,
+    candidates: list[InventoryCandidate],
+    accumulated_attributes: dict[str, str] | None = None,
+) -> CandidateJudgeOutput:
+    """Prevent model decisions that contradict configured variant identity fields."""
+
+    supplied = {
+        _normalize_key(attribute.key): attribute.value
+        for attribute in line.attributes
+        if attribute.key.strip() and attribute.value.strip()
+    }
+    supplied.update(
+        {
+            _normalize_key(key): value
+            for key, value in (accumulated_attributes or {}).items()
+            if key.strip() and value.strip()
+        }
+    )
+    supplied.update(
+        {
+            _normalize_key(attribute.key): attribute.value
+            for attribute in judgment.resolved_attributes
+            if attribute.key.strip() and attribute.value.strip()
+        }
+    )
+
+    roles: dict[str, str] = {}
+    for candidate in candidates:
+        roles.update(
+            {_normalize_key(key): role for key, role in candidate.attribute_matching_roles.items()}
+        )
+
+    compatible_ids = {candidate.item_variant_id for candidate in candidates}
+    applied_constraints: list[tuple[str, str]] = []
+    for key, user_value in supplied.items():
+        if roles.get(key) != "discriminator":
+            continue
+        candidate_values = {
+            candidate.item_variant_id: _candidate_attribute(candidate, key)
+            for candidate in candidates
+        }
+        if not any(value is not None for value in candidate_values.values()):
+            continue
+        applied_constraints.append((key, user_value))
+        compatible_ids &= {
+            candidate_id
+            for candidate_id, candidate_value in candidate_values.items()
+            if candidate_value is not None
+            if _attribute_value_matches(
+                user_value=user_value,
+                candidate_value=candidate_value,
+            )
+        }
+
+    if applied_constraints and not compatible_ids:
+        details = ", ".join(f"{key}={value}" for key, value in applied_constraints)
+        return CandidateJudgeOutput(
+            action=CandidateJudgeAction.NO_MATCH,
+            selected_candidate_id=None,
+            question=None,
+            reason=f"No offered catalog variant matches the stated {details}.",
+            resolved_attributes=judgment.resolved_attributes,
+        )
+    if (
+        judgment.action is CandidateJudgeAction.SELECT
+        and judgment.selected_candidate_id not in compatible_ids
+    ):
+        return CandidateJudgeOutput(
+            action=CandidateJudgeAction.NO_MATCH,
+            selected_candidate_id=None,
+            question=None,
+            reason="The selected candidate contradicts a configured variant attribute.",
+            resolved_attributes=judgment.resolved_attributes,
+        )
+    return judgment
+
+
+def _candidate_attribute(candidate: InventoryCandidate, normalized_key: str) -> str | None:
+    attributes = {**candidate.item_attributes, **candidate.variant_attributes}
+    for key, value in attributes.items():
+        if _normalize_key(str(key)) == normalized_key and value is not None:
+            return str(value)
+    return None
+
+
+def _attribute_value_matches(*, user_value: str, candidate_value: str) -> bool:
+    candidate_phrase = _normalize_phrase(candidate_value)
+    user_phrase = _normalize_phrase(user_value)
+    if not candidate_phrase or not user_phrase:
+        return False
+    if candidate_phrase == user_phrase:
+        return True
+    candidate_tokens = candidate_phrase.split()
+    user_tokens = user_phrase.split()
+    if len(candidate_tokens) == 1:
+        return candidate_tokens[0] in user_tokens
+    return candidate_phrase in user_phrase
+
+
+def _normalize_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+def _normalize_phrase(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
