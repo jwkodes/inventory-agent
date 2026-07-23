@@ -1,11 +1,25 @@
 """Orchestrate candidate retrieval and confidence policy per extracted line."""
 
+from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from inventory_agent.extraction.schema import ExtractedCommandLine
-from inventory_agent.matching.models import MatchDecision
+from inventory_agent.matching.models import (
+    CandidateMatchMethod,
+    InventoryCandidate,
+    MatchDecision,
+    MatchDecisionStatus,
+)
 from inventory_agent.matching.policy import MatchConfidencePolicy
 from inventory_agent.matching.repository import InventoryCandidateRepository
+from inventory_agent.matching.semantic import SemanticCandidateRepository
+
+
+class MatchingStrategy(StrEnum):
+    SEMANTIC = "semantic"
+    FUZZY = "fuzzy"
+    HYBRID = "hybrid"
 
 
 class InventoryItemMatcher:
@@ -13,9 +27,13 @@ class InventoryItemMatcher:
         self,
         *,
         repository: InventoryCandidateRepository,
+        semantic_repository: SemanticCandidateRepository | None = None,
+        strategy: MatchingStrategy = MatchingStrategy.FUZZY,
         policy: MatchConfidencePolicy | None = None,
     ) -> None:
         self._repository = repository
+        self._semantic_repository = semantic_repository
+        self._strategy = strategy
         self._policy = policy or MatchConfidencePolicy()
 
     async def match_line(
@@ -36,4 +54,89 @@ class InventoryItemMatcher:
             supplier_scope=supplier_scope,
             limit=limit,
         )
-        return self._policy.decide(candidates)
+        trusted = [
+            candidate
+            for candidate in candidates
+            if candidate.match_method
+            in {
+                CandidateMatchMethod.EXACT_IDENTIFIER,
+                CandidateMatchMethod.CONFIRMED_ALIAS,
+            }
+        ]
+        if trusted:
+            return self._policy.decide(trusted)
+
+        ranked = candidates
+        if self._strategy is not MatchingStrategy.FUZZY:
+            if self._semantic_repository is None:
+                raise RuntimeError("Semantic matching is configured without a repository")
+            semantic = await self._semantic_repository.find_candidates(
+                organization_id=organization_id,
+                query=query,
+                limit=limit,
+            )
+            ranked = (
+                semantic
+                if self._strategy is MatchingStrategy.SEMANTIC
+                else _hybrid_candidates(semantic=semantic, fuzzy=candidates)
+            )
+
+        decision = self._policy.decide(ranked)
+        if decision.status is MatchDecisionStatus.NOT_FOUND:
+            fallback = await self._repository.browse_candidates(
+                organization_id=organization_id,
+                query=query,
+                limit=limit,
+            )
+            if fallback:
+                return MatchDecision(
+                    status=MatchDecisionStatus.NOT_FOUND,
+                    selected=None,
+                    candidates=fallback,
+                    reason="No catalog candidate met the normal retrieval threshold",
+                )
+        return decision
+
+
+def _hybrid_candidates(
+    *,
+    semantic: list[InventoryCandidate],
+    fuzzy: list[InventoryCandidate],
+) -> list[InventoryCandidate]:
+    semantic_by_id = {candidate.item_variant_id: candidate for candidate in semantic}
+    fuzzy_by_id = {candidate.item_variant_id: candidate for candidate in fuzzy}
+    combined: list[InventoryCandidate] = []
+    for variant_id in semantic_by_id.keys() | fuzzy_by_id.keys():
+        semantic_candidate = semantic_by_id.get(variant_id)
+        fuzzy_candidate = fuzzy_by_id.get(variant_id)
+        source = semantic_candidate or fuzzy_candidate
+        if source is None:
+            continue
+        if semantic_candidate is not None and fuzzy_candidate is not None:
+            score = semantic_candidate.match_score * Decimal(
+                "0.7"
+            ) + fuzzy_candidate.match_score * Decimal("0.3")
+        else:
+            score = source.match_score
+        combined.append(
+            source.model_copy(
+                update={
+                    "match_method": CandidateMatchMethod.SEMANTIC_RERANK,
+                    "match_score": score,
+                    "match_evidence": {
+                        "source": "hybrid",
+                        "semantic_score": (
+                            str(semantic_candidate.match_score)
+                            if semantic_candidate is not None
+                            else None
+                        ),
+                        "fuzzy_score": (
+                            str(fuzzy_candidate.match_score)
+                            if fuzzy_candidate is not None
+                            else None
+                        ),
+                    },
+                }
+            )
+        )
+    return sorted(combined, key=lambda candidate: candidate.match_score, reverse=True)

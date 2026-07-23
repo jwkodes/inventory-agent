@@ -7,6 +7,7 @@ from uuid import UUID
 
 import httpx
 
+from inventory_agent.catalog.repository import CatalogItemCreationRepository
 from inventory_agent.proposals.actions import ProposalActionRepository
 from inventory_agent.reversals.repository import ReversalRepository
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
@@ -43,10 +44,12 @@ class TelegramCallbackDispatcher:
         answerer: CallbackAnswerer,
         repository: ProposalActionRepository,
         reversals: ReversalRepository,
+        catalog: CatalogItemCreationRepository,
     ) -> None:
         self._answerer = answerer
         self._repository = repository
         self._reversals = reversals
+        self._catalog = catalog
 
     async def dispatch(
         self,
@@ -97,6 +100,31 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Proposal cancelled"
+            elif command.action is CallbackAction.ADD_NEW_ITEM:
+                result_id = await self._catalog.begin(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
+                )
+                message = "Catalog item details required"
+            elif command.action is CallbackAction.SHOW_EXISTING_ITEMS:
+                result_id = await self._catalog.show_existing(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Existing catalog candidates ready"
+            elif command.action is CallbackAction.CONFIRM_NEW_ITEM:
+                result_id = await self._catalog.confirm(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog item created"
+            elif command.action is CallbackAction.CANCEL_NEW_ITEM:
+                result_id = await self._catalog.cancel(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog item creation cancelled"
             elif command.action is CallbackAction.REVERSE_TRANSACTION:
                 result_id = await self._reversals.begin(
                     transaction_id=command.target_id,

@@ -3,7 +3,10 @@
 import pytest
 from pydantic import ValidationError
 
-from inventory_agent.extraction.schema import ExtractedInventoryCommand
+from inventory_agent.extraction.schema import (
+    ExtractedInventoryCommand,
+    ItemReferenceType,
+)
 
 
 def receive_command() -> dict[str, object]:
@@ -60,6 +63,34 @@ def test_unknown_intent_normalizes_to_clarification() -> None:
 
     assert command.needs_clarification is True
     assert command.clarification_question == "What inventory change would you like to make?"
+
+
+def test_unknown_reference_type_preserves_available_item_wording() -> None:
+    payload = receive_command()
+    payload["lines"][0]["item_reference"] = {  # type: ignore[index]
+        "type": "UNKNOWN",
+        "value": "ZX-999",
+    }
+
+    command = ExtractedInventoryCommand.model_validate(payload)
+
+    assert command.lines[0].item_reference.type is ItemReferenceType.UNKNOWN
+    assert command.lines[0].item_reference.value == "ZX-999"
+
+
+def test_missing_description_uses_item_reference_without_quantity() -> None:
+    payload = receive_command()
+    payload["lines"][0].update(  # type: ignore[index]
+        source_text="4 switch2 controller",
+        item_reference={"type": "UNKNOWN", "value": "switch2 controller"},
+        description=None,
+        quantity="4",
+        unit=None,
+    )
+
+    command = ExtractedInventoryCommand.model_validate(payload)
+
+    assert command.lines[0].description == "switch2 controller"
 
 
 def test_question_normalizes_clarification_flag() -> None:

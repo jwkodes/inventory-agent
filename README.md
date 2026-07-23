@@ -11,11 +11,12 @@ application, immutable movements, compensating reversals, and authenticated,
 idempotent Telegram webhook ingestion. Versioned text and invoice-image Structured
 Outputs interpreters run inside the continuous processing worker.
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
-then falls back to typo-tolerant PostgreSQL trigram candidates. Original invoice images
-are checksummed and stored in a private Supabase bucket before extraction. Text and image
-events share matching, idempotent proposal creation, and the durable outbound-message
+then uses configurable semantic, fuzzy, or hybrid name matching. Semantic matching is the
+default and uses OpenAI embeddings cached in PostgreSQL with pgvector. Original invoice
+images are checksummed and stored in a private Supabase bucket before extraction. Text and
+image events share matching, idempotent proposal creation, and the durable outbound-message
 outbox. The same worker processes stored Telegram button callbacks, applies idempotent
-proposal actions, and edits the original confirmation message.
+proposal actions, and sends a new Telegram message after every successful action.
 
 ## Architecture principles
 
@@ -33,7 +34,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and data desi
 - Python 3.12 or 3.13
 - FastAPI and Uvicorn
 - OpenAI Responses API with Structured Outputs
-- Supabase: PostgreSQL, Storage, Row Level Security, and database functions
+- Supabase: PostgreSQL, pgvector, Storage, Row Level Security, and database functions
 - Telegram Bot API using webhooks
 - `uv` for Python versions, virtual environments, dependencies, and lockfiles
 - Ruff, mypy, and pytest for validation
@@ -244,7 +245,9 @@ terminal session may also stop processes launched from it.
 ### 8. Run the background worker
 
 The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
-`SUPABASE_SECRET_KEY` in `.env`. Run it in a separate terminal:
+`SUPABASE_SECRET_KEY` in `.env`. The defaults use semantic matching, so the same OpenAI
+key is used for command extraction, conversational catalog-detail extraction, and
+embeddings. Run it in a separate terminal:
 
 ```bash
 uv run python -m inventory_agent.processing.worker --watch
@@ -261,6 +264,12 @@ Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP doc
 The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
 downloading. The prototype deliberately leaves PDFs and voice notes for later slices;
 their webhooks are retained but are not sent through the image interpreter.
+
+On the first non-exact name match, the worker creates embeddings for catalog variants
+whose searchable content has not been indexed yet. It batches and caches those vectors in
+local PostgreSQL. Later requests normally embed only the user's query. Changing an item
+name, variant name, SKU, attributes, or confirmed alias changes its content hash and
+causes that variant to be refreshed automatically.
 
 ## Development checks
 
@@ -319,6 +328,9 @@ Configuration is read from environment variables and `.env` by
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |
 | `OPENAI_MODEL` | Extraction and intent model | `gpt-5.6-luna` |
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |
+| `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
+| `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
+| `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |
 | `TELEGRAM_BOT_TOKEN` | BotFather token | none |
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies Telegram webhook requests | none |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS `/webhooks/telegram` endpoint | none |
@@ -345,6 +357,15 @@ evaluation. The invoice interpreter supplies a Base64 image input at `high` deta
 uses the same schema and matching path as text. Automated tests use local fake responses
 and never spend API credits.
 
+Catalog creation has its own smaller Structured Output schema. The bot states the facts it
+needs—item name, SKU or internal code, base unit, and optional company-specific
+attributes—but does not require the user to fill in JSON or a fixed text form. The worker
+extracts those facts from natural language, combines them with safe suggestions already
+derived from the transaction, persists partial answers across clarification turns, and
+asks only for fields that remain missing. A final Telegram confirmation is required before
+the catalog item is created. The current prototype creates simple-tracked items only; lot
+and serial creation require an additional tracking-details flow.
+
 ## Invoice image processing
 
 The webhook classifies Telegram photos and JPEG/PNG/WebP documents as `invoice_image`
@@ -362,20 +383,36 @@ retry after 30 seconds, and become failed after the third attempt.
 
 ## Item matching
 
-Candidate retrieval is implemented by the organization-scoped
-`find_inventory_candidates` PostgreSQL function. It ranks evidence in this order:
+Exact and fuzzy retrieval is implemented by the organization-scoped
+`find_inventory_candidates` PostgreSQL function. Semantic retrieval uses
+`list_inventory_embedding_documents`, an OpenAI embedding call, the
+`inventory_variant_embeddings` cache, and `find_semantic_inventory_candidates`.
+All database functions require an organization ID and never search across tenants.
+
+Evidence is evaluated in this order:
 
 1. Exact normalized SKU, barcode, manufacturer part number, or supplier part number.
 2. Exact human-confirmed alias, optionally scoped to a supplier.
-3. Trigram similarity across item names, variant names, SKUs, and confirmed aliases.
+3. The configured name-matching strategy:
+   - `semantic` (default): embedding cosine similarity across names, SKU, attributes, and
+     confirmed aliases.
+   - `fuzzy`: PostgreSQL trigram similarity across names, SKU, and aliases.
+   - `hybrid`: a weighted semantic/fuzzy score for evaluation.
 
 [`policy.py`](src/inventory_agent/matching/policy.py) converts ranked candidates into
 `matched`, `needs_confirmation`, or `not_found`. Exact evidence is normally accepted, but
 conflicting trusted results require human selection. A fuzzy result currently needs a
 score of at least `0.72` and a lead of at least `0.12` over the next candidate. These are
 prototype baselines to calibrate on labelled SME examples, not probabilities. Semantic
-retrieval may later rerank the small candidate set; it will not bypass this policy or the
-user's transaction confirmation.
+scores use their own initial threshold of `0.42` and top-two margin of `0.10`, based on a
+small smoke test only; they must be calibrated on labelled SME examples before production.
+Semantic retrieval never bypasses this policy or the user's transaction confirmation.
+
+If no candidate is confident, the bot explicitly offers **Add new item** and
+**Choose existing**. Choosing existing displays fallback candidates in descending score
+order. Adding an item starts the conversational detail flow described above. After item
+creation, the original proposal line is linked to the new variant and a fresh proposal
+review message is sent.
 
 ## Transaction proposals and confirmation
 
@@ -447,7 +484,9 @@ to `processing` and resolves its organization member and active inventory locati
 second worker cannot claim the same event. A claim abandoned for 15 minutes can be reclaimed
 after a worker crash, with every attempt counted for operations and audit. The Python
 processor first checks whether the same member and chat have a reversal waiting for a
-reason. If so, it durably captures the message and skips the model. Otherwise it:
+reason, then whether catalog creation is waiting for more details. A reversal reason is
+captured without a model call. A catalog reply uses the dedicated catalog Structured
+Output extractor. Otherwise it:
 
 1. Extracts the strict, versioned command.
 2. Matches each mutation line within the organization's catalog.
@@ -530,8 +569,10 @@ data only and must never be loaded into production.
 2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
 3. Telegram webhook authentication and idempotent event ingestion — complete
 4. Text intent extraction using a strict structured schema — complete
-5. Exact identifier, alias, and fuzzy name matching — complete
+5. Exact identifier, alias, and configurable semantic/fuzzy/hybrid matching — complete
 6. Telegram confirmation, editing, cancellation, and complete reversal — complete
-7. Invoice image extraction
-8. Voice-note transcription
-9. Semantic candidate retrieval and calibrated confidence policies
+7. Invoice image extraction — complete for photos and JPEG/PNG/WebP documents
+8. No-match catalog creation with conversational detail extraction — complete for simple
+   tracking
+9. Semantic confidence calibration on representative SME datasets
+10. Voice-note transcription

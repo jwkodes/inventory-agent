@@ -18,10 +18,14 @@ class MatchConfidencePolicy:
         *,
         fuzzy_score_threshold: Decimal = Decimal("0.72"),
         fuzzy_margin_threshold: Decimal = Decimal("0.12"),
+        semantic_score_threshold: Decimal = Decimal("0.42"),
+        semantic_margin_threshold: Decimal = Decimal("0.10"),
         trusted_collision_margin: Decimal = Decimal("0.02"),
     ) -> None:
         self._fuzzy_score_threshold = fuzzy_score_threshold
         self._fuzzy_margin_threshold = fuzzy_margin_threshold
+        self._semantic_score_threshold = semantic_score_threshold
+        self._semantic_margin_threshold = semantic_margin_threshold
         self._trusted_collision_margin = trusted_collision_margin
 
     def decide(self, candidates: list[InventoryCandidate]) -> MatchDecision:
@@ -63,20 +67,28 @@ class MatchConfidencePolicy:
                 reason=f"Resolved by {top.match_method.value}",
             )
 
-        if (
-            top.match_score >= self._fuzzy_score_threshold
-            and margin >= self._fuzzy_margin_threshold
-        ):
+        is_semantic = top.match_method is CandidateMatchMethod.SEMANTIC_RERANK
+        score_threshold = (
+            self._semantic_score_threshold if is_semantic else self._fuzzy_score_threshold
+        )
+        margin_threshold = (
+            self._semantic_margin_threshold if is_semantic else self._fuzzy_margin_threshold
+        )
+        if top.match_score >= score_threshold and margin >= margin_threshold:
             return MatchDecision(
                 status=MatchDecisionStatus.MATCHED,
                 selected=top,
                 candidates=ranked,
-                reason="Fuzzy candidate exceeded the score and separation thresholds",
+                reason=(
+                    "Semantic candidate exceeded the score and separation thresholds"
+                    if is_semantic
+                    else "Fuzzy candidate exceeded the score and separation thresholds"
+                ),
             )
 
         return MatchDecision(
             status=MatchDecisionStatus.NEEDS_CONFIRMATION,
             selected=None,
             candidates=ranked,
-            reason="Fuzzy evidence is weak or ambiguous",
+            reason="Approximate-match evidence is weak or ambiguous",
         )

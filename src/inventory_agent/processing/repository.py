@@ -5,6 +5,7 @@ from uuid import UUID
 
 import httpx
 
+from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.processing.models import (
     ClaimedProcessingOutcome,
     OutboxCompletionStatus,
@@ -60,6 +61,9 @@ class ProcessingOutboxDeliveryRepository(Protocol):
 
     async def get_proposal_view(self, proposal_id: UUID) -> ProposalConfirmationView:
         """Load the projection used to render a proposal confirmation."""
+
+    async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
+        """Load suggestions or submitted details for a catalog creation request."""
 
 
 class SupabaseSourceEventWorkRepository:
@@ -246,6 +250,13 @@ class SupabaseProcessingOutboxDeliveryRepository:
             {"p_proposal_id": str(proposal_id)},
         )
         return ProposalConfirmationView.model_validate(response.json())
+
+    async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
+        response = await self._post_rpc(
+            "get_catalog_item_creation_view",
+            {"p_request_id": str(request_id)},
+        )
+        return CatalogItemCreationView.model_validate(response.json())
 
     async def _post_rpc(self, function_name: str, body: dict[str, object]) -> httpx.Response:
         async with httpx.AsyncClient(

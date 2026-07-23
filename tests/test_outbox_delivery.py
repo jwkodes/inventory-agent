@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.models import (
     ClaimedProcessingOutcome,
@@ -18,6 +19,7 @@ PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000005")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000006")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000005")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000002")
+CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000005")
 
 
 class FakeRepository:
@@ -68,6 +70,22 @@ class FakeRepository:
             ],
         )
 
+    async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
+        assert request_id == CATALOG_REQUEST_ID
+        return CatalogItemCreationView(
+            request_id=request_id,
+            status="awaiting_confirmation",
+            suggested_name="Purple Widget",
+            suggested_sku="ZX-999",
+            suggested_base_unit="each",
+            suggested_tracking_mode="simple",
+            name="Purple Widget",
+            sku="ZX-999",
+            base_unit="each",
+            tracking_mode="simple",
+            attributes={"colour": "purple"},
+        )
+
 
 class FakeSender:
     def __init__(self, error: Exception | None = None) -> None:
@@ -100,6 +118,8 @@ def outcome(
         aggregate_id={
             ProcessingOutcomeType.PROPOSAL_READY: PROPOSAL_ID,
             ProcessingOutcomeType.TRANSACTION_APPLIED: TRANSACTION_ID,
+            ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED: CATALOG_REQUEST_ID,
+            ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION: CATALOG_REQUEST_ID,
             ProcessingOutcomeType.REVERSAL_REASON_REQUIRED: PROPOSAL_ID,
             ProcessingOutcomeType.REVERSAL_CONFIRMATION: PROPOSAL_ID,
         }.get(outcome_type),
@@ -172,6 +192,30 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages[0][1] == "Inventory updated."
     assert sender.messages[0][2] is not None
+
+
+async def test_delivers_catalog_detail_prompt_and_confirmation_as_new_messages() -> None:
+    for outcome_type, expected_text in [
+        (
+            ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED,
+            "Reply naturally",
+        ),
+        (
+            ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+            "Create this catalog item?",
+        ),
+    ]:
+        repository = FakeRepository(outcome(outcome_type))
+        sender = FakeSender()
+
+        result = await TelegramOutboxDeliveryWorker(
+            repository=repository,
+            sender=sender,
+        ).deliver_one()
+
+        assert result.status is OutboxDeliveryStatus.SENT
+        assert expected_text in sender.messages[0][1]
+        assert sender.messages[0][2] is not None
 
 
 async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:

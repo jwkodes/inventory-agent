@@ -103,6 +103,45 @@ def test_close_fuzzy_candidates_require_confirmation() -> None:
     assert decision.status is MatchDecisionStatus.NEEDS_CONFIRMATION
 
 
+def test_clear_semantic_candidate_is_selected_on_its_own_scale() -> None:
+    candidates = [
+        candidate(
+            variant_suffix=1,
+            method=CandidateMatchMethod.SEMANTIC_RERANK,
+            score="0.45",
+        ),
+        candidate(
+            variant_suffix=2,
+            method=CandidateMatchMethod.SEMANTIC_RERANK,
+            score="0.25",
+        ),
+    ]
+
+    decision = MatchConfidencePolicy().decide(candidates)
+
+    assert decision.status is MatchDecisionStatus.MATCHED
+    assert decision.selected == candidates[0]
+
+
+def test_ambiguous_semantic_candidates_require_confirmation() -> None:
+    candidates = [
+        candidate(
+            variant_suffix=1,
+            method=CandidateMatchMethod.SEMANTIC_RERANK,
+            score="0.42",
+        ),
+        candidate(
+            variant_suffix=2,
+            method=CandidateMatchMethod.SEMANTIC_RERANK,
+            score="0.38",
+        ),
+    ]
+
+    decision = MatchConfidencePolicy().decide(candidates)
+
+    assert decision.status is MatchDecisionStatus.NEEDS_CONFIRMATION
+
+
 def test_no_candidates_returns_not_found() -> None:
     decision = MatchConfidencePolicy().decide([])
 

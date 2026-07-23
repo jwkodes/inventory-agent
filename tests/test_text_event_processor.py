@@ -5,6 +5,11 @@ from uuid import UUID
 
 import pytest
 
+from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
+from inventory_agent.catalog.models import (
+    CatalogItemCreationView,
+    ExtractedCatalogItemDetails,
+)
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import (
     ExtractedCommandLine,
@@ -38,6 +43,7 @@ ITEM_ID = UUID("20000000-0000-0000-0000-000000000003")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000004")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000004")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000004")
+CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000004")
 
 
 class FakeEvents:
@@ -145,7 +151,77 @@ class FakeReversals:
         raise AssertionError("text processor does not cancel reversals")
 
 
-def context() -> TelegramTextEventContext:
+class FakeCatalog:
+    def __init__(self, request_id: UUID | None = None) -> None:
+        self.request_id = request_id
+        self.drafts: list[ExtractedCatalogItemDetails] = []
+
+    async def begin(self, *, line_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
+        raise AssertionError("text processor does not begin catalog creation")
+
+    async def show_existing(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("text processor does not show candidates")
+
+    async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
+        return self.request_id
+
+    async def get_view(self, *, request_id: UUID) -> CatalogItemCreationView:
+        assert request_id == self.request_id
+        return CatalogItemCreationView(
+            request_id=request_id,
+            status="awaiting_details",
+            suggested_name="Purple Widget",
+            suggested_sku=None,
+            suggested_base_unit="each",
+            suggested_tracking_mode="simple",
+        )
+
+    async def save_details(self, **kwargs: object) -> UUID:
+        assert self.request_id is not None
+        return self.request_id
+
+    async def save_draft(
+        self,
+        *,
+        request_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+        details: ExtractedCatalogItemDetails,
+    ) -> UUID:
+        self.drafts.append(details)
+        return request_id
+
+    async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("text processor does not confirm catalog creation")
+
+    async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("text processor does not cancel catalog creation")
+
+
+class FakeCatalogInterpreter:
+    def __init__(self, details: ExtractedCatalogItemDetails | None = None) -> None:
+        self.details = details or ExtractedCatalogItemDetails(
+            name=None,
+            sku="ZX-999",
+            base_unit=None,
+            tracking_mode=None,
+            attributes=[],
+        )
+
+    async def interpret(
+        self,
+        *,
+        user_text: str,
+        view: CatalogItemCreationView,
+    ) -> CatalogDetailsExtractionResult:
+        return CatalogDetailsExtractionResult(
+            details=self.details,
+            response_id="resp_catalog",
+            model="gpt-test",
+        )
+
+
+def context(message_text: str = "received three AMOX-500") -> TelegramTextEventContext:
     return TelegramTextEventContext(
         event_id=EVENT_ID,
         organization_id=ORGANIZATION_ID,
@@ -154,7 +230,7 @@ def context() -> TelegramTextEventContext:
         external_event_id="70004",
         chat_id=-100123,
         telegram_user_id=100000001,
-        message_text="received three AMOX-500",
+        message_text=message_text,
     )
 
 
@@ -213,6 +289,8 @@ def processor(
     interpreted: ExtractedInventoryCommand | Exception,
     decision: MatchDecision | None = None,
     reversal_request_id: UUID | None = None,
+    catalog_request_id: UUID | None = None,
+    catalog_details: ExtractedCatalogItemDetails | None = None,
 ) -> tuple[TelegramTextEventProcessor, FakeProposals, FakeOutbox]:
     proposals = FakeProposals()
     outbox = FakeOutbox()
@@ -226,10 +304,12 @@ def processor(
         TelegramTextEventProcessor(
             events=events,
             interpreter=FakeInterpreter(interpreted),
+            catalog_interpreter=FakeCatalogInterpreter(catalog_details),
             matcher=FakeMatcher(decision or fallback),
             proposals=proposals,
             outbox=outbox,
             reversals=FakeReversals(reversal_request_id),
+            catalog=FakeCatalog(catalog_request_id),
         ),
         proposals,
         outbox,
@@ -364,3 +444,49 @@ async def test_pending_reversal_consumes_text_before_model_interpretation() -> N
     assert outbox.drafts[0].aggregate_id == REVERSAL_REQUEST_ID
     assert outbox.drafts[0].payload == {"reason": "received three AMOX-500"}
     assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_pending_catalog_request_consumes_details_before_model() -> None:
+    events = FakeEvents(context("Call it Purple Widget; use ZX-999 and count each one."))
+    service, proposals, outbox = processor(
+        events=events,
+        interpreted=AssertionError("OpenAI must not run for catalog details"),
+        catalog_request_id=CATALOG_REQUEST_ID,
+    )
+
+    result = await service.process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION
+    assert result.catalog_request_id == CATALOG_REQUEST_ID
+    assert proposals.drafts == []
+    assert outbox.drafts[0].outcome_type.value == "catalog_item_confirmation"
+    assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_pending_catalog_request_asks_only_for_missing_information() -> None:
+    events = FakeEvents(context("It is counted individually."))
+    service, proposals, outbox = processor(
+        events=events,
+        interpreted=AssertionError("command extraction must not run"),
+        catalog_request_id=CATALOG_REQUEST_ID,
+        catalog_details=ExtractedCatalogItemDetails(
+            name=None,
+            sku=None,
+            base_unit="each",
+            tracking_mode=None,
+            attributes=[],
+        ),
+    )
+
+    result = await service.process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.CLARIFICATION_REQUIRED
+    assert proposals.drafts == []
+    assert outbox.drafts[0].payload == {
+        "message": (
+            "I still need SKU or internal product code. "
+            "Reply naturally with the missing information."
+        )
+    }

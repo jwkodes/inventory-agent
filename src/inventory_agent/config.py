@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-luna"
     openai_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "none"
+    openai_embedding_model: str = "text-embedding-3-small"
+    openai_embedding_dimensions: Literal[512] = 512
+    inventory_matching_strategy: Literal["semantic", "fuzzy", "hybrid"] = "semantic"
 
     telegram_bot_token: SecretStr | None = None
     telegram_webhook_secret: SecretStr | None = None

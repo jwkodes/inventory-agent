@@ -142,6 +142,26 @@ class TelegramCallbackEventProcessor:
             aggregate_id = result_id
             payload: dict[str, object] = {}
             text = "Item selected. See the new confirmation message."
+        elif action is CallbackAction.SHOW_EXISTING_ITEMS:
+            outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+            aggregate_id = result_id
+            payload = {}
+            text = "Existing candidates requested. See the new selection message."
+        elif action is CallbackAction.ADD_NEW_ITEM:
+            outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+            aggregate_id = result_id
+            payload = {}
+            text = "New item requested. See the new details message."
+        elif action is CallbackAction.CONFIRM_NEW_ITEM:
+            outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+            aggregate_id = result_id
+            payload = {}
+            text = "Catalog item created. See the resumed transaction proposal."
+        elif action is CallbackAction.CANCEL_NEW_ITEM:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "Catalog item creation cancelled."}
+            text = "Catalog item creation cancelled."
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id

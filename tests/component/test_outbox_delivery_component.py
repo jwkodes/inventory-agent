@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
+from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
@@ -104,6 +105,11 @@ class FixedCommandInterpreter:
             response_id="component-response",
             model="component-fake-model",
         )
+
+
+class UnusedCatalogDetailsInterpreter:
+    async def interpret(self, **kwargs: object) -> object:
+        raise AssertionError("no catalog request is pending in this component test")
 
 
 class FixedInvoiceImageInterpreter:
@@ -265,6 +271,7 @@ async def test_delivery_crosses_python_and_local_supabase_boundaries() -> None:
 async def test_text_processing_crosses_python_and_local_supabase_boundaries() -> None:
     settings, secret_key = local_supabase()
     event_id = uuid4()
+    component_chat_id = -(1_000_000_000 + event_id.int % 1_000_000_000)
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
     async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
@@ -283,7 +290,7 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                     "message": {
                         "message_id": 88,
                         "from": {"id": telegram_user_id},
-                        "chat": {"id": telegram_user_id},
+                        "chat": {"id": component_chat_id},
                         "text": "received three AMOX-500",
                     },
                 },
@@ -297,6 +304,7 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                     secret_key=secret_key,
                 ),
                 interpreter=FixedCommandInterpreter(),
+                catalog_interpreter=UnusedCatalogDetailsInterpreter(),  # type: ignore[arg-type]
                 matcher=InventoryItemMatcher(
                     repository=SupabaseInventoryCandidateRepository(
                         supabase_url=settings.supabase_url,
@@ -312,6 +320,10 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                     secret_key=secret_key,
                 ),
                 reversals=SupabaseReversalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                catalog=SupabaseCatalogItemCreationRepository(
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),
@@ -594,6 +606,10 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                         secret_key=secret_key,
                     ),
                     reversals=SupabaseReversalRepository(
+                        supabase_url=settings.supabase_url,
+                        secret_key=secret_key,
+                    ),
+                    catalog=SupabaseCatalogItemCreationRepository(
                         supabase_url=settings.supabase_url,
                         secret_key=secret_key,
                     ),

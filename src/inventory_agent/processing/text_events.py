@@ -3,6 +3,10 @@
 from typing import Protocol
 from uuid import UUID
 
+from inventory_agent.catalog.details import complete_catalog_item_details
+from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
+from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.repository import CatalogItemCreationRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.processing.commands import InventoryCommandHandler, ItemMatcher
 from inventory_agent.processing.models import (
@@ -25,6 +29,16 @@ class CommandInterpreter(Protocol):
         """Extract a strict inventory command from one message."""
 
 
+class CatalogDetailsInterpreter(Protocol):
+    async def interpret(
+        self,
+        *,
+        user_text: str,
+        view: CatalogItemCreationView,
+    ) -> CatalogDetailsExtractionResult:
+        """Extract catalog fields from a free-form user reply."""
+
+
 class TextEventProcessingError(RuntimeError):
     """A claimed event failed and was recorded as failed."""
 
@@ -37,15 +51,19 @@ class TelegramTextEventProcessor:
         *,
         events: SourceEventWorkRepository,
         interpreter: CommandInterpreter,
+        catalog_interpreter: CatalogDetailsInterpreter,
         matcher: ItemMatcher,
         proposals: ProposalRepository,
         outbox: ProcessingOutboxRepository,
         reversals: ReversalRepository,
+        catalog: CatalogItemCreationRepository,
     ) -> None:
         self._events = events
         self._interpreter = interpreter
+        self._catalog_interpreter = catalog_interpreter
         self._outbox = outbox
         self._reversals = reversals
+        self._catalog = catalog
         self._commands = InventoryCommandHandler(
             matcher=matcher,
             proposals=proposals,
@@ -100,8 +118,81 @@ class TelegramTextEventProcessor:
                     outbox_id=outbox_id,
                 )
 
-            extraction = await self._interpreter.interpret(context.message_text)
-            result = await self._commands.handle(context=context, extraction=extraction)
+            catalog_request_id = await self._catalog.find_pending(
+                actor_id=context.organization_user_id,
+                chat_id=context.chat_id,
+            )
+            if catalog_request_id is not None:
+                catalog_view = await self._catalog.get_view(request_id=catalog_request_id)
+                catalog_extraction = await self._catalog_interpreter.interpret(
+                    user_text=context.message_text,
+                    view=catalog_view,
+                )
+                details, missing = complete_catalog_item_details(
+                    extracted=catalog_extraction.details,
+                    view=catalog_view,
+                )
+                if details is None:
+                    await self._catalog.save_draft(
+                        request_id=catalog_request_id,
+                        event_id=context.event_id,
+                        actor_id=context.organization_user_id,
+                        details=catalog_extraction.details,
+                    )
+                    outbox_id = await self._outbox.enqueue(
+                        ProcessingOutcomeDraft(
+                            organization_id=context.organization_id,
+                            source_event_id=context.event_id,
+                            outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                            chat_id=context.chat_id,
+                            payload={
+                                "message": (
+                                    "I still need "
+                                    f"{_natural_list(missing)}. "
+                                    "Reply naturally with the missing information."
+                                )
+                            },
+                        )
+                    )
+                    await self._require_finish(context.event_id)
+                    return TextEventProcessingResult(
+                        event_id=context.event_id,
+                        status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                        chat_id=context.chat_id,
+                        catalog_request_id=catalog_request_id,
+                        outbox_id=outbox_id,
+                    )
+
+                await self._catalog.save_details(
+                    request_id=catalog_request_id,
+                    event_id=context.event_id,
+                    actor_id=context.organization_user_id,
+                    details=details,
+                )
+                outbox_id = await self._outbox.enqueue(
+                    ProcessingOutcomeDraft(
+                        organization_id=context.organization_id,
+                        source_event_id=context.event_id,
+                        outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+                        aggregate_id=catalog_request_id,
+                        chat_id=context.chat_id,
+                        payload={},
+                    )
+                )
+                await self._require_finish(context.event_id)
+                return TextEventProcessingResult(
+                    event_id=context.event_id,
+                    status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
+                    chat_id=context.chat_id,
+                    catalog_request_id=catalog_request_id,
+                    outbox_id=outbox_id,
+                )
+
+            command_extraction = await self._interpreter.interpret(context.message_text)
+            result = await self._commands.handle(
+                context=context,
+                extraction=command_extraction,
+            )
             await self._require_finish(context.event_id)
             return result
         except Exception as error:
@@ -121,3 +212,9 @@ class TelegramTextEventProcessor:
     async def _require_finish(self, event_id: UUID) -> None:
         if not await self._events.finish_event(event_id=event_id, success=True):
             raise RuntimeError("Claimed source event could not be completed")
+
+
+def _natural_list(values: list[str]) -> str:
+    if len(values) == 1:
+        return values[0]
+    return f"{', '.join(values[:-1])}, and {values[-1]}"

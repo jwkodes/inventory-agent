@@ -264,6 +264,44 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
     assert outbox.drafts[0].payload == {"message": "Reversal cancelled."}
 
 
+@pytest.mark.parametrize(
+    ("action", "result_id", "outcome_type"),
+    [
+        (
+            CallbackAction.ADD_NEW_ITEM,
+            PROPOSAL_ID,
+            "catalog_item_details_required",
+        ),
+        (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, "proposal_ready"),
+        (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, "proposal_ready"),
+        (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, "callback_notice"),
+    ],
+)
+async def test_catalog_actions_send_new_outbox_messages(
+    action: CallbackAction,
+    result_id: UUID,
+    outcome_type: str,
+) -> None:
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                action,
+                result_id,
+                "Catalog action completed",
+            )
+        ),
+        message_editor=RecordingEditor(),
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == outcome_type
+
+
 async def test_invalid_callback_is_completed_without_editing_message() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()

@@ -58,3 +58,43 @@ async def test_repository_calls_rpc_and_parses_decimal_score() -> None:
     assert candidates[0].match_method is CandidateMatchMethod.EXACT_IDENTIFIER
     assert candidates[0].match_score == Decimal("1.0000000")
     assert candidates[0].display_name == "Amoxicillin 500mg"
+
+
+async def test_repository_calls_unfiltered_fallback_browse_rpc() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/v1/rpc/browse_inventory_candidates"
+        assert json.loads(request.content) == {
+            "p_organization_id": str(ORGANIZATION_ID),
+            "p_query": "purple widget",
+            "p_limit": 5,
+        }
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "item_variant_id": "21000000-0000-0000-0000-000000000001",
+                    "item_id": "20000000-0000-0000-0000-000000000001",
+                    "item_name": "Anchor Butter 500g",
+                    "variant_name": None,
+                    "sku": "BUTTER-ANCHOR-500G",
+                    "base_unit": "each",
+                    "tracking_mode": "simple",
+                    "match_method": "text_search",
+                    "match_score": "0.0100000",
+                    "match_evidence": {"source": "fallback_trigram"},
+                }
+            ],
+        )
+
+    repository = SupabaseInventoryCandidateRepository(
+        supabase_url="http://supabase.test",
+        secret_key="test-secret",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    candidates = await repository.browse_candidates(
+        organization_id=ORGANIZATION_ID,
+        query="purple widget",
+    )
+
+    assert candidates[0].match_score == Decimal("0.0100000")

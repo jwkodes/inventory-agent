@@ -46,8 +46,6 @@ class ExtractedItemReference(BaseModel):
 
     @model_validator(mode="after")
     def validate_reference_value(self) -> Self:
-        if self.type is ItemReferenceType.UNKNOWN and self.value is not None:
-            raise ValueError("unknown item references cannot have a value")
         if self.type is not ItemReferenceType.UNKNOWN and not self.value:
             raise ValueError("known item references require a value")
         return self
@@ -64,6 +62,14 @@ class ExtractedCommandLine(BaseModel):
     quantity: str | None
     unit: str | None
     attributes: list[ExtractedAttribute]
+
+    @model_validator(mode="after")
+    def fill_missing_description_from_reference(self) -> Self:
+        """Keep quantity and units out of the catalog-facing item description."""
+
+        if not (self.description or "").strip() and self.item_reference.value:
+            self.description = self.item_reference.value.strip()
+        return self
 
     @field_validator("quantity")
     @classmethod
