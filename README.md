@@ -10,6 +10,8 @@ foundation, a health endpoint, the first Supabase inventory schema, atomic stock
 application, immutable movements, compensating reversals, and authenticated,
 idempotent Telegram webhook ingestion. A versioned Structured Outputs contract and
 OpenAI Responses API interpreter are ready for the text-processing worker.
+Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
+then falls back to typo-tolerant PostgreSQL trigram candidates.
 
 ## Architecture principles
 
@@ -247,6 +249,23 @@ has an explicit clarification state, and refusals are raised separately. Provide
 ID, model, prompt version, and token usage are returned for later persistence and
 evaluation. Automated tests use local fake responses and never spend API credits.
 
+## Item matching
+
+Candidate retrieval is implemented by the organization-scoped
+`find_inventory_candidates` PostgreSQL function. It ranks evidence in this order:
+
+1. Exact normalized SKU, barcode, manufacturer part number, or supplier part number.
+2. Exact human-confirmed alias, optionally scoped to a supplier.
+3. Trigram similarity across item names, variant names, SKUs, and confirmed aliases.
+
+[`policy.py`](src/inventory_agent/matching/policy.py) converts ranked candidates into
+`matched`, `needs_confirmation`, or `not_found`. Exact evidence is normally accepted, but
+conflicting trusted results require human selection. A fuzzy result currently needs a
+score of at least `0.72` and a lead of at least `0.12` over the next candidate. These are
+prototype baselines to calibrate on labelled SME examples, not probabilities. Semantic
+retrieval may later rerank the small candidate set; it will not bypass this policy or the
+user's transaction confirmation.
+
 ## Repository layout
 
 ```text
@@ -297,8 +316,8 @@ data only and must never be loaded into production.
 2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
 3. Telegram webhook authentication and idempotent event ingestion — complete
 4. Text intent extraction using a strict structured schema — complete
-5. Exact identifier, alias, and fuzzy name matching — next
-6. Telegram confirmation, editing, cancellation, and reversal
+5. Exact identifier, alias, and fuzzy name matching — complete
+6. Telegram confirmation, editing, cancellation, and reversal — next
 7. Invoice image extraction
 8. Voice-note transcription
 9. Semantic candidate retrieval and calibrated confidence policies

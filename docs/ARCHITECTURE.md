@@ -113,7 +113,7 @@ Resolve each extracted item using this ordered strategy:
 
 1. Exact organization-scoped SKU, barcode, or part number.
 2. Exact organization-and-supplier-scoped human-confirmed alias.
-3. Normalized PostgreSQL full-text and trigram search.
+3. Normalized PostgreSQL trigram search.
 4. Embedding retrieval for a small candidate set.
 5. Model reranking for genuinely ambiguous candidates.
 6. Human candidate selection when evidence remains insufficient.
@@ -124,6 +124,12 @@ top-candidate margin, alias history, and results measured on labelled examples.
 
 During the prototype, every inventory write requires confirmation. A low-confidence item
 also requires explicit candidate selection before transaction confirmation.
+
+The implemented baseline accepts a fuzzy candidate only when its normalized score is at
+least `0.72` and its margin over the runner-up is at least `0.12`. Exact identifiers and
+confirmed aliases are trusted unless another trusted candidate is within `0.02`. These
+values are configuration points for evaluation, not model-reported confidence or fixed
+product promises.
 
 ### Transaction service
 
