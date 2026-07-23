@@ -280,11 +280,17 @@ resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets c
 buttons and cannot be confirmed. Immediate callback acknowledgement and outbound Telegram
 delivery are the next integration step.
 
-The database action layer supports selecting an offered variant for a pending simple item
-and cancelling a pending proposal. Selection rechecks organization membership, verifies
-that the variant was actually offered, derives its base-unit delta, and records
-`human_selected` evidence. Lot- and serial-tracked selections remain blocked until their
-required tracking-detail prompts are implemented.
+The callback dispatcher acknowledges valid Telegram button presses before database work,
+then routes decoded Select, Confirm, and Cancel actions to separate database functions.
+Malformed callback data is acknowledged with an alert and never reaches Supabase. Confirm
+uses the existing atomic `apply_inventory_proposal` function; duplicate confirmations
+remain safe at the database boundary.
+
+Variant selection rechecks organization membership, verifies that the variant was actually
+offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and
+serial-tracked selections remain blocked until their required tracking-detail prompts are
+implemented. Reversal buttons do not execute immediately because the system must collect
+and retain a reason first.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
