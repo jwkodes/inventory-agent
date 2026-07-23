@@ -37,6 +37,7 @@ VARIANT_ID = UUID("21000000-0000-0000-0000-000000000003")
 ITEM_ID = UUID("20000000-0000-0000-0000-000000000003")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000004")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000004")
+REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000004")
 
 
 class FakeEvents:
@@ -112,6 +113,38 @@ class FakeOutbox:
         return OUTBOX_ID
 
 
+class FakeReversals:
+    def __init__(self, request_id: UUID | None = None) -> None:
+        self.request_id = request_id
+        self.reasons: list[tuple[UUID, UUID, int, str]] = []
+
+    async def begin(
+        self,
+        *,
+        transaction_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+    ) -> UUID:
+        raise AssertionError("text processor does not begin reversals")
+
+    async def capture_reason(
+        self,
+        *,
+        event_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+        reason: str,
+    ) -> UUID | None:
+        self.reasons.append((event_id, actor_id, chat_id, reason))
+        return self.request_id
+
+    async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("text processor does not confirm reversals")
+
+    async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("text processor does not cancel reversals")
+
+
 def context() -> TelegramTextEventContext:
     return TelegramTextEventContext(
         event_id=EVENT_ID,
@@ -179,6 +212,7 @@ def processor(
     events: FakeEvents,
     interpreted: ExtractedInventoryCommand | Exception,
     decision: MatchDecision | None = None,
+    reversal_request_id: UUID | None = None,
 ) -> tuple[TelegramTextEventProcessor, FakeProposals, FakeOutbox]:
     proposals = FakeProposals()
     outbox = FakeOutbox()
@@ -195,6 +229,7 @@ def processor(
             matcher=FakeMatcher(decision or fallback),
             proposals=proposals,
             outbox=outbox,
+            reversals=FakeReversals(reversal_request_id),
         ),
         proposals,
         outbox,
@@ -311,3 +346,21 @@ async def test_processing_failure_is_recorded_without_provider_error_details() -
         await service.process(EVENT_ID)
 
     assert events.finishes == [(EVENT_ID, False, "RuntimeError: text event processing failed")]
+
+
+async def test_pending_reversal_consumes_text_before_model_interpretation() -> None:
+    events = FakeEvents(context())
+    service, proposals, outbox = processor(
+        events=events,
+        interpreted=AssertionError("OpenAI must not run for a pending reversal reason"),
+        reversal_request_id=REVERSAL_REQUEST_ID,
+    )
+
+    result = await service.process(EVENT_ID)
+
+    assert result.status is TextEventProcessingStatus.REVERSAL_CONFIRMATION
+    assert result.reversal_request_id == REVERSAL_REQUEST_ID
+    assert proposals.drafts == []
+    assert outbox.drafts[0].aggregate_id == REVERSAL_REQUEST_ID
+    assert outbox.drafts[0].payload == {"reason": "received three AMOX-500"}
+    assert events.finishes == [(EVENT_ID, True, None)]

@@ -12,6 +12,9 @@ ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000001")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000001")
+TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
+REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
+REVERSAL_TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000002")
 
 
 class RecordingAnswerer:
@@ -51,15 +54,60 @@ class RecordingActions:
         return proposal_id
 
 
+class RecordingReversals:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def begin(
+        self,
+        *,
+        transaction_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+    ) -> UUID:
+        assert (transaction_id, actor_id, chat_id) == (TRANSACTION_ID, ACTOR_ID, -100123)
+        self.events.append("begin_reversal")
+        return REVERSAL_REQUEST_ID
+
+    async def capture_reason(
+        self,
+        *,
+        event_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+        reason: str,
+    ) -> UUID | None:
+        raise AssertionError("dispatcher does not capture text reasons")
+
+    async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
+        self.events.append("confirm_reversal")
+        return REVERSAL_TRANSACTION_ID
+
+    async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
+        self.events.append("cancel_reversal")
+        return request_id
+
+
+def dispatcher(events: list[str], *, answerer_fails: bool = False) -> TelegramCallbackDispatcher:
+    return TelegramCallbackDispatcher(
+        answerer=RecordingAnswerer(events, fail=answerer_fails),
+        repository=RecordingActions(events),
+        reversals=RecordingReversals(events),
+    )
+
+
 async def test_selection_is_acknowledged_before_database_action() -> None:
     events: list[str] = []
-    dispatcher = TelegramCallbackDispatcher(
-        answerer=RecordingAnswerer(events), repository=RecordingActions(events)
-    )
+    callback_dispatcher = dispatcher(events)
     data = encode_callback(CallbackCommand(CallbackAction.SELECT_VARIANT, LINE_ID, VARIANT_ID))
 
-    outcome = await dispatcher.dispatch(
-        callback_query_id="callback-1", callback_data=data, actor_id=ACTOR_ID
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="callback-1",
+        callback_data=data,
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
     )
 
     assert events == ["ack", "select"]
@@ -70,10 +118,17 @@ async def test_selection_is_acknowledged_before_database_action() -> None:
 async def test_malformed_callback_alerts_without_database_action() -> None:
     events: list[str] = []
     answerer = RecordingAnswerer(events)
-    dispatcher = TelegramCallbackDispatcher(answerer=answerer, repository=RecordingActions(events))
+    callback_dispatcher = TelegramCallbackDispatcher(
+        answerer=answerer,
+        repository=RecordingActions(events),
+        reversals=RecordingReversals(events),
+    )
 
-    outcome = await dispatcher.dispatch(
-        callback_query_id="callback-2", callback_data="forged", actor_id=ACTOR_ID
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="callback-2",
+        callback_data="forged",
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
     )
 
     assert events == ["ack"]
@@ -83,14 +138,13 @@ async def test_malformed_callback_alerts_without_database_action() -> None:
 
 async def test_confirm_and_cancel_route_to_distinct_actions() -> None:
     events: list[str] = []
-    dispatcher = TelegramCallbackDispatcher(
-        answerer=RecordingAnswerer(events), repository=RecordingActions(events)
-    )
+    callback_dispatcher = dispatcher(events)
     for action in (CallbackAction.CONFIRM_PROPOSAL, CallbackAction.CANCEL_PROPOSAL):
-        await dispatcher.dispatch(
+        await callback_dispatcher.dispatch(
             callback_query_id=f"callback-{action}",
             callback_data=encode_callback(CallbackCommand(action, PROPOSAL_ID)),
             actor_id=ACTOR_ID,
+            chat_id=-100123,
         )
 
     assert events == ["ack", "confirm", "ack", "cancel"]
@@ -98,18 +152,45 @@ async def test_confirm_and_cancel_route_to_distinct_actions() -> None:
 
 async def test_expired_acknowledgement_does_not_block_idempotent_database_action() -> None:
     events: list[str] = []
-    dispatcher = TelegramCallbackDispatcher(
-        answerer=RecordingAnswerer(events, fail=True),
-        repository=RecordingActions(events),
-    )
+    callback_dispatcher = dispatcher(events, answerer_fails=True)
 
-    outcome = await dispatcher.dispatch(
+    outcome = await callback_dispatcher.dispatch(
         callback_query_id="expired-callback",
         callback_data=encode_callback(
             CallbackCommand(CallbackAction.CONFIRM_PROPOSAL, PROPOSAL_ID)
         ),
         actor_id=ACTOR_ID,
+        chat_id=-100123,
     )
 
     assert events == ["ack", "confirm"]
     assert outcome.status is CallbackOutcomeStatus.COMPLETED
+
+
+async def test_reversal_actions_route_through_durable_request_lifecycle() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+    cases = [
+        (CallbackAction.REVERSE_TRANSACTION, TRANSACTION_ID, REVERSAL_REQUEST_ID),
+        (CallbackAction.CONFIRM_REVERSAL, REVERSAL_REQUEST_ID, REVERSAL_TRANSACTION_ID),
+        (CallbackAction.CANCEL_REVERSAL, REVERSAL_REQUEST_ID, REVERSAL_REQUEST_ID),
+    ]
+
+    for action, target_id, expected_result in cases:
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, target_id)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == expected_result
+
+    assert events == [
+        "ack",
+        "begin_reversal",
+        "ack",
+        "confirm_reversal",
+        "ack",
+        "cancel_reversal",
+    ]

@@ -53,10 +53,12 @@ class FakeDispatcher:
         callback_query_id: str,
         callback_data: str,
         actor_id: UUID,
+        chat_id: int,
     ) -> CallbackOutcome:
         assert callback_query_id == "callback-query-10"
         assert callback_data == "opaque-callback-data"
         assert actor_id == ACTOR_ID
+        assert chat_id == -100123
         return self.outcome
 
 
@@ -141,7 +143,7 @@ async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() 
     assert events.finishes == [(EVENT_ID, True, None)]
 
 
-async def test_confirmation_replaces_buttons_with_success_message() -> None:
+async def test_confirmation_offers_a_reversal_button() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()
     processor = TelegramCallbackEventProcessor(
@@ -160,8 +162,55 @@ async def test_confirmation_replaces_buttons_with_success_message() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [(-100123, 77, "Inventory updated.", None)]
+    assert editor.edits[0][:3] == (-100123, 77, "Inventory updated.")
+    keyboard = editor.edits[0][3]
+    assert keyboard is not None
+    assert len(keyboard) == 1
     assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
+    events = FakeEvents(context())
+    editor = RecordingEditor()
+    processor = TelegramCallbackEventProcessor(
+        events=events,
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.REVERSE_TRANSACTION,
+                PROPOSAL_ID,
+                "Reversal reason required",
+            )
+        ),
+        proposal_views=FakeProposalViews(),
+        message_editor=editor,
+    )
+
+    await processor.process_next()
+
+    assert "Reply with the reason" in editor.edits[0][2]
+    assert editor.edits[0][3] is not None
+
+
+async def test_confirmed_reversal_removes_buttons() -> None:
+    editor = RecordingEditor()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CONFIRM_REVERSAL,
+                TRANSACTION_ID,
+                "Transaction reversed",
+            )
+        ),
+        proposal_views=FakeProposalViews(),
+        message_editor=editor,
+    )
+
+    await processor.process_next()
+
+    assert editor.edits == [(-100123, 77, "Transaction reversed.", None)]
 
 
 async def test_invalid_callback_is_completed_without_editing_message() -> None:

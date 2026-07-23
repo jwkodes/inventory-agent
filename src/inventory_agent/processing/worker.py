@@ -35,6 +35,7 @@ from inventory_agent.processing.text_events import (
 )
 from inventory_agent.proposals.actions import SupabaseProposalActionRepository
 from inventory_agent.proposals.repository import SupabaseProposalRepository
+from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.client import TelegramBotClient
 
@@ -126,6 +127,10 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        reversal_repository = SupabaseReversalRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         callback_processor = TelegramCallbackEventProcessor(
             events=event_repository,
             dispatcher=TelegramCallbackDispatcher(
@@ -134,6 +139,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),
+                reversals=reversal_repository,
             ),
             proposal_views=proposal_view_repository,
             message_editor=telegram_client,
@@ -159,6 +165,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 supabase_url=settings.supabase_url,
                 secret_key=secret_key,
             ),
+            reversals=reversal_repository,
         )
         delivery_worker = TelegramOutboxDeliveryWorker(
             repository=proposal_view_repository,

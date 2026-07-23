@@ -327,12 +327,13 @@ buttons and cannot be confirmed. The outbox delivery worker renders and sends th
 messages.
 
 Callback webhooks are stored before processing. The callback worker atomically claims the
-oldest due event, resolves its active organization member, and routes decoded Select,
-Confirm, and Cancel actions to separate database functions. It acknowledges valid Telegram
-button presses before database work when possible; an expired acknowledgement does not
-prevent the durable action. Malformed callback data is acknowledged with an alert and
-never reaches Supabase. Confirm uses the existing atomic `apply_inventory_proposal`
-function, so duplicate confirmations remain safe at the database boundary.
+oldest due event, resolves its active organization member, and routes decoded selection,
+proposal, and reversal actions to separate database functions. It acknowledges valid
+Telegram button presses before database work when possible; an expired acknowledgement
+does not prevent the durable action. Malformed callback data is acknowledged with an alert
+and never reaches Supabase. Proposal confirmation uses the existing atomic
+`apply_inventory_proposal` function, so duplicate confirmations remain safe at the
+database boundary.
 
 After an action, the worker edits the original Telegram message: selection refreshes the
 proposal and its buttons, confirmation reports that inventory was updated, and cancellation
@@ -343,8 +344,23 @@ become `failed` after the third unsuccessful attempt, matching text-event handli
 Variant selection rechecks organization membership, verifies that the variant was actually
 offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and
 serial-tracked selections remain blocked until their required tracking-detail prompts are
-implemented. Reversal buttons do not execute immediately because the system must collect
-and retain a reason first.
+implemented.
+
+## Complete transaction reversal
+
+After inventory is updated, the Telegram message offers a Reverse transaction button.
+Only an active manager or admin can start the flow. Pressing it creates or resumes a
+durable `transaction_reversal_requests` record and asks the same user, in the same chat,
+to reply with a reason. The next claimed text message is consumed as that reason before
+OpenAI interpretation, retained with its source event, and delivered back with final
+Confirm reversal and Cancel buttons.
+
+Final confirmation calls `reverse_inventory_transaction` through an idempotent request
+function. PostgreSQL creates a new opposite transaction and movements atomically; it never
+edits or deletes the original ledger. The request retains its reason and compensating
+transaction ID. Cancellation changes no stock. Request creation, reason capture, final
+confirmation, cancellation, and Telegram message edits are safe to replay after a worker
+crash.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
@@ -356,7 +372,8 @@ two"), because those operations have different concurrency and reversal semantic
 to `processing` and resolves its organization member and active inventory location. A
 second worker cannot claim the same event. A claim abandoned for 15 minutes can be reclaimed
 after a worker crash, with every attempt counted for operations and audit. The Python
-processor then:
+processor first checks whether the same member and chat have a reversal waiting for a
+reason. If so, it durably captures the message and skips the model. Otherwise it:
 
 1. Extracts the strict, versioned command.
 2. Matches each mutation line within the organization's catalog.
@@ -364,6 +381,9 @@ processor then:
 4. Enqueues a `proposal_ready`, `clarification_required`, or `unsupported_command` outcome.
 5. Marks the source event `processed`; failures retain only a sanitized error and retry
    after 30 seconds, becoming `failed` after the third unsuccessful attempt.
+
+A captured reversal reason instead enqueues a `reversal_confirmation` outcome through the
+same durable outbox.
 
 The `processing_outbox` is the durable boundary between interpretation and Telegram
 delivery. This matters because a Telegram outage must not cause the OpenAI call or proposal
@@ -433,7 +453,7 @@ data only and must never be loaded into production.
 3. Telegram webhook authentication and idempotent event ingestion — complete
 4. Text intent extraction using a strict structured schema — complete
 5. Exact identifier, alias, and fuzzy name matching — complete
-6. Telegram confirmation, editing, cancellation, and reversal — in progress
+6. Telegram confirmation, editing, cancellation, and complete reversal — complete
 7. Invoice image extraction
 8. Voice-note transcription
 9. Semantic candidate retrieval and calibrated confidence policies

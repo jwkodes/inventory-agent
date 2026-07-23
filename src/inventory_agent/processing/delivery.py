@@ -10,7 +10,10 @@ from inventory_agent.processing.models import (
     ProcessingOutcomeType,
 )
 from inventory_agent.processing.repository import ProcessingOutboxDeliveryRepository
-from inventory_agent.telegram.confirmation import render_proposal_confirmation
+from inventory_agent.telegram.confirmation import (
+    render_proposal_confirmation,
+    render_reversal_confirmation,
+)
 
 
 class TelegramMessageSender(Protocol):
@@ -56,6 +59,21 @@ class TelegramOutboxDeliveryWorker:
                     proposal_id=view.proposal_id,
                     intent_label=_intent_label(view.intent),
                     lines=view.lines,
+                )
+                text = message.text
+                keyboard = [
+                    [button.model_dump(mode="json") for button in row]
+                    for row in message.inline_keyboard
+                ]
+            elif outcome.outcome_type is ProcessingOutcomeType.REVERSAL_CONFIRMATION:
+                if outcome.aggregate_id is None:
+                    raise ValueError("Reversal outcome is missing its request ID")
+                reason = outcome.payload.get("reason")
+                if not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("Reversal outcome is missing its reason")
+                message = render_reversal_confirmation(
+                    request_id=outcome.aggregate_id,
+                    reason=reason.strip(),
                 )
                 text = message.text
                 keyboard = [

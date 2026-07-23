@@ -8,6 +8,7 @@ from uuid import UUID
 import httpx
 
 from inventory_agent.proposals.actions import ProposalActionRepository
+from inventory_agent.reversals.repository import ReversalRepository
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
 
 
@@ -25,7 +26,6 @@ class CallbackOutcomeStatus(StrEnum):
     COMPLETED = "completed"
     INVALID = "invalid"
     FAILED = "failed"
-    NEEDS_FOLLOW_UP = "needs_follow_up"
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +42,11 @@ class TelegramCallbackDispatcher:
         *,
         answerer: CallbackAnswerer,
         repository: ProposalActionRepository,
+        reversals: ReversalRepository,
     ) -> None:
         self._answerer = answerer
         self._repository = repository
+        self._reversals = reversals
 
     async def dispatch(
         self,
@@ -52,6 +54,7 @@ class TelegramCallbackDispatcher:
         callback_query_id: str,
         callback_data: str,
         actor_id: UUID,
+        chat_id: int,
     ) -> CallbackOutcome:
         """Acknowledge first, then execute exactly one decoded database action."""
 
@@ -94,13 +97,27 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Proposal cancelled"
-            else:
-                return CallbackOutcome(
-                    CallbackOutcomeStatus.NEEDS_FOLLOW_UP,
-                    command.action,
-                    None,
-                    "A reversal reason must be collected before reversal",
+            elif command.action is CallbackAction.REVERSE_TRANSACTION:
+                result_id = await self._reversals.begin(
+                    transaction_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
                 )
+                message = "Reversal reason required"
+            elif command.action is CallbackAction.CONFIRM_REVERSAL:
+                result_id = await self._reversals.confirm(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Transaction reversed"
+            elif command.action is CallbackAction.CANCEL_REVERSAL:
+                result_id = await self._reversals.cancel(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Reversal cancelled"
+            else:
+                raise ValueError("Unsupported callback action")
         except (ValueError, RuntimeError, httpx.HTTPError) as error:
             return CallbackOutcome(
                 CallbackOutcomeStatus.FAILED,

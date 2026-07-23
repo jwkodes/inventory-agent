@@ -14,6 +14,8 @@ class CallbackAction(StrEnum):
     CANCEL_PROPOSAL = "x"
     SELECT_VARIANT = "s"
     REVERSE_TRANSACTION = "r"
+    CONFIRM_REVERSAL = "v"
+    CANCEL_REVERSAL = "z"
 
 
 @dataclass(frozen=True, slots=True)

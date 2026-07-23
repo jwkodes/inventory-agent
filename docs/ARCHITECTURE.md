@@ -71,19 +71,23 @@ be idempotent.
 
 Callback queries are persisted by the same gateway. The runtime prioritizes one due
 callback per cycle, resolves the active organization member again at claim time, then
-acknowledges and dispatches only compact decoded actions. Selection, confirmation, and
-cancellation use idempotent database functions and edit the original Telegram message.
-Expired callback acknowledgements do not block database work, and a repeated identical
-message edit is accepted as an already-completed side effect. Failed callback attempts
-retry after 30 seconds and the third failure is retained for operations.
+acknowledges and dispatches only compact decoded actions. Selection, proposal confirmation,
+cancellation, and the reversal lifecycle use idempotent database functions and edit the
+original Telegram message. Expired callback acknowledgements do not block database work,
+and a repeated identical message edit is accepted as an already-completed side effect.
+Failed callback attempts retry after 30 seconds and the third failure is retained for
+operations.
 
 The text worker atomically claims a persisted event, resolves the organization member and
-default active location, then runs extraction, matching, and proposal creation. It writes
-the outcome to `processing_outbox` before completing the source event. Proposal and outbox
-keys are idempotent, so a repeated processing attempt cannot create duplicate business or
-delivery records. A 15-minute claim lease permits recovery after a worker crash. Transient
-processing failures retry after 30 seconds and the third failure is retained for operations.
-The same runtime loop owns a separate delivery component and retry policy.
+default active location, then first offers the text to a reversal request awaiting a reason.
+A matching request consumes it without a model call and enqueues a final reversal review.
+Other text continues through extraction, matching, and proposal creation. The worker writes
+the outcome to `processing_outbox` before completing the source event. Proposal, reversal,
+and outbox actions are idempotent, so a repeated processing attempt cannot create duplicate
+business or delivery records. A 15-minute claim lease permits recovery after a worker
+crash. Transient processing failures retry after 30 seconds and the third failure is
+retained for operations. The same runtime loop owns a separate delivery component and retry
+policy.
 
 The delivery worker claims due outbox records with row locking and `SKIP LOCKED`, preventing
 two healthy workers from delivering the same row concurrently. A claim abandoned for five
@@ -193,6 +197,20 @@ The prototype supports one complete reversal of an applied transaction. The sche
 permit partial reversal later. The negative-stock policy applies to reversals as it does
 to other issues.
 
+The Telegram flow stores a `transaction_reversal_requests` state machine:
+
+```text
+awaiting_reason -> awaiting_confirmation -> completed
+       |                    |
+       +------ cancel ------+-------------> cancelled
+```
+
+Requests bind the original transaction, manager/admin actor, and Telegram chat. The reason
+is linked to its immutable source event and must pass a second human confirmation before
+the existing atomic reversal function runs. A completed request records the compensating
+transaction ID. Every transition is replay-safe; only one complete reversal may exist for
+an original transaction.
+
 ## Inventory model
 
 ### Relational core
@@ -212,6 +230,7 @@ Implemented core tables:
 | `inventory_serials` | Individually tracked units |
 | `inventory_balances` | Current quantity by stock identity and location |
 | `transaction_proposals` | Resolved request awaiting action |
+| `transaction_reversal_requests` | Durable reason and confirmation state for reversals |
 | `inventory_transactions` | Transaction header and lifecycle |
 | `transaction_lines` | Final item, unit, quantity, and matching evidence |
 | `stock_movements` | Immutable inventory ledger |

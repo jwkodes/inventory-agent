@@ -109,3 +109,70 @@ def render_proposal_confirmation(
         )
 
     return ConfirmationMessage(text="\n".join(text_lines), inline_keyboard=keyboard)
+
+
+def render_applied_transaction(transaction_id: UUID) -> ConfirmationMessage:
+    """Offer a complete reversal after a proposal has been applied."""
+
+    return ConfirmationMessage(
+        text="Inventory updated.",
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text="Reverse transaction",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.REVERSE_TRANSACTION, transaction_id)
+                    ),
+                )
+            ]
+        ],
+    )
+
+
+def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
+    """Ask for free text while retaining an explicit cancellation path."""
+
+    return ConfirmationMessage(
+        text=(
+            "Reply with the reason for reversing this transaction. "
+            "The inventory will not change until you confirm."
+        ),
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text="Cancel reversal",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CANCEL_REVERSAL, request_id)
+                    ),
+                )
+            ]
+        ],
+    )
+
+
+def render_reversal_confirmation(*, request_id: UUID, reason: str) -> ConfirmationMessage:
+    """Render the final human checkpoint before applying a reversal."""
+
+    return ConfirmationMessage(
+        text=(
+            "Review complete transaction reversal:\n"
+            f"Reason: {reason}\n"
+            "This will create an opposite inventory transaction."
+        ),
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text="Confirm reversal",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CONFIRM_REVERSAL, request_id)
+                    ),
+                ),
+                InlineButton(
+                    text="Cancel",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CANCEL_REVERSAL, request_id)
+                    ),
+                ),
+            ]
+        ],
+    )

@@ -24,6 +24,7 @@ from inventory_agent.processing.repository import (
 from inventory_agent.processing.text_events import TelegramTextEventProcessor
 from inventory_agent.proposals.actions import SupabaseProposalActionRepository
 from inventory_agent.proposals.repository import SupabaseProposalRepository
+from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
 
@@ -227,6 +228,10 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),
+                reversals=SupabaseReversalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
             )
 
             result = await processor.process_next()
@@ -369,6 +374,10 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                 dispatcher=TelegramCallbackDispatcher(
                     answerer=telegram,
                     repository=SupabaseProposalActionRepository(
+                        supabase_url=settings.supabase_url,
+                        secret_key=secret_key,
+                    ),
+                    reversals=SupabaseReversalRepository(
                         supabase_url=settings.supabase_url,
                         secret_key=secret_key,
                     ),

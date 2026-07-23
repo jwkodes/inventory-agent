@@ -23,6 +23,7 @@ from inventory_agent.processing.repository import (
 )
 from inventory_agent.proposals.models import ProposalDraft, ProposalIntent, ProposalLineDraft
 from inventory_agent.proposals.repository import ProposalRepository
+from inventory_agent.reversals.repository import ReversalRepository
 
 
 class CommandInterpreter(Protocol):
@@ -57,12 +58,14 @@ class TelegramTextEventProcessor:
         matcher: ItemMatcher,
         proposals: ProposalRepository,
         outbox: ProcessingOutboxRepository,
+        reversals: ReversalRepository,
     ) -> None:
         self._events = events
         self._interpreter = interpreter
         self._matcher = matcher
         self._proposals = proposals
         self._outbox = outbox
+        self._reversals = reversals
 
     async def process(self, event_id: UUID) -> TextEventProcessingResult:
         context = await self._events.claim_text_event(event_id)
@@ -86,6 +89,32 @@ class TelegramTextEventProcessor:
         context: TelegramTextEventContext,
     ) -> TextEventProcessingResult:
         try:
+            reversal_request_id = await self._reversals.capture_reason(
+                event_id=context.event_id,
+                actor_id=context.organization_user_id,
+                chat_id=context.chat_id,
+                reason=context.message_text,
+            )
+            if reversal_request_id is not None:
+                outbox_id = await self._outbox.enqueue(
+                    ProcessingOutcomeDraft(
+                        organization_id=context.organization_id,
+                        source_event_id=context.event_id,
+                        outcome_type=ProcessingOutcomeType.REVERSAL_CONFIRMATION,
+                        aggregate_id=reversal_request_id,
+                        chat_id=context.chat_id,
+                        payload={"reason": context.message_text.strip()},
+                    )
+                )
+                await self._require_finish(context.event_id)
+                return TextEventProcessingResult(
+                    event_id=context.event_id,
+                    status=TextEventProcessingStatus.REVERSAL_CONFIRMATION,
+                    chat_id=context.chat_id,
+                    reversal_request_id=reversal_request_id,
+                    outbox_id=outbox_id,
+                )
+
             extraction = await self._interpreter.interpret(context.message_text)
             command = extraction.command
 

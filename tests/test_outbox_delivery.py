@@ -96,7 +96,15 @@ def outcome(
         organization_id=ORGANIZATION_ID,
         source_event_id=EVENT_ID,
         outcome_type=outcome_type,
-        aggregate_id=PROPOSAL_ID if outcome_type is ProcessingOutcomeType.PROPOSAL_READY else None,
+        aggregate_id=(
+            PROPOSAL_ID
+            if outcome_type
+            in {
+                ProcessingOutcomeType.PROPOSAL_READY,
+                ProcessingOutcomeType.REVERSAL_CONFIRMATION,
+            }
+            else None
+        ),
         chat_id=-100123,
         payload=payload or {},
         attempt_number=1,
@@ -134,6 +142,25 @@ async def test_delivers_plain_clarification_message() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages == [(-100123, "Which item?", None)]
+
+
+async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.REVERSAL_CONFIRMATION,
+            payload={"reason": "Wrong delivery was entered"},
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert "Wrong delivery was entered" in sender.messages[0][1]
+    assert sender.messages[0][2] is not None
 
 
 async def test_transient_failure_is_sanitized_and_scheduled_for_retry() -> None:

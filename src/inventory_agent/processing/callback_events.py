@@ -11,8 +11,11 @@ from inventory_agent.telegram.callback_dispatcher import (
 )
 from inventory_agent.telegram.callbacks import CallbackAction
 from inventory_agent.telegram.confirmation import (
+    ConfirmationMessage,
     ProposalConfirmationView,
+    render_applied_transaction,
     render_proposal_confirmation,
+    render_reversal_reason_prompt,
 )
 
 
@@ -23,6 +26,7 @@ class CallbackDispatcher(Protocol):
         callback_query_id: str,
         callback_data: str,
         actor_id: UUID,
+        chat_id: int,
     ) -> CallbackOutcome:
         """Acknowledge and execute one callback action."""
 
@@ -92,6 +96,7 @@ class TelegramCallbackEventProcessor:
                 callback_query_id=context.callback_query_id,
                 callback_data=context.callback_data,
                 actor_id=context.organization_user_id,
+                chat_id=context.chat_id,
             )
             if outcome.status is CallbackOutcomeStatus.FAILED:
                 raise RuntimeError("Callback database action failed")
@@ -103,14 +108,6 @@ class TelegramCallbackEventProcessor:
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
                 )
-            elif outcome.status is CallbackOutcomeStatus.NEEDS_FOLLOW_UP:
-                await self._message_editor.edit_message_text(
-                    chat_id=context.chat_id,
-                    message_id=context.telegram_message_id,
-                    text="Reversal reason capture is not available in this prototype yet.",
-                    inline_keyboard=None,
-                )
-
             if not await self._events.finish_event(event_id=context.event_id, success=True):
                 raise RuntimeError("Claimed callback event could not be completed")
             return CallbackEventProcessingResult(event_id=context.event_id, outcome=outcome)
@@ -152,10 +149,21 @@ class TelegramCallbackEventProcessor:
             ]
             text = message.text
         elif action is CallbackAction.CONFIRM_PROPOSAL:
-            text = "Inventory updated."
-            keyboard = None
+            message = render_applied_transaction(result_id)
+            text = message.text
+            keyboard = _keyboard(message)
         elif action is CallbackAction.CANCEL_PROPOSAL:
             text = "Proposal cancelled."
+            keyboard = None
+        elif action is CallbackAction.REVERSE_TRANSACTION:
+            message = render_reversal_reason_prompt(result_id)
+            text = message.text
+            keyboard = _keyboard(message)
+        elif action is CallbackAction.CONFIRM_REVERSAL:
+            text = "Transaction reversed."
+            keyboard = None
+        elif action is CallbackAction.CANCEL_REVERSAL:
+            text = "Reversal cancelled."
             keyboard = None
         else:
             raise ValueError("Completed callback action is not supported")
@@ -175,3 +183,7 @@ def _intent_label(intent: str) -> str:
         "adjust_stock": "stock adjustment",
     }
     return labels.get(intent, intent.replace("_", " "))
+
+
+def _keyboard(message: ConfirmationMessage) -> list[list[dict[str, str]]]:
+    return [[button.model_dump(mode="json") for button in row] for row in message.inline_keyboard]

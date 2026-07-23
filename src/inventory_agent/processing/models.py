@@ -42,6 +42,7 @@ class ProcessingOutcomeType(StrEnum):
     """Durable handoffs understood by a later outbound-delivery worker."""
 
     PROPOSAL_READY = "proposal_ready"
+    REVERSAL_CONFIRMATION = "reversal_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNSUPPORTED_COMMAND = "unsupported_command"
 
@@ -51,6 +52,7 @@ class TextEventProcessingStatus(StrEnum):
 
     ALREADY_CLAIMED = "already_claimed"
     PROPOSAL_READY = "proposal_ready"
+    REVERSAL_CONFIRMATION = "reversal_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNSUPPORTED_COMMAND = "unsupported_command"
 
@@ -62,6 +64,7 @@ class TextEventProcessingResult(BaseModel):
     status: TextEventProcessingStatus
     chat_id: int | None = None
     proposal_id: UUID | None = None
+    reversal_request_id: UUID | None = None
     outbox_id: UUID | None = None
 
 
