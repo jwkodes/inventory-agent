@@ -6,8 +6,9 @@ human, applied atomically, recorded in an immutable ledger, and reversible throu
 compensating transactions.
 
 This repository is in the prototype stage. It currently includes the application
-foundation, a health endpoint, and the first Supabase inventory schema with demo data,
-atomic stock application, immutable movements, and compensating reversals.
+foundation, a health endpoint, the first Supabase inventory schema, atomic stock
+application, immutable movements, compensating reversals, and authenticated,
+idempotent Telegram webhook ingestion.
 
 ## Architecture principles
 
@@ -133,6 +134,63 @@ Expected response:
 
 Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
+### 7. Connect the Telegram bot
+
+Telegram can deliver webhooks only to a public HTTPS URL. For local development, keep
+the API running and expose port 8000 through an HTTPS tunnel. One development-only
+option is a Cloudflare Quick Tunnel:
+
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+You can use another tunnel provider instead. Copy the generated HTTPS hostname, append
+`/webhooks/telegram`, and put the full URL in `.env` as `TELEGRAM_WEBHOOK_URL`.
+Quick Tunnel hostnames change when restarted and are not suitable for production.
+
+Before registering a webhook, identify your Telegram numeric user ID:
+
+1. Put the BotFather token in `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Send the bot a private message in Telegram.
+3. Run:
+
+```bash
+uv run python -m inventory_agent.telegram.discover_users
+```
+
+In local Supabase Studio at <http://127.0.0.1:54323>, open the SQL editor and replace
+the demo manager's placeholder Telegram ID with the ID printed above:
+
+```sql
+update public.organization_users
+set telegram_user_id = 123456789
+where id = '11000000-0000-0000-0000-000000000001';
+```
+
+Replace `123456789` with your actual ID. Then generate the webhook secret:
+
+```bash
+openssl rand -hex 32
+```
+
+Put the result in `.env` as `TELEGRAM_WEBHOOK_SECRET`, set the tunnel URL in
+`TELEGRAM_WEBHOOK_URL`, and register it:
+
+```bash
+uv run python -m inventory_agent.telegram.setup_webhook
+```
+
+The registration helper sends Telegram only `message` and `callback_query` updates.
+The API verifies Telegram's secret header, resolves the sender to exactly one active
+organization, and stores each Telegram update ID once in `source_events`. It acknowledges
+duplicates safely because Telegram retries webhook deliveries after non-2xx responses.
+
+User discovery uses Telegram's `getUpdates` endpoint, which is unavailable after a
+webhook is active. If the webhook URL changes, update `TELEGRAM_WEBHOOK_URL` and rerun the
+registration command. Never paste a real bot token or webhook secret into source files,
+terminal screenshots, issues, or chat.
+
 ## Development checks
 
 Run these before committing a change:
@@ -166,6 +224,7 @@ Configuration is read from environment variables and `.env` by
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |
 | `TELEGRAM_BOT_TOKEN` | BotFather token | none |
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies Telegram webhook requests | none |
+| `TELEGRAM_WEBHOOK_URL` | Public HTTPS `/webhooks/telegram` endpoint | none |
 | `SUPABASE_URL` | Supabase project API URL | local API URL |
 | `SUPABASE_PUBLISHABLE_KEY` | Client-safe Supabase key | none |
 | `SUPABASE_SECRET_KEY` | Server-only Supabase key | none |
@@ -222,8 +281,8 @@ data only and must never be loaded into production.
 
 1. Project setup and health endpoint — complete
 2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
-3. Telegram webhook authentication and idempotent event ingestion — next
-4. Text intent extraction using a strict structured schema
+3. Telegram webhook authentication and idempotent event ingestion — complete
+4. Text intent extraction using a strict structured schema — next
 5. Exact identifier, alias, and fuzzy name matching
 6. Telegram confirmation, editing, cancellation, and reversal
 7. Invoice image extraction

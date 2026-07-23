@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: SecretStr | None = None
     telegram_webhook_secret: SecretStr | None = None
+    telegram_webhook_url: str | None = None
 
     supabase_url: str = "http://127.0.0.1:54321"
     supabase_publishable_key: SecretStr | None = None

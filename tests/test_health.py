@@ -2,11 +2,11 @@
 
 from httpx import ASGITransport, AsyncClient
 
-from inventory_agent.main import app
+from inventory_agent.main import create_app
 
 
 async def test_health() -> None:
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=create_app())
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/health")
 

@@ -149,7 +149,7 @@ to other issues.
 
 ### Relational core
 
-Planned core tables:
+Implemented core tables:
 
 | Table | Responsibility |
 |---|---|
