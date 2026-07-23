@@ -196,6 +196,19 @@ webhook is active. If the webhook URL changes, update `TELEGRAM_WEBHOOK_URL` and
 registration command. Never paste a real bot token or webhook secret into source files,
 terminal screenshots, issues, or chat.
 
+### 8. Run the outbound delivery worker
+
+The worker needs `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY` in `.env`.
+Run it in a separate terminal:
+
+```bash
+uv run python -m inventory_agent.processing.worker --watch
+```
+
+It polls every two seconds when idle. Use `--poll-seconds N` to choose an interval from
+greater than zero through 60 seconds. Without `--watch`, it claims and delivers at most one
+due outcome, which is useful while debugging.
+
 ## Development checks
 
 Run these before committing a change:
@@ -214,6 +227,30 @@ To apply safe formatting changes:
 ```bash
 uv run ruff format .
 ```
+
+### Testing levels
+
+The test suite deliberately separates these levels:
+
+- Unit and contract tests run Python components with fake OpenAI, Telegram, and Supabase
+  boundaries. They are fast, deterministic, and run with `uv run pytest`.
+- Database component tests run migrations, constraints, and functions against the real
+  local Supabase PostgreSQL using `supabase test db`.
+- Application component tests cross the text processor, matching and proposal adapters,
+  delivery service, and real local Supabase while keeping OpenAI and Telegram fake. They are
+  opt-in because they require running infrastructure and create temporary rows:
+
+```bash
+RUN_COMPONENT_TESTS=1 uv run pytest -m component
+```
+
+Before running that command, start and reset local Supabase and copy its local secret key
+into `.env` as `SUPABASE_SECRET_KEY`. The component test refuses any Supabase URL whose host
+is not `127.0.0.1` or `localhost`, and deletes its temporary source event and outbox row.
+
+Live OpenAI and Telegram end-to-end tests have not been automated yet. Those will use a
+dedicated test bot, test organization, and explicit opt-in so ordinary test runs cannot
+spend API credits or message real users.
 
 ## Configuration
 
@@ -279,8 +316,8 @@ evidence but have no stock delta, so they cannot be applied accidentally.
 Telegram confirmation rendering uses compact opaque callback data containing only action
 codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully
 resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets candidate
-buttons and cannot be confirmed. Immediate callback acknowledgement and outbound Telegram
-delivery are the next integration step.
+buttons and cannot be confirmed. The outbox delivery worker now renders and sends these
+messages, while callback acknowledgement and database action dispatch remain separate.
 
 The callback dispatcher acknowledges valid Telegram button presses before database work,
 then routes decoded Select, Confirm, and Cancel actions to separate database functions.
@@ -315,8 +352,14 @@ processor then:
 The `processing_outbox` is the durable boundary between interpretation and Telegram
 delivery. This matters because a Telegram outage must not cause the OpenAI call or proposal
 creation to run again. Outcome insertion and proposal creation each have database-level
-idempotency keys. A delivery worker that claims pending outbox rows and sends the rendered
-confirmation is the next integration slice.
+idempotency keys. The delivery worker uses skip-locked claims, a five-minute abandoned-claim
+lease, delayed retry, and a dead-letter state after five unsuccessful attempts. It sends
+only outcomes whose source event finished processing.
+
+Telegram delivery is at-least-once: a process crash after Telegram accepts a message but
+before the database records `sent` can result in a duplicate after lease recovery. The
+message and inventory records remain idempotent, but exactly-once visual delivery is not
+available from the Bot API boundary.
 
 The prototype selects the organization's configured `settings.default_location_id` when
 it names an active location; otherwise it deterministically uses the first active location

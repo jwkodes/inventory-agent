@@ -1,0 +1,73 @@
+"""Command-line worker for delivering durable Telegram outcomes."""
+
+import argparse
+import asyncio
+import logging
+from collections.abc import Sequence
+
+from pydantic import SecretStr
+
+from inventory_agent.config import Settings
+from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
+from inventory_agent.processing.models import OutboxDeliveryStatus
+from inventory_agent.processing.repository import SupabaseProcessingOutboxDeliveryRepository
+from inventory_agent.telegram.client import TelegramBotClient
+
+logger = logging.getLogger(__name__)
+
+
+async def run_worker(*, watch: bool, poll_seconds: float) -> None:
+    settings = Settings()
+    secret_key = _required_secret(settings.supabase_secret_key, "SUPABASE_SECRET_KEY")
+    bot_token = _required_secret(settings.telegram_bot_token, "TELEGRAM_BOT_TOKEN")
+    worker = TelegramOutboxDeliveryWorker(
+        repository=SupabaseProcessingOutboxDeliveryRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        ),
+        sender=TelegramBotClient(bot_token=bot_token),
+    )
+
+    while True:
+        result = await worker.deliver_one()
+        logger.info(
+            "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
+            result.status,
+            result.outbox_id,
+            result.telegram_message_id,
+        )
+        if not watch:
+            return
+        if result.status is OutboxDeliveryStatus.IDLE:
+            await asyncio.sleep(poll_seconds)
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Deliver inventory-agent Telegram outcomes")
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep polling instead of delivering at most one outcome",
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=2.0,
+        help="Idle polling interval when --watch is enabled (default: 2)",
+    )
+    args = parser.parse_args(argv)
+    if args.poll_seconds <= 0 or args.poll_seconds > 60:
+        parser.error("--poll-seconds must be greater than 0 and no more than 60")
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_worker(watch=args.watch, poll_seconds=args.poll_seconds))
+
+
+def _required_secret(secret: SecretStr | None, variable_name: str) -> str:
+    value = secret.get_secret_value() if secret is not None else ""
+    if not value:
+        raise RuntimeError(f"{variable_name} is required by the delivery worker")
+    return value
+
+
+if __name__ == "__main__":
+    main()

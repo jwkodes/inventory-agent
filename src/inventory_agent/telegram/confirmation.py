@@ -36,6 +36,16 @@ class ConfirmationMessage(BaseModel):
     inline_keyboard: list[list[InlineButton]]
 
 
+class ProposalConfirmationView(BaseModel):
+    """Database projection required to render one proposal review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: UUID
+    intent: str
+    lines: list[ProposalLineView]
+
+
 def render_proposal_confirmation(
     *,
     proposal_id: UUID,

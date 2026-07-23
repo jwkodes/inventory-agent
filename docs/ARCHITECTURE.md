@@ -76,6 +76,16 @@ keys are idempotent, so a repeated processing attempt cannot create duplicate bu
 delivery records. A 15-minute claim lease permits recovery after a worker crash. A separate
 worker owns Telegram delivery and its retry policy.
 
+The delivery worker claims due outbox records with row locking and `SKIP LOCKED`, preventing
+two healthy workers from delivering the same row concurrently. A claim abandoned for five
+minutes can be recovered. Temporary failures return to `pending`; the fifth failed attempt
+is retained as `failed` for operations rather than retried forever. Only outcomes belonging
+to a `processed` source event are eligible.
+
+This boundary provides at-least-once, not exactly-once, Telegram delivery. If Telegram
+accepts `sendMessage` and the worker crashes before recording `sent`, lease recovery may
+send a duplicate. Inventory application and proposal actions remain idempotent regardless.
+
 ### Source artifact service
 
 - Store original invoice images, PDFs, and voice notes in a private Supabase bucket.

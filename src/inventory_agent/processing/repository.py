@@ -6,9 +6,12 @@ from uuid import UUID
 import httpx
 
 from inventory_agent.processing.models import (
+    ClaimedProcessingOutcome,
+    OutboxCompletionStatus,
     ProcessingOutcomeDraft,
     TelegramTextEventContext,
 )
+from inventory_agent.telegram.confirmation import ProposalConfirmationView
 
 
 class SourceEventWorkRepository(Protocol):
@@ -28,6 +31,24 @@ class SourceEventWorkRepository(Protocol):
 class ProcessingOutboxRepository(Protocol):
     async def enqueue(self, draft: ProcessingOutcomeDraft) -> UUID:
         """Idempotently enqueue an outcome for outbound delivery."""
+
+
+class ProcessingOutboxDeliveryRepository(Protocol):
+    async def claim(self, outbox_id: UUID | None = None) -> ClaimedProcessingOutcome | None:
+        """Claim one due outcome, optionally by ID."""
+
+    async def finish(
+        self,
+        *,
+        outbox_id: UUID,
+        success: bool,
+        error_message: str | None = None,
+        retry_delay_seconds: int = 30,
+    ) -> OutboxCompletionStatus | None:
+        """Complete, reschedule, or dead-letter a claimed outcome."""
+
+    async def get_proposal_view(self, proposal_id: UUID) -> ProposalConfirmationView:
+        """Load the projection used to render a proposal confirmation."""
 
 
 class SupabaseSourceEventWorkRepository:
@@ -124,3 +145,74 @@ class SupabaseProcessingOutboxRepository:
         if not isinstance(outbox_id, str):
             raise ValueError("Supabase returned an invalid processing outbox ID")
         return UUID(outbox_id)
+
+
+class SupabaseProcessingOutboxDeliveryRepository:
+    def __init__(
+        self,
+        *,
+        supabase_url: str,
+        secret_key: str,
+        timeout_seconds: float = 10.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._rest_url = f"{supabase_url.rstrip('/')}/rest/v1"
+        self._headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+        self._timeout_seconds = timeout_seconds
+        self._transport = transport
+
+    async def claim(self, outbox_id: UUID | None = None) -> ClaimedProcessingOutcome | None:
+        response = await self._post_rpc(
+            "claim_processing_outbox",
+            {"p_outbox_id": str(outbox_id) if outbox_id else None},
+        )
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Supabase returned an invalid outbox claim response")
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("Supabase returned more than one claimed outbox outcome")
+        return ClaimedProcessingOutcome.model_validate(rows[0])
+
+    async def finish(
+        self,
+        *,
+        outbox_id: UUID,
+        success: bool,
+        error_message: str | None = None,
+        retry_delay_seconds: int = 30,
+    ) -> OutboxCompletionStatus | None:
+        response = await self._post_rpc(
+            "finish_processing_outbox",
+            {
+                "p_outbox_id": str(outbox_id),
+                "p_success": success,
+                "p_error_message": error_message,
+                "p_retry_delay_seconds": retry_delay_seconds,
+            },
+        )
+        result = response.json()
+        if result is None:
+            return None
+        if not isinstance(result, str):
+            raise ValueError("Supabase returned an invalid outbox completion response")
+        return OutboxCompletionStatus(result)
+
+    async def get_proposal_view(self, proposal_id: UUID) -> ProposalConfirmationView:
+        response = await self._post_rpc(
+            "get_proposal_confirmation_view",
+            {"p_proposal_id": str(proposal_id)},
+        )
+        return ProposalConfirmationView.model_validate(response.json())
+
+    async def _post_rpc(self, function_name: str, body: dict[str, object]) -> httpx.Response:
+        async with httpx.AsyncClient(
+            base_url=self._rest_url,
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            transport=self._transport,
+        ) as client:
+            response = await client.post(f"/rpc/{function_name}", json=body)
+        response.raise_for_status()
+        return response

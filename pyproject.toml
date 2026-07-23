@@ -33,6 +33,9 @@ packages = ["src/inventory_agent"]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "component: exercises multiple application components against local infrastructure",
+]
 
 [tool.ruff]
 line-length = 100

@@ -60,3 +60,39 @@ class ProcessingOutcomeDraft(BaseModel):
     aggregate_id: UUID | None = None
     chat_id: int
     payload: dict[str, Any]
+
+
+class ClaimedProcessingOutcome(BaseModel):
+    """One outbound outcome held by a delivery worker lease."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outbox_id: UUID
+    organization_id: UUID
+    source_event_id: UUID
+    outcome_type: ProcessingOutcomeType
+    aggregate_id: UUID | None = None
+    chat_id: int
+    payload: dict[str, Any]
+    attempt_number: int
+
+
+class OutboxCompletionStatus(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class OutboxDeliveryStatus(StrEnum):
+    IDLE = "idle"
+    SENT = "sent"
+    RETRY_SCHEDULED = "retry_scheduled"
+    DEAD_LETTERED = "dead_lettered"
+
+
+class OutboxDeliveryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: OutboxDeliveryStatus
+    outbox_id: UUID | None = None
+    telegram_message_id: int | None = None
