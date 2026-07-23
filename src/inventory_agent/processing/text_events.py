@@ -8,6 +8,8 @@ from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
 from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.catalog.repository import CatalogItemCreationRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
+from inventory_agent.matching.clarification import MatchClarificationRepository
+from inventory_agent.matching.judge import CandidateJudge
 from inventory_agent.processing.commands import InventoryCommandHandler, ItemMatcher
 from inventory_agent.processing.models import (
     ProcessingOutcomeDraft,
@@ -57,6 +59,8 @@ class TelegramTextEventProcessor:
         outbox: ProcessingOutboxRepository,
         reversals: ReversalRepository,
         catalog: CatalogItemCreationRepository,
+        clarifications: MatchClarificationRepository | None = None,
+        candidate_judge: CandidateJudge | None = None,
     ) -> None:
         self._events = events
         self._interpreter = interpreter
@@ -64,10 +68,13 @@ class TelegramTextEventProcessor:
         self._outbox = outbox
         self._reversals = reversals
         self._catalog = catalog
+        self._clarifications = clarifications
+        self._candidate_judge = candidate_judge
         self._commands = InventoryCommandHandler(
             matcher=matcher,
             proposals=proposals,
             outbox=outbox,
+            clarifications=clarifications,
         )
 
     async def process(self, event_id: UUID) -> TextEventProcessingResult:
@@ -117,6 +124,48 @@ class TelegramTextEventProcessor:
                     reversal_request_id=reversal_request_id,
                     outbox_id=outbox_id,
                 )
+
+            if self._clarifications is not None and self._candidate_judge is not None:
+                clarification_id = await self._clarifications.find_pending(
+                    actor_id=context.organization_user_id,
+                    chat_id=context.chat_id,
+                )
+                if clarification_id is not None:
+                    view = await self._clarifications.get_view(request_id=clarification_id)
+                    judgment = await self._candidate_judge.judge(
+                        line=view.line,
+                        candidates=view.candidates,
+                        clarification_replies=[
+                            *view.clarification_replies,
+                            context.message_text,
+                        ],
+                        accumulated_attributes=view.accumulated_attributes,
+                    )
+                    proposal_id = await self._clarifications.apply(
+                        request_id=clarification_id,
+                        event_id=context.event_id,
+                        actor_id=context.organization_user_id,
+                        user_reply=context.message_text,
+                        judgment=judgment,
+                    )
+                    outbox_id = await self._outbox.enqueue(
+                        ProcessingOutcomeDraft(
+                            organization_id=context.organization_id,
+                            source_event_id=context.event_id,
+                            outcome_type=ProcessingOutcomeType.PROPOSAL_READY,
+                            aggregate_id=proposal_id,
+                            chat_id=context.chat_id,
+                            payload={"proposal_id": str(proposal_id)},
+                        )
+                    )
+                    await self._require_finish(context.event_id)
+                    return TextEventProcessingResult(
+                        event_id=context.event_id,
+                        status=TextEventProcessingStatus.PROPOSAL_READY,
+                        chat_id=context.chat_id,
+                        proposal_id=proposal_id,
+                        outbox_id=outbox_id,
+                    )
 
             catalog_request_id = await self._catalog.find_pending(
                 actor_id=context.organization_user_id,

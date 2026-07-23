@@ -46,6 +46,9 @@ class SupabaseInventoryCandidateRepository:
     ) -> None:
         self._rpc_url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/find_inventory_candidates"
         self._browse_rpc_url = f"{supabase_url.rstrip('/')}/rest/v1/rpc/browse_inventory_candidates"
+        self._context_rpc_url = (
+            f"{supabase_url.rstrip('/')}/rest/v1/rpc/get_inventory_candidate_context"
+        )
         self._timeout_seconds = timeout_seconds
         self._transport = transport
         self._headers = {
@@ -99,7 +102,7 @@ class SupabaseInventoryCandidateRepository:
         rows = response.json()
         if not isinstance(rows, list):
             raise ValueError("Supabase returned an invalid inventory candidate response")
-        return [
+        candidates = [
             InventoryCandidate.model_validate(
                 {
                     **row,
@@ -108,3 +111,56 @@ class SupabaseInventoryCandidateRepository:
             )
             for row in rows
         ]
+        organization_id = body.get("p_organization_id")
+        if candidates and isinstance(organization_id, str):
+            contexts = await self._request_context(
+                organization_id=organization_id,
+                variant_ids=[str(candidate.item_variant_id) for candidate in candidates],
+            )
+            context_by_id = {
+                str(context["item_variant_id"]): context
+                for context in contexts
+                if isinstance(context, dict) and "item_variant_id" in context
+            }
+            candidates = [
+                candidate.model_copy(
+                    update={
+                        "match_evidence": {
+                            **candidate.match_evidence,
+                            **{
+                                key: value
+                                for key, value in context_by_id.get(
+                                    str(candidate.item_variant_id), {}
+                                ).items()
+                                if key != "item_variant_id"
+                            },
+                        }
+                    }
+                )
+                for candidate in candidates
+            ]
+        return candidates
+
+    async def _request_context(
+        self,
+        *,
+        organization_id: str,
+        variant_ids: list[str],
+    ) -> list[object]:
+        async with httpx.AsyncClient(
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            transport=self._transport,
+        ) as client:
+            response = await client.post(
+                self._context_rpc_url,
+                json={
+                    "p_organization_id": organization_id,
+                    "p_item_variant_ids": variant_ids,
+                },
+            )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Supabase returned invalid inventory candidate context")
+        return rows

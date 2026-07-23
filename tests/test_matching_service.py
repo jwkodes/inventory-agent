@@ -4,6 +4,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from inventory_agent.extraction.schema import ExtractedCommandLine, ItemReferenceType
+from inventory_agent.matching.judge import CandidateJudgeOutput
 from inventory_agent.matching.models import (
     CandidateMatchMethod,
     InventoryCandidate,
@@ -69,6 +70,23 @@ class RecordingSemanticRepository:
         assert organization_id == ORGANIZATION_ID
         self.queries.append(query)
         return self.candidates
+
+
+class FixedJudge:
+    def __init__(self, output: CandidateJudgeOutput) -> None:
+        self.output = output
+        self.lines: list[ExtractedCommandLine] = []
+
+    async def judge(
+        self,
+        *,
+        line: ExtractedCommandLine,
+        candidates: list[InventoryCandidate],
+        clarification_replies: list[str] | None = None,
+        accumulated_attributes: dict[str, str] | None = None,
+    ) -> CandidateJudgeOutput:
+        self.lines.append(line)
+        return self.output
 
 
 def candidate(
@@ -191,3 +209,72 @@ async def test_fuzzy_strategy_remains_available_without_embeddings() -> None:
 
     assert decision.status is MatchDecisionStatus.MATCHED
     assert decision.selected == fuzzy
+
+
+async def test_candidate_judge_rejects_semantically_similar_wrong_edition() -> None:
+    switch_two = candidate(
+        suffix=2,
+        method=CandidateMatchMethod.SEMANTIC_RERANK,
+        score="0.91",
+    )
+    line = ExtractedCommandLine(
+        source_text="6 first edition nintendo switch contrler",
+        item_reference={"type": "NAME", "value": "nintendo switch controller"},
+        description="nintendo switch controller",
+        quantity="6",
+        unit=None,
+        attributes=[{"key": "edition", "value": "first edition"}],
+    )
+    judge = FixedJudge(
+        CandidateJudgeOutput(
+            action="NO_MATCH",
+            selected_candidate_id=None,
+            question=None,
+            reason="The offered controller is Switch 2, not first edition.",
+        )
+    )
+    semantic = RecordingSemanticRepository([switch_two])
+
+    decision = await InventoryItemMatcher(
+        repository=RecordingRepository([]),
+        semantic_repository=semantic,
+        judge=judge,
+        strategy=MatchingStrategy.SEMANTIC,
+    ).match_line(organization_id=ORGANIZATION_ID, line=line)
+
+    assert semantic.queries == ["nintendo switch controller | edition: first edition"]
+    assert decision.status is MatchDecisionStatus.NOT_FOUND
+    assert decision.selected is None
+    assert "not first edition" in decision.reason
+
+
+async def test_candidate_judge_can_request_a_colour_clarification() -> None:
+    red = candidate(
+        suffix=1,
+        method=CandidateMatchMethod.SEMANTIC_RERANK,
+        score="0.88",
+    )
+    blue = candidate(
+        suffix=2,
+        method=CandidateMatchMethod.SEMANTIC_RERANK,
+        score="0.86",
+    )
+    judge = FixedJudge(
+        CandidateJudgeOutput(
+            action="ASK_USER",
+            selected_candidate_id=None,
+            question="Which colour is it?",
+            reason="Red and blue variants are both plausible.",
+        )
+    )
+
+    decision = await InventoryItemMatcher(
+        repository=RecordingRepository([]),
+        semantic_repository=RecordingSemanticRepository([red, blue]),
+        judge=judge,
+        strategy=MatchingStrategy.SEMANTIC,
+    ).match_line(organization_id=ORGANIZATION_ID, line=controller_line())
+
+    assert decision.status is MatchDecisionStatus.CLARIFICATION_REQUIRED
+    assert decision.clarification_question == "Which colour is it?"
+    assert decision.candidates == [red, blue]

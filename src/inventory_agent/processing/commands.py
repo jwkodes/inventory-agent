@@ -6,6 +6,7 @@ from uuid import UUID
 
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedCommandLine, InventoryIntent
+from inventory_agent.matching.clarification import MatchClarificationRepository
 from inventory_agent.matching.models import MatchDecision, MatchDecisionStatus
 from inventory_agent.processing.models import (
     InventoryEventProcessingResult,
@@ -40,10 +41,12 @@ class InventoryCommandHandler:
         matcher: ItemMatcher,
         proposals: ProposalRepository,
         outbox: ProcessingOutboxRepository,
+        clarifications: MatchClarificationRepository | None = None,
     ) -> None:
         self._matcher = matcher
         self._proposals = proposals
         self._outbox = outbox
+        self._clarifications = clarifications
 
     async def handle(
         self,
@@ -105,6 +108,15 @@ class InventoryCommandHandler:
                 lines=proposal_lines,
             )
         )
+        if self._clarifications is not None and any(
+            line.match_evidence.get("decision") == MatchDecisionStatus.CLARIFICATION_REQUIRED.value
+            for line in proposal_lines
+        ):
+            await self._clarifications.begin(
+                proposal_id=proposal_id,
+                actor_id=context.organization_user_id,
+                chat_id=context.chat_id,
+            )
         outbox_id = await self._outbox.enqueue(
             ProcessingOutcomeDraft(
                 organization_id=context.organization_id,
@@ -161,6 +173,8 @@ def _proposal_line(
         "reason": decision.reason,
         "candidates": [candidate.model_dump(mode="json") for candidate in decision.candidates],
     }
+    if decision.clarification_question is not None:
+        evidence["clarification_question"] = decision.clarification_question
     return ProposalLineDraft(
         line_number=line_number,
         source_text=line.source_text,

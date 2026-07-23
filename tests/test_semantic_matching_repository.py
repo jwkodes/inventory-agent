@@ -44,6 +44,18 @@ async def test_semantic_repository_refreshes_stale_vectors_then_searches() -> No
             )
         if request.url.path.endswith("/upsert_inventory_variant_embeddings"):
             return httpx.Response(200, json=1)
+        if request.url.path.endswith("/get_inventory_candidate_context"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "item_variant_id": str(VARIANT_ID),
+                        "item_attributes": {},
+                        "variant_attributes": {"generation": "second"},
+                        "attribute_matching_roles": {"generation": "discriminator"},
+                    }
+                ],
+            )
         return httpx.Response(
             200,
             json=[
@@ -83,6 +95,8 @@ async def test_semantic_repository_refreshes_stale_vectors_then_searches() -> No
         "list_inventory_embedding_documents",
         "upsert_inventory_variant_embeddings",
         "find_semantic_inventory_candidates",
+        "get_inventory_candidate_context",
     ]
     assert len(requests[1][1]["p_records"][0]["embedding"]) == 512
     assert candidates[0].match_method is CandidateMatchMethod.SEMANTIC_RERANK
+    assert candidates[0].variant_attributes == {"generation": "second"}

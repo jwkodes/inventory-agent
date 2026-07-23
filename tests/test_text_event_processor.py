@@ -16,6 +16,8 @@ from inventory_agent.extraction.schema import (
     ExtractedInventoryCommand,
     InventoryIntent,
 )
+from inventory_agent.matching.clarification import MatchClarificationView
+from inventory_agent.matching.judge import CandidateJudgeOutput
 from inventory_agent.matching.models import (
     CandidateMatchMethod,
     InventoryCandidate,
@@ -44,6 +46,7 @@ PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000004")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000004")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000004")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000004")
+CLARIFICATION_REQUEST_ID = UUID("72000000-0000-0000-0000-000000000004")
 
 
 class FakeEvents:
@@ -219,6 +222,65 @@ class FakeCatalogInterpreter:
             response_id="resp_catalog",
             model="gpt-test",
         )
+
+
+class FakeClarifications:
+    def __init__(self, request_id: UUID | None = None) -> None:
+        self.request_id = request_id
+        self.applied: list[tuple[UUID, str, CandidateJudgeOutput]] = []
+
+    async def begin(
+        self,
+        *,
+        proposal_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+    ) -> int:
+        return 1
+
+    async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
+        return self.request_id
+
+    async def get_view(self, *, request_id: UUID) -> MatchClarificationView:
+        return MatchClarificationView(
+            request_id=request_id,
+            proposal_id=PROPOSAL_ID,
+            proposal_line_id=UUID("41000000-0000-0000-0000-000000000004"),
+            line=command().lines[0],
+            question="Which colour is it?",
+            accumulated_attributes={},
+            clarification_replies=[],
+            candidates=[candidate()],
+        )
+
+    async def apply(
+        self,
+        *,
+        request_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+        user_reply: str,
+        judgment: CandidateJudgeOutput,
+    ) -> UUID:
+        self.applied.append((request_id, user_reply, judgment))
+        return PROPOSAL_ID
+
+
+class FakeCandidateJudge:
+    def __init__(self, judgment: CandidateJudgeOutput) -> None:
+        self.judgment = judgment
+        self.replies: list[str] = []
+
+    async def judge(
+        self,
+        *,
+        line: ExtractedCommandLine,
+        candidates: list[InventoryCandidate],
+        clarification_replies: list[str] | None = None,
+        accumulated_attributes: dict[str, str] | None = None,
+    ) -> CandidateJudgeOutput:
+        self.replies = clarification_replies or []
+        return self.judgment
 
 
 def context(message_text: str = "received three AMOX-500") -> TelegramTextEventContext:
@@ -490,3 +552,50 @@ async def test_pending_catalog_request_asks_only_for_missing_information() -> No
             "Reply naturally with the missing information."
         )
     }
+
+
+async def test_pending_match_clarification_consumes_reply_and_resumes_proposal() -> None:
+    events = FakeEvents(context("It is the red one."))
+    proposals = FakeProposals()
+    outbox = FakeOutbox()
+    clarifications = FakeClarifications(CLARIFICATION_REQUEST_ID)
+    judge = FakeCandidateJudge(
+        CandidateJudgeOutput(
+            action="SELECT",
+            selected_candidate_id=VARIANT_ID,
+            question=None,
+            reason="The reply identifies the red variant.",
+            resolved_attributes=[{"key": "colour", "value": "red"}],
+        )
+    )
+    service = TelegramTextEventProcessor(
+        events=events,
+        interpreter=FakeInterpreter(
+            AssertionError("command extraction must not run during clarification")
+        ),
+        catalog_interpreter=FakeCatalogInterpreter(),
+        matcher=FakeMatcher(
+            MatchDecision(
+                status=MatchDecisionStatus.NOT_FOUND,
+                selected=None,
+                candidates=[],
+                reason="unused",
+            )
+        ),
+        proposals=proposals,
+        outbox=outbox,
+        reversals=FakeReversals(),
+        catalog=FakeCatalog(),
+        clarifications=clarifications,
+        candidate_judge=judge,
+    )
+
+    result = await service.process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.PROPOSAL_READY
+    assert result.proposal_id == PROPOSAL_ID
+    assert judge.replies == ["It is the red one."]
+    assert clarifications.applied[0][1] == "It is the red one."
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
+    assert events.finishes == [(EVENT_ID, True, None)]

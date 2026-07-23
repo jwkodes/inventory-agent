@@ -15,6 +15,21 @@ ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 
 async def test_repository_calls_rpc_and_parses_decimal_score() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/get_inventory_candidate_context"):
+            assert json.loads(request.content)["p_item_variant_ids"] == [
+                "21000000-0000-0000-0000-000000000003"
+            ]
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "item_variant_id": "21000000-0000-0000-0000-000000000003",
+                        "item_attributes": {"strength": "500mg"},
+                        "variant_attributes": {"form": "capsule"},
+                        "attribute_matching_roles": {"strength": "discriminator"},
+                    }
+                ],
+            )
         assert request.url.path == "/rest/v1/rpc/find_inventory_candidates"
         assert request.headers["apikey"] == "test-secret"
         assert json.loads(request.content) == {
@@ -58,10 +73,24 @@ async def test_repository_calls_rpc_and_parses_decimal_score() -> None:
     assert candidates[0].match_method is CandidateMatchMethod.EXACT_IDENTIFIER
     assert candidates[0].match_score == Decimal("1.0000000")
     assert candidates[0].display_name == "Amoxicillin 500mg"
+    assert candidates[0].item_attributes == {"strength": "500mg"}
+    assert candidates[0].variant_attributes == {"form": "capsule"}
 
 
 async def test_repository_calls_unfiltered_fallback_browse_rpc() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/get_inventory_candidate_context"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "item_variant_id": "21000000-0000-0000-0000-000000000001",
+                        "item_attributes": {},
+                        "variant_attributes": {},
+                        "attribute_matching_roles": {},
+                    }
+                ],
+            )
         assert request.url.path == "/rest/v1/rpc/browse_inventory_candidates"
         assert json.loads(request.content) == {
             "p_organization_id": str(ORGANIZATION_ID),

@@ -15,6 +15,10 @@ from inventory_agent.catalog.repository import SupabaseCatalogItemCreationReposi
 from inventory_agent.config import Settings
 from inventory_agent.extraction.image_interpreter import OpenAIImageCommandInterpreter
 from inventory_agent.extraction.interpreter import OpenAITextCommandInterpreter
+from inventory_agent.matching.clarification import (
+    SupabaseMatchClarificationRepository,
+)
+from inventory_agent.matching.judge import OpenAICandidateJudge
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.semantic import (
     OpenAIEmbeddingProvider,
@@ -187,6 +191,19 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             message_editor=telegram_client,
             outbox=outbox,
         )
+        candidate_judge = (
+            OpenAICandidateJudge(
+                client=openai_client,
+                model=settings.openai_model,
+                reasoning_effort=settings.openai_reasoning_effort,
+            )
+            if settings.inventory_candidate_judging_enabled
+            else None
+        )
+        clarification_repository = SupabaseMatchClarificationRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         matcher = InventoryItemMatcher(
             repository=SupabaseInventoryCandidateRepository(
                 supabase_url=settings.supabase_url,
@@ -203,6 +220,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 embedding_model=settings.openai_embedding_model,
                 embedding_dimensions=settings.openai_embedding_dimensions,
             ),
+            judge=candidate_judge,
             strategy=MatchingStrategy(settings.inventory_matching_strategy),
         )
         proposals = SupabaseProposalRepository(
@@ -213,6 +231,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             matcher=matcher,
             proposals=proposals,
             outbox=outbox,
+            clarifications=clarification_repository,
         )
         text_processor = TelegramTextEventProcessor(
             events=event_repository,
@@ -231,6 +250,8 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             outbox=outbox,
             reversals=reversal_repository,
             catalog=catalog_repository,
+            clarifications=clarification_repository,
+            candidate_judge=candidate_judge,
         )
         image_processor = TelegramImageEventProcessor(
             events=event_repository,

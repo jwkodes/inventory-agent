@@ -139,6 +139,33 @@ def test_multi_line_buttons_include_their_line_numbers() -> None:
     ]
 
 
+def test_match_clarification_asks_for_one_natural_reply_without_candidate_buttons() -> None:
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Classic T-Shirt",
+                quantity=Decimal("4"),
+                unit="each",
+                match_decision="clarification_required",
+                clarification_question="Which colour is it?",
+                candidate_choices=[
+                    CandidateChoice(item_variant_id=VARIANT_ID, label="Red · SHIRT-RED")
+                ],
+            )
+        ],
+    )
+
+    assert "I need one detail: Which colour is it?" in message.text
+    assert "Reply naturally in a new message" in message.text
+    assert len(message.inline_keyboard) == 1
+    assert decode_callback(message.inline_keyboard[0][0].callback_data).action is (
+        CallbackAction.CANCEL_PROPOSAL
+    )
+
+
 def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None:
     details_view = CatalogItemCreationView(
         request_id=CATALOG_REQUEST_ID,

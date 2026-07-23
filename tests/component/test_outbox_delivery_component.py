@@ -14,6 +14,8 @@ from inventory_agent.catalog.repository import SupabaseCatalogItemCreationReposi
 from inventory_agent.config import Settings
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
+from inventory_agent.matching.clarification import SupabaseMatchClarificationRepository
+from inventory_agent.matching.judge import CandidateJudgeOutput
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.service import InventoryItemMatcher
 from inventory_agent.processing.callback_events import TelegramCallbackEventProcessor
@@ -110,6 +112,21 @@ class FixedCommandInterpreter:
 class UnusedCatalogDetailsInterpreter:
     async def interpret(self, **kwargs: object) -> object:
         raise AssertionError("no catalog request is pending in this component test")
+
+
+class SelectRedVariantJudge:
+    async def judge(self, **kwargs: object) -> CandidateJudgeOutput:
+        assert kwargs["clarification_replies"] == ["It is red and medium."]
+        return CandidateJudgeOutput(
+            action="SELECT",
+            selected_candidate_id=UUID("21000000-0000-0000-0000-000000000004"),
+            question=None,
+            reason="Red and medium identify the red medium variant.",
+            resolved_attributes=[
+                {"key": "colour", "value": "red"},
+                {"key": "size", "value": "M"},
+            ],
+        )
 
 
 class FixedInvoiceImageInterpreter:
@@ -378,6 +395,206 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
             cleanup = await client.delete(
                 "/source_events",
                 params={"id": f"eq.{event_id}"},
+            )
+            cleanup.raise_for_status()
+
+
+async def test_match_clarification_resumes_a_real_persisted_proposal() -> None:
+    settings, secret_key = local_supabase()
+    proposal_event_id = uuid4()
+    reply_event_id = uuid4()
+    component_chat_id = -(2_000_000_000 + reply_event_id.int % 1_000_000_000)
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        telegram_user_id = await active_telegram_user_id(client)
+        for event_id, external_id, text, status in (
+            (
+                proposal_event_id,
+                f"component-clarification-proposal-{proposal_event_id}",
+                "received four classic t-shirts",
+                "processed",
+            ),
+            (
+                reply_event_id,
+                f"component-clarification-reply-{reply_event_id}",
+                "It is red and medium.",
+                "received",
+            ),
+        ):
+            created = await client.post(
+                "/source_events",
+                headers={"Prefer": "return=minimal"},
+                json={
+                    "id": str(event_id),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "provider": "telegram",
+                    "external_event_id": external_id,
+                    "event_type": "message",
+                    "status": status,
+                    "processed_at": (
+                        datetime.now(UTC).isoformat() if status == "processed" else None
+                    ),
+                    "payload": {
+                        "message": {
+                            "from": {"id": telegram_user_id},
+                            "chat": {"id": component_chat_id},
+                            "text": text,
+                        }
+                    },
+                },
+            )
+            created.raise_for_status()
+
+        proposal_id: UUID | None = None
+        try:
+            created_proposal = await client.post(
+                "/rpc/create_inventory_proposal",
+                json={
+                    "p_organization_id": str(ORGANIZATION_ID),
+                    "p_location_id": "12000000-0000-0000-0000-000000000001",
+                    "p_source_event_id": str(proposal_event_id),
+                    "p_created_by": "11000000-0000-0000-0000-000000000001",
+                    "p_intent": "receive_stock",
+                    "p_idempotency_key": f"component-clarification-{proposal_event_id}",
+                    "p_raw_command": {
+                        "schema_version": "1.0",
+                        "intent": "RECEIVE_STOCK",
+                        "location_hint": None,
+                        "lines": [
+                            {
+                                "source_text": "four classic t-shirts",
+                                "item_reference": {
+                                    "type": "NAME",
+                                    "value": "classic t-shirt",
+                                },
+                                "description": "classic t-shirt",
+                                "quantity": "4",
+                                "unit": "each",
+                                "attributes": [],
+                            }
+                        ],
+                        "notes": None,
+                        "needs_clarification": False,
+                        "clarification_question": None,
+                    },
+                    "p_model_name": "component-fake-model",
+                    "p_model_response_id": "component-clarification-response",
+                    "p_prompt_version": "inventory-command-v1",
+                    "p_notes": None,
+                    "p_lines": [
+                        {
+                            "line_number": 1,
+                            "source_text": "four classic t-shirts",
+                            "extracted_description": "classic t-shirt",
+                            "requested_quantity": 4,
+                            "requested_unit": "each",
+                            "match_evidence": {
+                                "decision": "clarification_required",
+                                "reason": "Colour and size are missing.",
+                                "clarification_question": "Which colour and size is it?",
+                                "candidates": [
+                                    {
+                                        "item_variant_id": ("21000000-0000-0000-0000-000000000004"),
+                                        "item_id": ("20000000-0000-0000-0000-000000000004"),
+                                        "item_name": "Classic T-Shirt",
+                                        "variant_name": "Classic T-Shirt - Red / M",
+                                        "sku": "SHIRT-RED-M",
+                                        "base_unit": "each",
+                                        "tracking_mode": "simple",
+                                        "match_method": "semantic_rerank",
+                                        "match_score": "0.88",
+                                        "match_evidence": {
+                                            "variant_attributes": {
+                                                "colour": "red",
+                                                "size": "M",
+                                            }
+                                        },
+                                    }
+                                ],
+                            },
+                            "attributes": {},
+                        }
+                    ],
+                },
+            )
+            created_proposal.raise_for_status()
+            proposal_id = UUID(created_proposal.json())
+            clarifications = SupabaseMatchClarificationRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            assert (
+                await clarifications.begin(
+                    proposal_id=proposal_id,
+                    actor_id=UUID("11000000-0000-0000-0000-000000000001"),
+                    chat_id=component_chat_id,
+                )
+                == 1
+            )
+
+            processor = TelegramTextEventProcessor(
+                events=SupabaseSourceEventWorkRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                interpreter=FixedCommandInterpreter(),
+                catalog_interpreter=UnusedCatalogDetailsInterpreter(),  # type: ignore[arg-type]
+                matcher=InventoryItemMatcher(
+                    repository=SupabaseInventoryCandidateRepository(
+                        supabase_url=settings.supabase_url,
+                        secret_key=secret_key,
+                    )
+                ),
+                proposals=SupabaseProposalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                outbox=SupabaseProcessingOutboxRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                reversals=SupabaseReversalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                catalog=SupabaseCatalogItemCreationRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                clarifications=clarifications,
+                candidate_judge=SelectRedVariantJudge(),  # type: ignore[arg-type]
+            )
+
+            result = await processor.process(reply_event_id)
+
+            assert result.status is TextEventProcessingStatus.PROPOSAL_READY
+            stored = await client.get(
+                "/transaction_proposals",
+                params={
+                    "select": (
+                        "proposal_lines(item_variant_id,base_quantity_delta,attributes,"
+                        "match_evidence)"
+                    ),
+                    "id": f"eq.{proposal_id}",
+                },
+            )
+            stored.raise_for_status()
+            line = stored.json()[0]["proposal_lines"][0]
+            assert line["item_variant_id"] == ("21000000-0000-0000-0000-000000000004")
+            assert line["base_quantity_delta"] == 4
+            assert line["attributes"] == {"colour": "red", "size": "M"}
+            assert line["match_evidence"]["selected_after_clarification"] is True
+        finally:
+            if proposal_id is not None:
+                deleted = await client.delete(
+                    "/transaction_proposals",
+                    params={"id": f"eq.{proposal_id}"},
+                )
+                deleted.raise_for_status()
+            cleanup = await client.delete(
+                "/source_events",
+                params={"id": f"in.({proposal_event_id},{reply_event_id})"},
             )
             cleanup.raise_for_status()
 

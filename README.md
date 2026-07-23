@@ -12,7 +12,10 @@ idempotent Telegram webhook ingestion. Versioned text and invoice-image Structur
 Outputs interpreters run inside the continuous processing worker.
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
 then uses configurable semantic, fuzzy, or hybrid name matching. Semantic matching is the
-default and uses OpenAI embeddings cached in PostgreSQL with pgvector. Original invoice
+default and uses OpenAI embeddings cached in PostgreSQL with pgvector. A constrained
+candidate judge then selects only from retrieved variants, asks a focused follow-up
+question, or rejects every candidate. Its multi-turn conversation state is durable.
+Original invoice
 images are checksummed and stored in a private Supabase bucket before extraction. Text and
 image events share matching, idempotent proposal creation, and the durable outbound-message
 outbox. The same worker processes stored Telegram button callbacks, applies idempotent
@@ -149,17 +152,27 @@ Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 ### 7. Connect the Telegram bot
 
 Telegram can deliver webhooks only to a public HTTPS URL. For local development, keep
-the API running and expose port 8000 through an HTTPS tunnel. One development-only
-option is a Cloudflare Quick Tunnel. It generates a temporary HTTPS hostname without
-requiring a domain or Cloudflare account.
+the API running and expose port 8000 through an HTTPS tunnel. A free authenticated ngrok
+account provides one assigned development domain that remains the same across agent
+restarts, so it is the preferred prototype setup.
 
-Install `cloudflared` once:
+Install ngrok once:
 
 ```bash
-brew install cloudflared
+brew install ngrok/ngrok/ngrok
 ```
 
-Then keep the following processes open in separate terminals.
+Create a free ngrok account, copy its authtoken from the ngrok dashboard, and authenticate
+this computer once:
+
+```bash
+ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
+ngrok config check
+```
+
+The authtoken is written to ngrok's user-level configuration outside this repository.
+Never put it in `.env` or commit it. Then keep the following processes open in separate
+terminals.
 
 Terminal 1 — API:
 
@@ -167,19 +180,20 @@ Terminal 1 — API:
 uv run uvicorn inventory_agent.main:app --reload
 ```
 
-Terminal 2 — public tunnel:
+Terminal 2 — stable public tunnel:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8000
+ngrok http 8000
 ```
 
-You can use another tunnel provider instead. Copy the generated HTTPS hostname, append
-`/webhooks/telegram`, and put the full URL in `.env` as `TELEGRAM_WEBHOOK_URL`.
-Quick Tunnel hostnames change when restarted and are not suitable for production.
+Copy the assigned `https://...ngrok-free.dev` hostname, append `/webhooks/telegram`, and
+put the full URL in `.env` as `TELEGRAM_WEBHOOK_URL`. The assigned development hostname
+persists, but the ngrok process and local API must both be running for Telegram delivery.
+The free plan is suitable for development, not production availability.
 Verify the public route before registering it:
 
 ```bash
-curl https://YOUR-GENERATED-HOSTNAME.trycloudflare.com/health
+curl https://YOUR-ASSIGNED-DOMAIN.ngrok-free.dev/health
 ```
 
 It should return:
@@ -226,18 +240,27 @@ organization, and stores each Telegram update ID once in `source_events`. It ack
 duplicates safely because Telegram retries webhook deliveries after non-2xx responses.
 
 User discovery uses Telegram's `getUpdates` endpoint, which is unavailable after a
-webhook is active. If the webhook URL changes, update `TELEGRAM_WEBHOOK_URL` and rerun the
-registration command. Never paste a real bot token or webhook secret into source files,
-terminal screenshots, issues, or chat.
+webhook is active. If the webhook URL or secret changes, update `.env` and rerun the
+registration command. Ordinary restarts of the assigned ngrok domain do not require
+webhook re-registration. Never paste a real bot token, ngrok authtoken, or webhook secret
+into source files, terminal screenshots, issues, or chat.
 
-After restarting the computer or stopping the Quick Tunnel:
+After restarting the computer:
 
 1. Start Docker Desktop and run `supabase start`.
 2. Restart the API in terminal 1.
-3. Restart `cloudflared` in terminal 2.
-4. Copy its new hostname into `TELEGRAM_WEBHOOK_URL`.
-5. Rerun `uv run python -m inventory_agent.telegram.setup_webhook`.
-6. Start the background worker described below.
+3. Restart `ngrok http 8000` in terminal 2.
+4. Start the background worker described below.
+
+If you do not want an ngrok account, a Cloudflare Quick Tunnel remains a temporary
+fallback:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Its random hostname changes after restarts, so update `TELEGRAM_WEBHOOK_URL` and rerun the
+webhook setup command each time.
 
 Press `Ctrl+C` in the API or tunnel terminal to stop that process. Closing Codex or a
 terminal session may also stop processes launched from it.
@@ -331,6 +354,7 @@ Configuration is read from environment variables and `.env` by
 | `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
 | `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |
+| `INVENTORY_CANDIDATE_JUDGING_ENABLED` | Constrained LLM candidate judgment and follow-up questions | `true` |
 | `TELEGRAM_BOT_TOKEN` | BotFather token | none |
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies Telegram webhook requests | none |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS `/webhooks/telegram` endpoint | none |
@@ -393,20 +417,61 @@ Evidence is evaluated in this order:
 
 1. Exact normalized SKU, barcode, manufacturer part number, or supplier part number.
 2. Exact human-confirmed alias, optionally scoped to a supplier.
-3. The configured name-matching strategy:
+3. The configured name-matching strategy retrieves a short candidate list:
    - `semantic` (default): embedding cosine similarity across names, SKU, attributes, and
      confirmed aliases.
    - `fuzzy`: PostgreSQL trigram similarity across names, SKU, and aliases.
    - `hybrid`: a weighted semantic/fuzzy score for evaluation.
 
-[`policy.py`](src/inventory_agent/matching/policy.py) converts ranked candidates into
-`matched`, `needs_confirmation`, or `not_found`. Exact evidence is normally accepted, but
+4. The Structured Outputs candidate judge sees only the retrieved IDs, names, SKUs,
+   catalogue attributes, original wording, and company matching rules. It may return only
+   `SELECT`, `ASK_USER`, or `NO_MATCH`; application code verifies that any selected UUID
+   was actually offered.
+5. [`policy.py`](src/inventory_agent/matching/policy.py) still gates automatic selection
+   using retrieval score and margin. A model judgment cannot bypass that deterministic
+   confidence policy or apply inventory.
+
+Exact evidence is normally accepted, but
 conflicting trusted results require human selection. A fuzzy result currently needs a
 score of at least `0.72` and a lead of at least `0.12` over the next candidate. These are
 prototype baselines to calibrate on labelled SME examples, not probabilities. Semantic
 scores use their own initial threshold of `0.42` and top-two margin of `0.10`, based on a
 small smoke test only; they must be calibrated on labelled SME examples before production.
-Semantic retrieval never bypasses this policy or the user's transaction confirmation.
+Semantic retrieval and candidate judgment never bypass the user's transaction confirmation.
+
+### Variant attributes and company-specific rules
+
+Attributes that change which SKU or balance is being handled belong on
+`item_variants`. For example, `Classic T-Shirt` is one item family, while Red / M and
+Blue / L are separate variants with separate SKUs, attributes, and balances. Operational
+facts such as medicine expiry date and batch number normally belong to a lot and do not
+create a new catalogue variant.
+
+Each company can classify an active item/variant custom field by putting
+`matching_role` in `custom_field_definitions.validation_rules`:
+
+```json
+{"matching_role":"discriminator"}
+```
+
+The supported roles are:
+
+- `discriminator`: identifies a variant; a contradiction rejects the candidate, and a
+  missing value may trigger a question such as “Which colour is it?”
+- `supporting`: useful matching evidence but not necessarily identity.
+- `operational`: receipt/issue or lot information such as expiry and batch.
+- `ignored`: excluded from matching.
+
+The development seed marks `colour` and `size` as discriminators and `expiry_date` and
+`batch_number` as operational. If no rule exists, the judge uses conservative domain
+defaults and the result still passes through the deterministic confidence policy.
+
+When the judge returns `ASK_USER`, the proposal and its candidates are stored first. The
+bot sends the question as a new Telegram message. The next text from that member in that
+chat is routed to the durable `match_clarification_requests` record before ordinary
+command extraction. Answers may resolve the variant, establish that none match, or cause
+one more focused question. Learned attributes and every source event remain attached to
+the proposal; a restart does not lose the conversation.
 
 If no candidate is confident, the bot explicitly offers **Add new item** and
 **Choose existing**. Choosing existing displays fallback candidates in descending score
@@ -484,9 +549,10 @@ to `processing` and resolves its organization member and active inventory locati
 second worker cannot claim the same event. A claim abandoned for 15 minutes can be reclaimed
 after a worker crash, with every attempt counted for operations and audit. The Python
 processor first checks whether the same member and chat have a reversal waiting for a
-reason, then whether catalog creation is waiting for more details. A reversal reason is
-captured without a model call. A catalog reply uses the dedicated catalog Structured
-Output extractor. Otherwise it:
+reason, then a candidate clarification, then catalog creation waiting for more details.
+A reversal reason is captured without a model call. Candidate replies are judged only
+against the candidates stored with that proposal, while catalog replies use the dedicated
+catalog Structured Output extractor. Otherwise it:
 
 1. Extracts the strict, versioned command.
 2. Matches each mutation line within the organization's catalog.
@@ -569,10 +635,11 @@ data only and must never be loaded into production.
 2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
 3. Telegram webhook authentication and idempotent event ingestion — complete
 4. Text intent extraction using a strict structured schema — complete
-5. Exact identifier, alias, and configurable semantic/fuzzy/hybrid matching — complete
+5. Exact identifier, alias, configurable semantic/fuzzy/hybrid retrieval, constrained
+   candidate judging, and durable follow-up questions — complete
 6. Telegram confirmation, editing, cancellation, and complete reversal — complete
 7. Invoice image extraction — complete for photos and JPEG/PNG/WebP documents
 8. No-match catalog creation with conversational detail extraction — complete for simple
    tracking
-9. Semantic confidence calibration on representative SME datasets
+9. Semantic and candidate-judge calibration on representative SME datasets
 10. Voice-note transcription

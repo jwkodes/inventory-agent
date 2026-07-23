@@ -26,6 +26,7 @@ class ProposalLineView(BaseModel):
     matched_label: str | None = None
     candidate_choices: list[CandidateChoice] = Field(default_factory=list)
     match_decision: str | None = None
+    clarification_question: str | None = None
     show_candidates: bool = False
 
 
@@ -58,6 +59,7 @@ def render_proposal_confirmation(
     text_lines = [f"Review {intent_label}:"]
     keyboard: list[list[InlineButton]] = []
     unresolved = False
+    clarification_prompt_shown = False
     has_multiple_lines = len(lines) > 1
 
     for index, line in enumerate(lines, start=1):
@@ -67,7 +69,14 @@ def render_proposal_confirmation(
         text_lines.append(f"{index}. {line.quantity}{unit} — {line.description} → {match}")
         if line.matched_label is None:
             unresolved = True
-            if line.match_decision == "not_found" and not line.show_candidates:
+            if line.match_decision == "clarification_required" and line.clarification_question:
+                if not clarification_prompt_shown:
+                    text_lines.append(
+                        f"I need one detail: {line.clarification_question.strip()} "
+                        "Reply naturally in a new message."
+                    )
+                    clarification_prompt_shown = True
+            elif line.match_decision == "not_found" and not line.show_candidates:
                 subject = f"line {index}" if has_multiple_lines else "this item"
                 text_lines.append(
                     f"No confident catalog match was found for {subject}. "

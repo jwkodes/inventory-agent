@@ -42,10 +42,28 @@ class InventoryCandidate(BaseModel):
     def display_name(self) -> str:
         return self.variant_name or self.item_name
 
+    @property
+    def item_attributes(self) -> dict[str, Any]:
+        value = self.match_evidence.get("item_attributes", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def variant_attributes(self) -> dict[str, Any]:
+        value = self.match_evidence.get("variant_attributes", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def attribute_matching_roles(self) -> dict[str, str]:
+        value = self.match_evidence.get("attribute_matching_roles", {})
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): str(role) for key, role in value.items()}
+
 
 class MatchDecisionStatus(StrEnum):
     MATCHED = "matched"
     NEEDS_CONFIRMATION = "needs_confirmation"
+    CLARIFICATION_REQUIRED = "clarification_required"
     NOT_FOUND = "not_found"
 
 
@@ -58,3 +76,4 @@ class MatchDecision(BaseModel):
     selected: InventoryCandidate | None
     candidates: list[InventoryCandidate]
     reason: str
+    clarification_question: str | None = None

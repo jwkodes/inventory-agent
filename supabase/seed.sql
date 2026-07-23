@@ -42,7 +42,8 @@ insert into public.custom_field_definitions (
   label,
   data_type,
   required_on_receive,
-  searchable
+  searchable,
+  validation_rules
 )
 values
   (
@@ -53,7 +54,8 @@ values
     'Batch number',
     'text',
     true,
-    true
+    true,
+    '{"matching_role":"operational"}'::jsonb
   ),
   (
     '13000000-0000-0000-0000-000000000002',
@@ -63,7 +65,8 @@ values
     'Expiry date',
     'date',
     true,
-    true
+    true,
+    '{"matching_role":"operational"}'::jsonb
   ),
   (
     '13000000-0000-0000-0000-000000000003',
@@ -73,7 +76,19 @@ values
     'Colour',
     'text',
     false,
-    true
+    true,
+    '{"matching_role":"discriminator"}'::jsonb
+  ),
+  (
+    '13000000-0000-0000-0000-000000000004',
+    '10000000-0000-0000-0000-000000000001',
+    'variant',
+    'size',
+    'Size',
+    'text',
+    false,
+    true,
+    '{"matching_role":"discriminator"}'::jsonb
   )
 on conflict (id) do nothing;
 

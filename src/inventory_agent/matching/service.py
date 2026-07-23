@@ -5,6 +5,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from inventory_agent.extraction.schema import ExtractedCommandLine
+from inventory_agent.matching.judge import CandidateJudge, CandidateJudgeAction
 from inventory_agent.matching.models import (
     CandidateMatchMethod,
     InventoryCandidate,
@@ -28,11 +29,13 @@ class InventoryItemMatcher:
         *,
         repository: InventoryCandidateRepository,
         semantic_repository: SemanticCandidateRepository | None = None,
+        judge: CandidateJudge | None = None,
         strategy: MatchingStrategy = MatchingStrategy.FUZZY,
         policy: MatchConfidencePolicy | None = None,
     ) -> None:
         self._repository = repository
         self._semantic_repository = semantic_repository
+        self._judge = judge
         self._strategy = strategy
         self._policy = policy or MatchConfidencePolicy()
 
@@ -47,6 +50,7 @@ class InventoryItemMatcher:
         """Retrieve candidates using the most specific source wording available."""
 
         query = line.item_reference.value or line.description or line.source_text
+        semantic_query = _matching_query(line)
         candidates = await self._repository.find_candidates(
             organization_id=organization_id,
             query=query,
@@ -63,16 +67,16 @@ class InventoryItemMatcher:
                 CandidateMatchMethod.CONFIRMED_ALIAS,
             }
         ]
-        if trusted:
+        if trusted and (self._judge is None or not line.attributes):
             return self._policy.decide(trusted)
 
-        ranked = candidates
-        if self._strategy is not MatchingStrategy.FUZZY:
+        ranked = trusted or candidates
+        if not trusted and self._strategy is not MatchingStrategy.FUZZY:
             if self._semantic_repository is None:
                 raise RuntimeError("Semantic matching is configured without a repository")
             semantic = await self._semantic_repository.find_candidates(
                 organization_id=organization_id,
-                query=query,
+                query=semantic_query,
                 limit=limit,
             )
             ranked = (
@@ -81,21 +85,89 @@ class InventoryItemMatcher:
                 else _hybrid_candidates(semantic=semantic, fuzzy=candidates)
             )
 
+        if self._judge is not None and ranked:
+            judgment = await self._judge.judge(line=line, candidates=ranked)
+            if judgment.action is CandidateJudgeAction.ASK_USER:
+                return MatchDecision(
+                    status=MatchDecisionStatus.CLARIFICATION_REQUIRED,
+                    selected=None,
+                    candidates=ranked,
+                    reason=judgment.reason,
+                    clarification_question=judgment.question,
+                )
+            if judgment.action is CandidateJudgeAction.NO_MATCH:
+                return await self._not_found_with_fallback(
+                    organization_id=organization_id,
+                    query=query,
+                    candidates=ranked,
+                    reason=judgment.reason,
+                    limit=limit,
+                )
+
+            selected_id = judgment.selected_candidate_id
+            selected = next(
+                (candidate for candidate in ranked if candidate.item_variant_id == selected_id),
+                None,
+            )
+            policy_decision = self._policy.decide(ranked)
+            if (
+                selected is not None
+                and policy_decision.status is MatchDecisionStatus.MATCHED
+                and policy_decision.selected is not None
+                and policy_decision.selected.item_variant_id == selected.item_variant_id
+            ):
+                return MatchDecision(
+                    status=MatchDecisionStatus.MATCHED,
+                    selected=selected,
+                    candidates=ranked,
+                    reason=judgment.reason,
+                )
+            return MatchDecision(
+                status=MatchDecisionStatus.NEEDS_CONFIRMATION,
+                selected=None,
+                candidates=ranked,
+                reason=(f"{judgment.reason} Retrieval confidence still requires confirmation."),
+            )
+
         decision = self._policy.decide(ranked)
         if decision.status is MatchDecisionStatus.NOT_FOUND:
-            fallback = await self._repository.browse_candidates(
+            return await self._not_found_with_fallback(
                 organization_id=organization_id,
                 query=query,
+                candidates=ranked,
+                reason="No catalog candidate met the normal retrieval threshold",
                 limit=limit,
             )
-            if fallback:
-                return MatchDecision(
-                    status=MatchDecisionStatus.NOT_FOUND,
-                    selected=None,
-                    candidates=fallback,
-                    reason="No catalog candidate met the normal retrieval threshold",
-                )
         return decision
+
+    async def _not_found_with_fallback(
+        self,
+        *,
+        organization_id: UUID,
+        query: str,
+        candidates: list[InventoryCandidate],
+        reason: str,
+        limit: int,
+    ) -> MatchDecision:
+        fallback = await self._repository.browse_candidates(
+            organization_id=organization_id,
+            query=query,
+            limit=limit,
+        )
+        return MatchDecision(
+            status=MatchDecisionStatus.NOT_FOUND,
+            selected=None,
+            candidates=fallback or candidates,
+            reason=reason,
+        )
+
+
+def _matching_query(line: ExtractedCommandLine) -> str:
+    """Include explicit qualifiers in retrieval while keeping quantity out."""
+
+    subject = line.item_reference.value or line.description or line.source_text
+    qualifiers = " | ".join(f"{attribute.key}: {attribute.value}" for attribute in line.attributes)
+    return f"{subject} | {qualifiers}" if qualifiers else subject
 
 
 def _hybrid_candidates(

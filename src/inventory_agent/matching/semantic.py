@@ -146,7 +146,38 @@ class SupabaseSemanticCandidateRepository:
         )
         if not isinstance(rows, list):
             raise ValueError("Supabase returned an invalid semantic candidate response")
-        return [InventoryCandidate.model_validate(row) for row in rows]
+        candidates = [InventoryCandidate.model_validate(row) for row in rows]
+        contexts = await self._call(
+            "get_inventory_candidate_context",
+            {
+                "p_organization_id": str(organization_id),
+                "p_item_variant_ids": [str(candidate.item_variant_id) for candidate in candidates],
+            },
+        )
+        if not isinstance(contexts, list):
+            raise ValueError("Supabase returned invalid inventory candidate context")
+        context_by_id = {
+            str(context["item_variant_id"]): context
+            for context in contexts
+            if isinstance(context, dict) and "item_variant_id" in context
+        }
+        return [
+            candidate.model_copy(
+                update={
+                    "match_evidence": {
+                        **candidate.match_evidence,
+                        **{
+                            key: value
+                            for key, value in context_by_id.get(
+                                str(candidate.item_variant_id), {}
+                            ).items()
+                            if key != "item_variant_id"
+                        },
+                    }
+                }
+            )
+            for candidate in candidates
+        ]
 
     async def _documents(self, organization_id: UUID) -> list[InventoryEmbeddingDocument]:
         rows = await self._call(
