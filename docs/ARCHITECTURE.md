@@ -143,6 +143,12 @@ product promises.
 Application code and workflow tools must not implement a fetch-and-update loop for
 multi-line inventory changes.
 
+Proposal creation is also a database function: it inserts the header and lines
+idempotently, validates resolved variants, and derives base-unit deltas from organization
+unit conversions. Ambiguous lines remain unresolved with a null delta. Adjustment intent
+is disabled until the command contract distinguishes signed deltas from stocktake
+assignments.
+
 ### Reversal service
 
 A reversal creates a new transaction with movement deltas opposite to the original.

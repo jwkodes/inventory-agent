@@ -266,6 +266,24 @@ prototype baselines to calibrate on labelled SME examples, not probabilities. Se
 retrieval may later rerank the small candidate set; it will not bypass this policy or the
 user's transaction confirmation.
 
+## Transaction proposals and confirmation
+
+`create_inventory_proposal` atomically stores a proposal and all of its lines. Repeated
+processing with the same organization and idempotency key returns the existing proposal.
+For resolved lines, PostgreSQL validates the variant and derives the signed base-unit
+quantity using the configured unit conversion. Unresolved lines retain their candidate
+evidence but have no stock delta, so they cannot be applied accidentally.
+
+Telegram confirmation rendering uses compact opaque callback data containing only action
+codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully
+resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets candidate
+buttons and cannot be confirmed. Callback execution, immediate callback acknowledgement,
+and outbound Telegram delivery are the next integration step.
+
+`ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
+must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
+two"), because those operations have different concurrency and reversal semantics.
+
 ## Repository layout
 
 ```text
@@ -317,7 +335,7 @@ data only and must never be loaded into production.
 3. Telegram webhook authentication and idempotent event ingestion — complete
 4. Text intent extraction using a strict structured schema — complete
 5. Exact identifier, alias, and fuzzy name matching — complete
-6. Telegram confirmation, editing, cancellation, and reversal — next
+6. Telegram confirmation, editing, cancellation, and reversal — in progress
 7. Invoice image extraction
 8. Voice-note transcription
 9. Semantic candidate retrieval and calibrated confidence policies
