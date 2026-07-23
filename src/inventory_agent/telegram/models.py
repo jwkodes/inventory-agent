@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+SUPPORTED_INVOICE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
 
 class TelegramUser(BaseModel):
     """Telegram user identity."""
@@ -19,6 +21,40 @@ class TelegramMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     sender: TelegramUser | None = Field(default=None, alias="from")
+    text: str | None = None
+    caption: str | None = None
+    photo: list["TelegramPhotoSize"] = Field(default_factory=list)
+    document: "TelegramDocument | None" = None
+
+    @property
+    def is_supported_invoice_image(self) -> bool:
+        return bool(self.photo) or (
+            self.document is not None and self.document.mime_type in SUPPORTED_INVOICE_IMAGE_TYPES
+        )
+
+
+class TelegramPhotoSize(BaseModel):
+    """One Telegram-generated size of an uploaded photo."""
+
+    model_config = ConfigDict(extra="allow")
+
+    file_id: str
+    file_unique_id: str | None = None
+    width: int
+    height: int
+    file_size: int | None = None
+
+
+class TelegramDocument(BaseModel):
+    """Document metadata retained because getFile does not preserve it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    file_id: str
+    file_unique_id: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
 
 
 class TelegramCallbackQuery(BaseModel):
@@ -48,6 +84,10 @@ class TelegramUpdate(BaseModel):
         """Return the supported top-level Telegram update type."""
 
         if self.message is not None:
+            if self.message.is_supported_invoice_image:
+                return "invoice_image"
+            if self.message.document is not None:
+                return "unsupported_document"
             return "message"
         if self.edited_message is not None:
             return "edited_message"

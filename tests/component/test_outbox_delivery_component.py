@@ -1,5 +1,6 @@
 """Local-Supabase component test for durable Telegram outcome delivery."""
 
+import hashlib
 import os
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -8,13 +9,16 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
+from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
 from inventory_agent.config import Settings
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.service import InventoryItemMatcher
 from inventory_agent.processing.callback_events import TelegramCallbackEventProcessor
+from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
+from inventory_agent.processing.image_events import TelegramImageEventProcessor
 from inventory_agent.processing.models import OutboxDeliveryStatus, TextEventProcessingStatus
 from inventory_agent.processing.repository import (
     SupabaseProcessingOutboxDeliveryRepository,
@@ -27,6 +31,7 @@ from inventory_agent.proposals.repository import SupabaseProposalRepository
 from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
+from inventory_agent.telegram.client import DownloadedTelegramFile
 
 pytestmark = pytest.mark.component
 
@@ -96,6 +101,63 @@ class FixedCommandInterpreter:
             command=command,
             response_id="component-response",
             model="component-fake-model",
+        )
+
+
+class FixedInvoiceImageInterpreter:
+    async def interpret(
+        self,
+        *,
+        image_bytes: bytes,
+        media_type: str,
+        caption: str | None = None,
+    ) -> CommandExtractionResult:
+        assert image_bytes == b"component-invoice-image"
+        assert media_type == "image/jpeg"
+        assert caption == "delivery"
+        return CommandExtractionResult(
+            command=ExtractedInventoryCommand.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "intent": "RECEIVE_STOCK",
+                    "location_hint": None,
+                    "lines": [
+                        {
+                            "source_text": "AMOX-500 3 BOX",
+                            "item_reference": {
+                                "type": "PART_NUMBER",
+                                "value": "AMOX-500",
+                            },
+                            "description": "amoxicillin",
+                            "quantity": "3",
+                            "unit": "box",
+                            "attributes": [{"key": "expiry_date", "value": "2027-06-30"}],
+                        }
+                    ],
+                    "notes": "component invoice",
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                }
+            ),
+            response_id="component-image-response",
+            model="component-fake-model",
+            prompt_version="inventory-invoice-image-v1",
+        )
+
+
+class FixedTelegramImageDownloader:
+    async def download_file(
+        self,
+        *,
+        file_id: str,
+        expected_size: int | None = None,
+        max_bytes: int = 20 * 1024 * 1024,
+    ) -> DownloadedTelegramFile:
+        assert file_id == "component-photo"
+        assert expected_size == len(b"component-invoice-image")
+        return DownloadedTelegramFile(
+            data=b"component-invoice-image",
+            file_path="photos/component.jpg",
         )
 
 
@@ -280,6 +342,137 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
                 params={"source_event_id": f"eq.{event_id}"},
             )
             delete_proposal.raise_for_status()
+            cleanup = await client.delete(
+                "/source_events",
+                params={"id": f"eq.{event_id}"},
+            )
+            cleanup.raise_for_status()
+
+
+async def test_image_processing_crosses_storage_and_database_boundaries() -> None:
+    settings, secret_key = local_supabase()
+    event_id = uuid4()
+    image_bytes = b"component-invoice-image"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    storage_path = f"{ORGANIZATION_ID}/{event_id}/{digest}.jpg"
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        create_event = await client.post(
+            "/source_events",
+            headers={"Prefer": "return=minimal"},
+            json={
+                "id": str(event_id),
+                "organization_id": str(ORGANIZATION_ID),
+                "provider": "telegram",
+                "external_event_id": f"component-image-{event_id}",
+                "event_type": "invoice_image",
+                "payload": {
+                    "message": {
+                        "from": {"id": 100000001},
+                        "chat": {"id": 100000001},
+                        "caption": "delivery",
+                        "photo": [
+                            {
+                                "file_id": "component-photo",
+                                "file_unique_id": "component-photo-unique",
+                                "width": 900,
+                                "height": 1200,
+                                "file_size": len(image_bytes),
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+        create_event.raise_for_status()
+        try:
+            matcher = InventoryItemMatcher(
+                repository=SupabaseInventoryCandidateRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                )
+            )
+            proposals = SupabaseProposalRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            outbox = SupabaseProcessingOutboxRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            processor = TelegramImageEventProcessor(
+                events=SupabaseSourceEventWorkRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                downloader=FixedTelegramImageDownloader(),
+                artifacts=SupabaseSourceArtifactRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                    bucket=settings.supabase_storage_bucket,
+                ),
+                interpreter=FixedInvoiceImageInterpreter(),
+                commands=InventoryCommandHandler(
+                    matcher=matcher,
+                    proposals=proposals,
+                    outbox=outbox,
+                ),
+            )
+
+            result = await processor.process_next()
+
+            assert result is not None
+            assert result.status is TextEventProcessingStatus.PROPOSAL_READY
+            artifact = await client.get(
+                "/source_artifacts",
+                params={
+                    "select": "storage_bucket,storage_path,media_type,sha256",
+                    "source_event_id": f"eq.{event_id}",
+                },
+            )
+            artifact.raise_for_status()
+            assert artifact.json() == [
+                {
+                    "storage_bucket": settings.supabase_storage_bucket,
+                    "storage_path": storage_path,
+                    "media_type": "image/jpeg",
+                    "sha256": digest,
+                }
+            ]
+            proposal = await client.get(
+                "/transaction_proposals",
+                params={
+                    "select": "prompt_version,proposal_lines(item_variant_id,attributes)",
+                    "id": f"eq.{result.proposal_id}",
+                },
+            )
+            proposal.raise_for_status()
+            assert proposal.json()[0]["prompt_version"] == "inventory-invoice-image-v1"
+            assert proposal.json()[0]["proposal_lines"][0]["item_variant_id"] == (
+                "21000000-0000-0000-0000-000000000003"
+            )
+        finally:
+            delete_proposal = await client.delete(
+                "/transaction_proposals",
+                params={"source_event_id": f"eq.{event_id}"},
+            )
+            delete_proposal.raise_for_status()
+            delete_artifact = await client.delete(
+                "/source_artifacts",
+                params={"source_event_id": f"eq.{event_id}"},
+            )
+            delete_artifact.raise_for_status()
+            async with httpx.AsyncClient(
+                base_url=settings.supabase_url,
+                headers=headers,
+            ) as storage_client:
+                delete_object = await storage_client.request(
+                    "DELETE",
+                    f"/storage/v1/object/{settings.supabase_storage_bucket}",
+                    json={"prefixes": [storage_path]},
+                )
+                delete_object.raise_for_status()
             cleanup = await client.delete(
                 "/source_events",
                 params={"id": f"eq.{event_id}"},

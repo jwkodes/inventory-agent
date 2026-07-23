@@ -3,8 +3,9 @@
 import json
 
 import httpx
+import pytest
 
-from inventory_agent.telegram.client import TelegramBotClient
+from inventory_agent.telegram.client import TELEGRAM_DOWNLOAD_LIMIT_BYTES, TelegramBotClient
 
 
 async def test_answer_callback_query_uses_bot_api() -> None:
@@ -94,3 +95,43 @@ async def test_edit_message_text_treats_already_applied_edit_as_success() -> Non
         message_id=77,
         text="Inventory updated.",
     )
+
+
+async def test_download_file_resolves_path_and_returns_bounded_bytes() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/bottest-token/getFile":
+            assert json.loads(request.content) == {"file_id": "invoice-file"}
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": {"file_path": "photos/invoice.jpg", "file_size": 7},
+                },
+            )
+        assert request.url.path == "/file/bottest-token/photos/invoice.jpg"
+        return httpx.Response(200, content=b"invoice")
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    downloaded = await client.download_file(file_id="invoice-file", expected_size=7)
+
+    assert downloaded.data == b"invoice"
+    assert downloaded.file_path == "photos/invoice.jpg"
+
+
+async def test_download_file_rejects_known_oversized_input_before_network() -> None:
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(
+            lambda request: pytest.fail("oversized file must not make a request")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="download limit"):
+        await client.download_file(
+            file_id="too-large",
+            expected_size=TELEGRAM_DOWNLOAD_LIMIT_BYTES + 1,
+        )

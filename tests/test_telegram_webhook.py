@@ -110,6 +110,80 @@ async def test_valid_message_is_ingested() -> None:
     ]
 
 
+async def test_invoice_photo_is_classified_for_image_processing() -> None:
+    repository = FakeTelegramEventRepository()
+    payload: TelegramPayload = {
+        "update_id": 9010,
+        "message": {
+            "message_id": 43,
+            "from": {"id": 100000001},
+            "chat": {"id": 100000001},
+            "caption": "Supplier delivery",
+            "photo": [
+                {
+                    "file_id": "small",
+                    "file_unique_id": "photo-1",
+                    "width": 90,
+                    "height": 120,
+                    "file_size": 1000,
+                },
+                {
+                    "file_id": "large",
+                    "file_unique_id": "photo-1",
+                    "width": 900,
+                    "height": 1200,
+                    "file_size": 10000,
+                },
+            ],
+        },
+    }
+
+    response = await post_update(repository=repository, payload=payload)
+
+    assert response.status_code == 200
+    assert repository.ingested_events[0]["event_type"] == "invoice_image"
+
+
+async def test_supported_image_document_is_classified_for_image_processing() -> None:
+    repository = FakeTelegramEventRepository()
+    payload: TelegramPayload = {
+        "update_id": 9011,
+        "message": {
+            "from": {"id": 100000001},
+            "chat": {"id": 100000001},
+            "document": {
+                "file_id": "png-document",
+                "file_name": "invoice.png",
+                "mime_type": "image/png",
+            },
+        },
+    }
+
+    await post_update(repository=repository, payload=payload)
+
+    assert repository.ingested_events[0]["event_type"] == "invoice_image"
+
+
+async def test_pdf_is_retained_as_unsupported_document_for_a_later_slice() -> None:
+    repository = FakeTelegramEventRepository()
+    payload: TelegramPayload = {
+        "update_id": 9012,
+        "message": {
+            "from": {"id": 100000001},
+            "chat": {"id": 100000001},
+            "document": {
+                "file_id": "pdf-document",
+                "file_name": "invoice.pdf",
+                "mime_type": "application/pdf",
+            },
+        },
+    }
+
+    await post_update(repository=repository, payload=payload)
+
+    assert repository.ingested_events[0]["event_type"] == "unsupported_document"
+
+
 async def test_duplicate_update_returns_success_without_claiming_a_new_event() -> None:
     repository = FakeTelegramEventRepository(result=EventIngestionResult.DUPLICATE)
 

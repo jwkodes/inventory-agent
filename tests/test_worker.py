@@ -4,6 +4,7 @@ from uuid import UUID
 
 from inventory_agent.processing.callback_events import CallbackEventProcessingResult
 from inventory_agent.processing.models import (
+    ImageEventProcessingResult,
     OutboxDeliveryResult,
     OutboxDeliveryStatus,
     TextEventProcessingResult,
@@ -31,6 +32,22 @@ class FakeTextProcessor:
 
     async def process_next(self) -> TextEventProcessingResult | None:
         self.events.append("text")
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class FakeImageProcessor:
+    def __init__(
+        self,
+        events: list[str],
+        result: ImageEventProcessingResult | Exception | None = None,
+    ) -> None:
+        self.events = events
+        self.result = result
+
+    async def process_next(self) -> ImageEventProcessingResult | None:
+        self.events.append("image")
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
@@ -66,6 +83,7 @@ async def test_one_cycle_processes_text_before_delivering_its_outcome() -> None:
     events: list[str] = []
     await run_loop(
         callback_processor=FakeCallbackProcessor(events),
+        image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(
             events,
             TextEventProcessingResult(
@@ -86,13 +104,14 @@ async def test_one_cycle_processes_text_before_delivering_its_outcome() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "text", "delivery"]
+    assert events == ["callback", "image", "text", "delivery"]
 
 
 async def test_text_failure_does_not_block_existing_outbox_delivery() -> None:
     events: list[str] = []
     await run_loop(
         callback_processor=FakeCallbackProcessor(events),
+        image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(
             events,
             TextEventProcessingError("recorded failure"),
@@ -105,13 +124,14 @@ async def test_text_failure_does_not_block_existing_outbox_delivery() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "text", "delivery"]
+    assert events == ["callback", "image", "text", "delivery"]
 
 
 async def test_idle_one_shot_cycle_returns_after_both_queues_are_empty() -> None:
     events: list[str] = []
     await run_loop(
         callback_processor=FakeCallbackProcessor(events),
+        image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(events, None),
         delivery_worker=FakeDeliveryWorker(
             events,
@@ -121,7 +141,7 @@ async def test_idle_one_shot_cycle_returns_after_both_queues_are_empty() -> None
         poll_seconds=2,
     )
 
-    assert events == ["callback", "text", "delivery"]
+    assert events == ["callback", "image", "text", "delivery"]
 
 
 async def test_callback_is_processed_before_text_and_delivery() -> None:
@@ -138,6 +158,7 @@ async def test_callback_is_processed_before_text_and_delivery() -> None:
 
     await run_loop(
         callback_processor=FakeCallbackProcessor(events, callback_result),
+        image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(events, None),
         delivery_worker=FakeDeliveryWorker(
             events,
@@ -147,4 +168,4 @@ async def test_callback_is_processed_before_text_and_delivery() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "text", "delivery"]
+    assert events == ["callback", "image", "text", "delivery"]

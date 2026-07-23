@@ -10,6 +10,7 @@ from inventory_agent.processing.models import (
     OutboxCompletionStatus,
     ProcessingOutcomeDraft,
     TelegramCallbackEventContext,
+    TelegramImageEventContext,
     TelegramTextEventContext,
 )
 from inventory_agent.telegram.confirmation import ProposalConfirmationView
@@ -21,6 +22,9 @@ class SourceEventWorkRepository(Protocol):
 
     async def claim_next_text_event(self) -> TelegramTextEventContext | None:
         """Claim the oldest eligible Telegram text event."""
+
+    async def claim_next_image_event(self) -> TelegramImageEventContext | None:
+        """Claim the oldest eligible Telegram invoice image event."""
 
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
         """Claim one received event, or return None when it is no longer claimable."""
@@ -86,6 +90,17 @@ class SupabaseSourceEventWorkRepository:
     async def claim_next_text_event(self) -> TelegramTextEventContext | None:
         response = await self._post_rpc("claim_next_telegram_text_event", {})
         return self._parse_claim(response)
+
+    async def claim_next_image_event(self) -> TelegramImageEventContext | None:
+        response = await self._post_rpc("claim_next_telegram_image_event", {})
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Supabase returned an invalid image event claim response")
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("Supabase returned more than one claimed image event")
+        return TelegramImageEventContext.model_validate(rows[0])
 
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
         response = await self._post_rpc(

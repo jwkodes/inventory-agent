@@ -1,6 +1,16 @@
 """Minimal Telegram Bot API client for callbacks and outbound messages."""
 
+from dataclasses import dataclass
+
 import httpx
+
+TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedTelegramFile:
+    data: bytes
+    file_path: str
 
 
 class TelegramBotClient:
@@ -12,8 +22,53 @@ class TelegramBotClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = f"https://api.telegram.org/bot{bot_token}"
+        self._file_base_url = f"https://api.telegram.org/file/bot{bot_token}"
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+
+    async def download_file(
+        self,
+        *,
+        file_id: str,
+        expected_size: int | None = None,
+        max_bytes: int = TELEGRAM_DOWNLOAD_LIMIT_BYTES,
+    ) -> DownloadedTelegramFile:
+        """Resolve and download one Telegram file while enforcing a bounded size."""
+
+        if not file_id.strip():
+            raise ValueError("Telegram file ID must not be empty")
+        if max_bytes <= 0 or max_bytes > TELEGRAM_DOWNLOAD_LIMIT_BYTES:
+            raise ValueError("Telegram download limit must be between 1 byte and 20 MB")
+        if expected_size is not None and expected_size > max_bytes:
+            raise ValueError("Telegram file exceeds the configured download limit")
+
+        response = await self._post("getFile", {"file_id": file_id}, "file lookup")
+        result = response.get("result")
+        if response.get("ok") is not True or not isinstance(result, dict):
+            raise RuntimeError("Telegram rejected the file lookup")
+        file_path = result.get("file_path")
+        file_size = result.get("file_size")
+        if (
+            not isinstance(file_path, str)
+            or not file_path
+            or any(character in file_path for character in ("\r", "\n", "\\"))
+        ):
+            raise RuntimeError("Telegram returned an invalid file path")
+        if isinstance(file_size, int) and file_size > max_bytes:
+            raise ValueError("Telegram file exceeds the configured download limit")
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                transport=self._transport,
+            ) as client:
+                download = await client.get(f"{self._file_base_url}/{file_path}")
+                download.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RuntimeError("Telegram file download failed") from error
+        if len(download.content) > max_bytes:
+            raise ValueError("Telegram file exceeds the configured download limit")
+        return DownloadedTelegramFile(data=download.content, file_path=file_path)
 
     async def answer_callback_query(
         self,

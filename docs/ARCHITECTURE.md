@@ -89,6 +89,13 @@ crash. Transient processing failures retry after 30 seconds and the third failur
 retained for operations. The same runtime loop owns a separate delivery component and retry
 policy.
 
+The image worker accepts Telegram photos and JPEG/PNG/WebP documents up to the hosted Bot
+API's 20 MB download limit. It atomically claims the event, selects the largest Telegram
+photo size, stores the original bytes and SHA-256 metadata in private Supabase Storage,
+and passes a Base64 data URL to the vision interpreter. Text and image interpretation then
+share the same organization-scoped matcher, proposal service, outbox, and confirmation
+path. PDFs and voice notes remain separate future input adapters.
+
 The delivery worker claims due outbox records with row locking and `SKIP LOCKED`, preventing
 two healthy workers from delivering the same row concurrently. A claim abandoned for five
 minutes can be recovered. Temporary failures return to `pending`; the fifth failed attempt
@@ -105,6 +112,10 @@ send a duplicate. Inventory application and proposal actions remain idempotent r
 - Store content type, checksum, Telegram file ID, and ownership metadata.
 - Use short-lived signed URLs for review; never use a public bucket.
 - Retain the transcript and exact source wording for audit and model evaluation.
+
+The implemented invoice-image slice stores original JPEG, PNG, and WebP bytes under a
+deterministic tenant/event/checksum path. PDFs and audio are represented in the design but
+are not processed yet.
 
 ### Input interpreter
 

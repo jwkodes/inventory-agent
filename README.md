@@ -8,14 +8,14 @@ compensating transactions.
 This repository is in the prototype stage. It currently includes the application
 foundation, a health endpoint, the first Supabase inventory schema, atomic stock
 application, immutable movements, compensating reversals, and authenticated,
-idempotent Telegram webhook ingestion. A versioned Structured Outputs contract and
-OpenAI Responses API interpreter run inside the continuous text-processing worker.
+idempotent Telegram webhook ingestion. Versioned text and invoice-image Structured
+Outputs interpreters run inside the continuous processing worker.
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
-then falls back to typo-tolerant PostgreSQL trigram candidates. The persisted text-event
-processor now joins extraction, matching, and idempotent proposal creation, and records
-its result in a durable outbound-message outbox. The same worker processes stored
-Telegram button callbacks, applies idempotent proposal actions, and edits the original
-confirmation message.
+then falls back to typo-tolerant PostgreSQL trigram candidates. Original invoice images
+are checksummed and stored in a private Supabase bucket before extraction. Text and image
+events share matching, idempotent proposal creation, and the durable outbound-message
+outbox. The same worker processes stored Telegram button callbacks, applies idempotent
+proposal actions, and edits the original confirmation message.
 
 ## Architecture principles
 
@@ -98,6 +98,10 @@ Telegram, and Supabase features will require their corresponding values as those
 are enabled.
 
 Never commit `.env`, Telegram bot tokens, OpenAI API keys, or Supabase secret keys.
+An API key authenticates requests but does not itself include an API balance. Before a
+live run, check the OpenAI Platform usage and limits pages and add billing or prepaid
+credit only if that API organization has no available balance. Unit, database, and
+component tests do not call OpenAI.
 
 ### 5. Start local Supabase
 
@@ -207,12 +211,17 @@ The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
 uv run python -m inventory_agent.processing.worker --watch
 ```
 
-Each cycle claims at most one button callback, one text event, and one outbound result, in
-that order. Button actions are prioritized so confirmation stays responsive; the remaining
-work still runs if one callback attempt fails. The worker polls every two seconds when all
-three queues are idle. Use `--poll-seconds N` to choose an interval from greater than zero
-through 60 seconds. Without `--watch`, it runs one complete cycle, which is useful while
-debugging.
+Each cycle claims at most one button callback, one invoice image, one text event, and one
+outbound result, in that order. Button actions are prioritized so confirmation stays
+responsive; the remaining work still runs if one attempt fails. The worker polls every two
+seconds when all four queues are idle. Use `--poll-seconds N` to choose an interval from
+greater than zero through 60 seconds. Without `--watch`, it runs one complete cycle, which
+is useful while debugging.
+
+Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP document.
+The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
+downloading. The prototype deliberately leaves PDFs and voice notes for later slices;
+their webhooks are retained but are not sent through the image interpreter.
 
 ## Development checks
 
@@ -241,10 +250,10 @@ The test suite deliberately separates these levels:
   boundaries. They are fast, deterministic, and run with `uv run pytest`.
 - Database component tests run migrations, constraints, and functions against the real
   local Supabase PostgreSQL using `supabase test db`.
-- Application component tests cross text processing, matching, proposal creation, outbox
-  delivery, stored callback claiming, and cancellation against real local Supabase while
-  keeping OpenAI and Telegram fake. They are opt-in because they require running
-  infrastructure and create temporary rows:
+- Application component tests cross text and invoice-image processing, private Storage,
+  matching, proposal creation, outbox delivery, stored callback claiming, and cancellation
+  against real local Supabase while keeping OpenAI and Telegram fake. They are opt-in
+  because they require running infrastructure and create temporary rows and objects:
 
 ```bash
 RUN_COMPONENT_TESTS=1 uv run pytest -m component
@@ -293,7 +302,24 @@ decimal-string quantities, units, and a list of company-specific attribute hints
 The model cannot provide database IDs or apply an item match. Unclear and unrelated input
 has an explicit clarification state, and refusals are raised separately. Provider response
 ID, model, prompt version, and token usage are returned for later persistence and
-evaluation. Automated tests use local fake responses and never spend API credits.
+evaluation. The invoice interpreter supplies a Base64 image input at `high` detail and
+uses the same schema and matching path as text. Automated tests use local fake responses
+and never spend API credits.
+
+## Invoice image processing
+
+The webhook classifies Telegram photos and JPEG/PNG/WebP documents as `invoice_image`
+events while preserving the original document name and MIME type. A database function
+atomically claims the event, chooses Telegram's largest photo size, and resolves the
+organization member and inventory location.
+
+The worker obtains a temporary download path through Telegram `getFile`, enforces the
+20 MB maximum, and stores the original bytes under a deterministic
+`organization/event/SHA-256` path in the private `inventory-source-artifacts` bucket. It
+then sends those in-memory bytes to the OpenAI Responses API with `store=False`; no public
+artifact URL is created. Retries safely overwrite the same storage path and reuse the
+proposal and outbox idempotency keys. Extraction failures keep only a sanitized error,
+retry after 30 seconds, and become failed after the third attempt.
 
 ## Item matching
 
@@ -366,7 +392,7 @@ crash.
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
 two"), because those operations have different concurrency and reversal semantics.
 
-## Background text processing
+## Background input processing
 
 `claim_telegram_text_event` atomically changes one stored Telegram message from `received`
 to `processing` and resolves its organization member and active inventory location. A
@@ -384,6 +410,9 @@ reason. If so, it durably captures the message and skips the model. Otherwise it
 
 A captured reversal reason instead enqueues a `reversal_confirmation` outcome through the
 same durable outbox.
+
+Invoice-image events use the same claim lease, matching, proposal, and outbox path. Their
+original bytes and audit metadata are stored before model extraction.
 
 The `processing_outbox` is the durable boundary between interpretation and Telegram
 delivery. This matters because a Telegram outage must not cause the OpenAI call or proposal
@@ -408,7 +437,7 @@ Dead-lettered events remain available for audit and manual investigation.
 .
 ├── docs/                  Architecture and engineering decisions
 ├── supabase/              Local config, migrations, seed data, and database tests
-├── src/inventory_agent/   Python application package
+├── src/inventory_agent/   Python application, including private artifact handling
 ├── tests/                 Automated tests
 ├── .env.example           Safe configuration template
 ├── pyproject.toml         Project metadata and dependency declarations

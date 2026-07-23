@@ -1,4 +1,4 @@
-"""Command-line worker for Telegram callbacks, text processing, and delivery."""
+"""Command-line worker for Telegram callbacks, inputs, and delivery."""
 
 import argparse
 import asyncio
@@ -9,7 +9,9 @@ from typing import Protocol
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
+from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
 from inventory_agent.config import Settings
+from inventory_agent.extraction.image_interpreter import OpenAIImageCommandInterpreter
 from inventory_agent.extraction.interpreter import OpenAITextCommandInterpreter
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.service import InventoryItemMatcher
@@ -18,8 +20,14 @@ from inventory_agent.processing.callback_events import (
     CallbackEventProcessingResult,
     TelegramCallbackEventProcessor,
 )
+from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
+from inventory_agent.processing.image_events import (
+    ImageEventProcessingError,
+    TelegramImageEventProcessor,
+)
 from inventory_agent.processing.models import (
+    ImageEventProcessingResult,
     OutboxDeliveryResult,
     OutboxDeliveryStatus,
     TextEventProcessingResult,
@@ -47,6 +55,11 @@ class NextTextEventProcessor(Protocol):
         """Process at most one eligible text event."""
 
 
+class NextImageEventProcessor(Protocol):
+    async def process_next(self) -> ImageEventProcessingResult | None:
+        """Process at most one eligible invoice image event."""
+
+
 class NextCallbackEventProcessor(Protocol):
     async def process_next(self) -> CallbackEventProcessingResult | None:
         """Process at most one eligible callback event."""
@@ -60,12 +73,13 @@ class NextOutboxDeliveryWorker(Protocol):
 async def run_loop(
     *,
     callback_processor: NextCallbackEventProcessor,
+    image_processor: NextImageEventProcessor,
     text_processor: NextTextEventProcessor,
     delivery_worker: NextOutboxDeliveryWorker,
     watch: bool,
     poll_seconds: float,
 ) -> None:
-    """Prioritize button actions, then process text and outbound delivery."""
+    """Prioritize button actions, then process images, text, and outbound delivery."""
 
     while True:
         callback_result: CallbackEventProcessingResult | None = None
@@ -79,6 +93,19 @@ async def run_loop(
                 callback_result.outcome.status,
                 callback_result.event_id,
                 callback_result.outcome.action,
+            )
+
+        image_result: ImageEventProcessingResult | None = None
+        try:
+            image_result = await image_processor.process_next()
+        except ImageEventProcessingError:
+            logger.error("image_event_processing status=failed")
+        if image_result is not None:
+            logger.info(
+                "image_event_processing status=%s event_id=%s proposal_id=%s",
+                image_result.status,
+                image_result.event_id,
+                image_result.proposal_id,
             )
 
         text_result: TextEventProcessingResult | None = None
@@ -105,6 +132,7 @@ async def run_loop(
             return
         if (
             callback_result is None
+            and image_result is None
             and text_result is None
             and delivery_result.status is OutboxDeliveryStatus.IDLE
         ):
@@ -144,6 +172,25 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             proposal_views=proposal_view_repository,
             message_editor=telegram_client,
         )
+        matcher = InventoryItemMatcher(
+            repository=SupabaseInventoryCandidateRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+        )
+        proposals = SupabaseProposalRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
+        outbox = SupabaseProcessingOutboxRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
+        command_handler = InventoryCommandHandler(
+            matcher=matcher,
+            proposals=proposals,
+            outbox=outbox,
+        )
         text_processor = TelegramTextEventProcessor(
             events=event_repository,
             interpreter=OpenAITextCommandInterpreter(
@@ -151,21 +198,25 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 model=settings.openai_model,
                 reasoning_effort=settings.openai_reasoning_effort,
             ),
-            matcher=InventoryItemMatcher(
-                repository=SupabaseInventoryCandidateRepository(
-                    supabase_url=settings.supabase_url,
-                    secret_key=secret_key,
-                )
-            ),
-            proposals=SupabaseProposalRepository(
-                supabase_url=settings.supabase_url,
-                secret_key=secret_key,
-            ),
-            outbox=SupabaseProcessingOutboxRepository(
-                supabase_url=settings.supabase_url,
-                secret_key=secret_key,
-            ),
+            matcher=matcher,
+            proposals=proposals,
+            outbox=outbox,
             reversals=reversal_repository,
+        )
+        image_processor = TelegramImageEventProcessor(
+            events=event_repository,
+            downloader=telegram_client,
+            artifacts=SupabaseSourceArtifactRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+                bucket=settings.supabase_storage_bucket,
+            ),
+            interpreter=OpenAIImageCommandInterpreter(
+                client=openai_client,
+                model=settings.openai_model,
+                reasoning_effort=settings.openai_reasoning_effort,
+            ),
+            commands=command_handler,
         )
         delivery_worker = TelegramOutboxDeliveryWorker(
             repository=proposal_view_repository,
@@ -173,6 +224,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
         )
         await run_loop(
             callback_processor=callback_processor,
+            image_processor=image_processor,
             text_processor=text_processor,
             delivery_worker=delivery_worker,
             watch=watch,
@@ -184,12 +236,12 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Process Telegram callbacks and inventory text events, then deliver outcomes"
+        description="Process Telegram callbacks and inventory inputs, then deliver outcomes"
     )
     parser.add_argument(
         "--watch",
         action="store_true",
-        help="Keep polling instead of running one callback, text, and delivery cycle",
+        help="Keep polling instead of running one callback, image, text, and delivery cycle",
     )
     parser.add_argument(
         "--poll-seconds",

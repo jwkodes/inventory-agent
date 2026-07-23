@@ -7,8 +7,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 
-class TelegramTextEventContext(BaseModel):
-    """Tenant and message data resolved atomically when an event is claimed."""
+class TelegramInventoryEventContext(BaseModel):
+    """Tenant and source data common to an inventory input event."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -19,7 +19,25 @@ class TelegramTextEventContext(BaseModel):
     external_event_id: str
     chat_id: int
     telegram_user_id: int
+
+
+class TelegramTextEventContext(TelegramInventoryEventContext):
+    """Tenant and message data resolved atomically when a text event is claimed."""
+
     message_text: str
+
+
+class TelegramImageEventContext(TelegramInventoryEventContext):
+    """Tenant and image metadata resolved atomically when an image event is claimed."""
+
+    telegram_file_id: str
+    telegram_file_unique_id: str | None = None
+    media_type: str
+    original_file_name: str | None = None
+    file_size: int | None = None
+    width: int | None = None
+    height: int | None = None
+    caption: str | None = None
 
 
 class TelegramCallbackEventContext(BaseModel):
@@ -47,7 +65,7 @@ class ProcessingOutcomeType(StrEnum):
     UNSUPPORTED_COMMAND = "unsupported_command"
 
 
-class TextEventProcessingStatus(StrEnum):
+class InventoryEventProcessingStatus(StrEnum):
     """Result returned to a worker invocation."""
 
     ALREADY_CLAIMED = "already_claimed"
@@ -57,15 +75,22 @@ class TextEventProcessingStatus(StrEnum):
     UNSUPPORTED_COMMAND = "unsupported_command"
 
 
-class TextEventProcessingResult(BaseModel):
+class InventoryEventProcessingResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: UUID
-    status: TextEventProcessingStatus
+    status: InventoryEventProcessingStatus
     chat_id: int | None = None
     proposal_id: UUID | None = None
     reversal_request_id: UUID | None = None
     outbox_id: UUID | None = None
+
+
+# Compatibility aliases while callers migrate from the original text-only names.
+TextEventProcessingStatus = InventoryEventProcessingStatus
+TextEventProcessingResult = InventoryEventProcessingResult
+ImageEventProcessingStatus = InventoryEventProcessingStatus
+ImageEventProcessingResult = InventoryEventProcessingResult
 
 
 class ProcessingOutcomeDraft(BaseModel):
