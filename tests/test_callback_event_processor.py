@@ -17,7 +17,6 @@ from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
 )
 from inventory_agent.telegram.callbacks import CallbackAction
-from inventory_agent.telegram.confirmation import ProposalConfirmationView
 
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000010")
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -25,7 +24,6 @@ ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000010")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000010")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000011")
-LINE_ID = UUID("41000000-0000-0000-0000-000000000010")
 
 
 class FakeEvents:
@@ -64,28 +62,6 @@ class FakeDispatcher:
         assert actor_id == ACTOR_ID
         assert chat_id == -100123
         return self.outcome
-
-
-class FakeProposalViews:
-    def __init__(self) -> None:
-        self.requested: list[UUID] = []
-
-    async def get_proposal_view(self, proposal_id: UUID) -> ProposalConfirmationView:
-        self.requested.append(proposal_id)
-        return ProposalConfirmationView(
-            proposal_id=proposal_id,
-            intent="receive_stock",
-            lines=[
-                {
-                    "proposal_line_id": str(LINE_ID),
-                    "description": "Full Cream Milk 1L",
-                    "quantity": "3",
-                    "unit": "each",
-                    "matched_label": "Full Cream Milk 1L",
-                    "candidate_choices": [],
-                }
-            ],
-        )
 
 
 class RecordingEditor:
@@ -131,8 +107,8 @@ def context() -> TelegramCallbackEventContext:
 
 async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() -> None:
     events = FakeEvents(context())
-    views = FakeProposalViews()
     editor = RecordingEditor()
+    outbox = RecordingOutbox()
     processor = TelegramCallbackEventProcessor(
         events=events,
         dispatcher=FakeDispatcher(
@@ -143,23 +119,23 @@ async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() 
                 "Item selected",
             )
         ),
-        proposal_views=views,
         message_editor=editor,
-        outbox=RecordingOutbox(),
+        outbox=outbox,
     )
 
     result = await processor.process_next()
 
     assert result is not None
-    assert views.requested == [PROPOSAL_ID]
-    assert "Review stock receipt" in editor.edits[0][2]
-    assert editor.edits[0][3] is not None
+    assert editor.edits == [(-100123, 77, "Item selected. See the new confirmation message.", None)]
+    assert outbox.drafts[0].outcome_type.value == "proposal_ready"
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
     assert events.finishes == [(EVENT_ID, True, None)]
 
 
 async def test_confirmation_offers_a_reversal_button() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()
+    outbox = RecordingOutbox()
     processor = TelegramCallbackEventProcessor(
         events=events,
         dispatcher=FakeDispatcher(
@@ -170,18 +146,41 @@ async def test_confirmation_offers_a_reversal_button() -> None:
                 "Inventory updated",
             )
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=editor,
-        outbox=RecordingOutbox(),
+        outbox=outbox,
     )
 
     await processor.process_next()
 
-    assert editor.edits[0][:3] == (-100123, 77, "Inventory updated.")
-    keyboard = editor.edits[0][3]
-    assert keyboard is not None
-    assert len(keyboard) == 1
+    assert editor.edits == [
+        (-100123, 77, "Proposal confirmed. See the new inventory update.", None)
+    ]
+    assert outbox.drafts[0].outcome_type.value == "transaction_applied"
+    assert outbox.drafts[0].aggregate_id == TRANSACTION_ID
     assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_cancelled_proposal_sends_a_new_notice() -> None:
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CANCEL_PROPOSAL,
+                PROPOSAL_ID,
+                "Proposal cancelled",
+            )
+        ),
+        message_editor=RecordingEditor(),
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == "callback_notice"
+    assert outbox.drafts[0].aggregate_id is None
+    assert outbox.drafts[0].payload == {"message": "Proposal cancelled."}
 
 
 async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
@@ -198,7 +197,6 @@ async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
                 "Reversal reason required",
             )
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=editor,
         outbox=outbox,
     )
@@ -222,6 +220,7 @@ async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
 
 async def test_confirmed_reversal_removes_buttons() -> None:
     editor = RecordingEditor()
+    outbox = RecordingOutbox()
     processor = TelegramCallbackEventProcessor(
         events=FakeEvents(context()),
         dispatcher=FakeDispatcher(
@@ -232,14 +231,37 @@ async def test_confirmed_reversal_removes_buttons() -> None:
                 "Transaction reversed",
             )
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=editor,
-        outbox=RecordingOutbox(),
+        outbox=outbox,
     )
 
     await processor.process_next()
 
-    assert editor.edits == [(-100123, 77, "Transaction reversed.", None)]
+    assert editor.edits == [(-100123, 77, "Reversal confirmed. See the new status message.", None)]
+    assert outbox.drafts[0].outcome_type.value == "callback_notice"
+    assert outbox.drafts[0].payload == {"message": "Transaction reversed."}
+
+
+async def test_cancelled_reversal_sends_a_new_notice() -> None:
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CANCEL_REVERSAL,
+                PROPOSAL_ID,
+                "Reversal cancelled",
+            )
+        ),
+        message_editor=RecordingEditor(),
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == "callback_notice"
+    assert outbox.drafts[0].payload == {"message": "Reversal cancelled."}
 
 
 async def test_invalid_callback_is_completed_without_editing_message() -> None:
@@ -255,7 +277,6 @@ async def test_invalid_callback_is_completed_without_editing_message() -> None:
                 "Malformed callback data",
             )
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=editor,
         outbox=RecordingOutbox(),
     )
@@ -278,7 +299,6 @@ async def test_edit_failure_is_sanitized_and_returned_to_event_retry_queue() -> 
                 "Inventory updated",
             )
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=RecordingEditor(RuntimeError("secret Telegram response")),
         outbox=RecordingOutbox(),
     )
@@ -295,7 +315,6 @@ async def test_no_callback_event_is_idle() -> None:
         dispatcher=FakeDispatcher(
             CallbackOutcome(CallbackOutcomeStatus.INVALID, None, None, "unused")
         ),
-        proposal_views=FakeProposalViews(),
         message_editor=RecordingEditor(),
         outbox=RecordingOutbox(),
     )

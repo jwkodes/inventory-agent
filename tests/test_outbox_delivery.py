@@ -15,6 +15,7 @@ OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000005")
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000005")
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000005")
+TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000006")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000005")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000002")
 
@@ -96,16 +97,12 @@ def outcome(
         organization_id=ORGANIZATION_ID,
         source_event_id=EVENT_ID,
         outcome_type=outcome_type,
-        aggregate_id=(
-            PROPOSAL_ID
-            if outcome_type
-            in {
-                ProcessingOutcomeType.PROPOSAL_READY,
-                ProcessingOutcomeType.REVERSAL_REASON_REQUIRED,
-                ProcessingOutcomeType.REVERSAL_CONFIRMATION,
-            }
-            else None
-        ),
+        aggregate_id={
+            ProcessingOutcomeType.PROPOSAL_READY: PROPOSAL_ID,
+            ProcessingOutcomeType.TRANSACTION_APPLIED: TRANSACTION_ID,
+            ProcessingOutcomeType.REVERSAL_REASON_REQUIRED: PROPOSAL_ID,
+            ProcessingOutcomeType.REVERSAL_CONFIRMATION: PROPOSAL_ID,
+        }.get(outcome_type),
         chat_id=-100123,
         payload=payload or {},
         attempt_number=1,
@@ -143,6 +140,38 @@ async def test_delivers_plain_clarification_message() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages == [(-100123, "Which item?", None)]
+
+
+async def test_delivers_callback_notice_as_a_new_message() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.CALLBACK_NOTICE,
+            payload={"message": "Proposal cancelled."},
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert sender.messages == [(-100123, "Proposal cancelled.", None)]
+
+
+async def test_delivers_applied_transaction_with_reversal_button() -> None:
+    repository = FakeRepository(outcome(ProcessingOutcomeType.TRANSACTION_APPLIED))
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert sender.messages[0][1] == "Inventory updated."
+    assert sender.messages[0][2] is not None
 
 
 async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:

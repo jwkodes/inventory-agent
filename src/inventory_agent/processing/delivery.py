@@ -11,6 +11,7 @@ from inventory_agent.processing.models import (
 )
 from inventory_agent.processing.repository import ProcessingOutboxDeliveryRepository
 from inventory_agent.telegram.confirmation import (
+    render_applied_transaction,
     render_proposal_confirmation,
     render_reversal_confirmation,
     render_reversal_reason_prompt,
@@ -61,6 +62,15 @@ class TelegramOutboxDeliveryWorker:
                     intent_label=_intent_label(view.intent),
                     lines=view.lines,
                 )
+                text = message.text
+                keyboard = [
+                    [button.model_dump(mode="json") for button in row]
+                    for row in message.inline_keyboard
+                ]
+            elif outcome.outcome_type is ProcessingOutcomeType.TRANSACTION_APPLIED:
+                if outcome.aggregate_id is None:
+                    raise ValueError("Applied outcome is missing its transaction ID")
+                message = render_applied_transaction(outcome.aggregate_id)
                 text = message.text
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]

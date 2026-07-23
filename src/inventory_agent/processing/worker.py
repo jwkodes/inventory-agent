@@ -173,7 +173,6 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 ),
                 reversals=reversal_repository,
             ),
-            proposal_views=proposal_view_repository,
             message_editor=telegram_client,
             outbox=outbox,
         )

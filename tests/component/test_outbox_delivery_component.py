@@ -598,10 +598,6 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                         secret_key=secret_key,
                     ),
                 ),
-                proposal_views=SupabaseProcessingOutboxDeliveryRepository(
-                    supabase_url=settings.supabase_url,
-                    secret_key=secret_key,
-                ),
                 message_editor=telegram,
                 outbox=SupabaseProcessingOutboxRepository(
                     supabase_url=settings.supabase_url,
@@ -614,6 +610,28 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             assert result.outcome.action is CallbackAction.CANCEL_PROPOSAL
             assert telegram.answers == [f"query-{callback_event_id}"]
             assert telegram.edits == [(100000001, 77, "Proposal cancelled.")]
+
+            callback_outbox = await client.get(
+                "/processing_outbox",
+                params={
+                    "select": "id,status,outcome_type",
+                    "source_event_id": f"eq.{callback_event_id}",
+                },
+            )
+            callback_outbox.raise_for_status()
+            outbox_row = callback_outbox.json()[0]
+            assert outbox_row["status"] == "pending"
+            assert outbox_row["outcome_type"] == "callback_notice"
+
+            delivery = await TelegramOutboxDeliveryWorker(
+                repository=SupabaseProcessingOutboxDeliveryRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                sender=telegram,
+            ).deliver_one(UUID(outbox_row["id"]))
+            assert delivery.status is OutboxDeliveryStatus.SENT
+            assert telegram.messages == [(100000001, "Proposal cancelled.")]
 
             proposal = await client.get(
                 "/transaction_proposals",

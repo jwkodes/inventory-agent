@@ -405,14 +405,14 @@ and never reaches Supabase. Proposal confirmation uses the existing atomic
 `apply_inventory_proposal` function, so duplicate confirmations remain safe at the
 database boundary.
 
-After an action, the worker edits the original Telegram message: selection refreshes the
-proposal and its buttons, confirmation reports that inventory was updated, and cancellation
-removes the buttons. Starting a reversal is the exception: the original message reports
-that the request started, while a separate outbox-backed message asks for the reason so
-Telegram generates a new-message notification. Replayed identical edits are treated as
-success because Telegram may answer that the message is already unchanged. Callback
-failures retry after 30 seconds and become `failed` after the third unsuccessful attempt,
-matching text-event handling.
+Every successful button action enqueues a separate outbox-backed Telegram message so the
+user receives a new-message notification. Variant selection sends a fresh proposal,
+confirmation sends the inventory result with its next action, and proposal or reversal
+cancellation sends a status notice. The worker still edits the originating message to
+remove obsolete buttons, preventing stale controls from remaining active. Replayed
+identical edits are treated as success because Telegram may answer that the message is
+already unchanged. Callback failures retry after 30 seconds and become `failed` after the
+third unsuccessful attempt, matching text-event handling.
 
 Variant selection rechecks organization membership, verifies that the variant was actually
 offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and
@@ -433,8 +433,8 @@ Final confirmation calls `reverse_inventory_transaction` through an idempotent r
 function. PostgreSQL creates a new opposite transaction and movements atomically; it never
 edits or deletes the original ledger. The request retains its reason and compensating
 transaction ID. Cancellation changes no stock. Request creation, reason capture, final
-confirmation, cancellation, Telegram message edits, and reason-prompt enqueueing are safe
-to replay after a worker crash.
+confirmation, cancellation, Telegram message edits, and all callback-notification
+enqueueing are safe to replay after a worker crash.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
@@ -456,8 +456,9 @@ reason. If so, it durably captures the message and skips the model. Otherwise it
 5. Marks the source event `processed`; failures retain only a sanitized error and retry
    after 30 seconds, becoming `failed` after the third unsuccessful attempt.
 
-The reversal button enqueues a `reversal_reason_required` outcome. A captured reversal
-reason later enqueues a `reversal_confirmation` outcome through the same durable outbox.
+Button results enqueue `proposal_ready`, `transaction_applied`, `callback_notice`, or
+`reversal_reason_required` outcomes as appropriate. A captured reversal reason later
+enqueues a `reversal_confirmation` outcome through the same durable outbox.
 
 Invoice-image events use the same claim lease, matching, proposal, and outbox path. Their
 original bytes and audit metadata are stored before model extraction.

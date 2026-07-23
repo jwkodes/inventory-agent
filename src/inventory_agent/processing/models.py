@@ -60,6 +60,8 @@ class ProcessingOutcomeType(StrEnum):
     """Durable handoffs understood by a later outbound-delivery worker."""
 
     PROPOSAL_READY = "proposal_ready"
+    TRANSACTION_APPLIED = "transaction_applied"
+    CALLBACK_NOTICE = "callback_notice"
     REVERSAL_REASON_REQUIRED = "reversal_reason_required"
     REVERSAL_CONFIRMATION = "reversal_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"

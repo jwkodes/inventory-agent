@@ -14,12 +14,6 @@ from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
 )
 from inventory_agent.telegram.callbacks import CallbackAction
-from inventory_agent.telegram.confirmation import (
-    ConfirmationMessage,
-    ProposalConfirmationView,
-    render_applied_transaction,
-    render_proposal_confirmation,
-)
 
 
 class CallbackDispatcher(Protocol):
@@ -46,11 +40,6 @@ class CallbackEventRepository(Protocol):
         error_message: str | None = None,
     ) -> bool:
         """Complete or retry one callback source event."""
-
-
-class ProposalViewRepository(Protocol):
-    async def get_proposal_view(self, proposal_id: UUID) -> ProposalConfirmationView:
-        """Load current proposal lines after a variant selection."""
 
 
 class ProcessingOutbox(Protocol):
@@ -86,13 +75,11 @@ class TelegramCallbackEventProcessor:
         *,
         events: CallbackEventRepository,
         dispatcher: CallbackDispatcher,
-        proposal_views: ProposalViewRepository,
         message_editor: TelegramMessageEditor,
         outbox: ProcessingOutbox,
     ) -> None:
         self._events = events
         self._dispatcher = dispatcher
-        self._proposal_views = proposal_views
         self._message_editor = message_editor
         self._outbox = outbox
 
@@ -112,7 +99,7 @@ class TelegramCallbackEventProcessor:
                 raise RuntimeError("Callback database action failed")
 
             if outcome.status is CallbackOutcomeStatus.COMPLETED:
-                await self._render_completed_action(
+                await self._publish_completed_action(
                     action=outcome.action,
                     result_id=outcome.result_id,
                     event_id=context.event_id,
@@ -137,7 +124,7 @@ class TelegramCallbackEventProcessor:
                 ) from finish_error
             raise CallbackEventProcessingError("Callback event processing failed") from error
 
-    async def _render_completed_action(
+    async def _publish_completed_action(
         self,
         *,
         action: CallbackAction | None,
@@ -151,62 +138,51 @@ class TelegramCallbackEventProcessor:
             raise ValueError("Completed callback is missing its action result")
 
         if action is CallbackAction.SELECT_VARIANT:
-            view = await self._proposal_views.get_proposal_view(result_id)
-            message = render_proposal_confirmation(
-                proposal_id=view.proposal_id,
-                intent_label=_intent_label(view.intent),
-                lines=view.lines,
-            )
-            keyboard = [
-                [button.model_dump(mode="json") for button in row]
-                for row in message.inline_keyboard
-            ]
-            text = message.text
+            outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+            aggregate_id = result_id
+            payload: dict[str, object] = {}
+            text = "Item selected. See the new confirmation message."
         elif action is CallbackAction.CONFIRM_PROPOSAL:
-            message = render_applied_transaction(result_id)
-            text = message.text
-            keyboard = _keyboard(message)
+            outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
+            aggregate_id = result_id
+            payload = {}
+            text = "Proposal confirmed. See the new inventory update."
         elif action is CallbackAction.CANCEL_PROPOSAL:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "Proposal cancelled."}
             text = "Proposal cancelled."
-            keyboard = None
         elif action is CallbackAction.REVERSE_TRANSACTION:
-            await self._outbox.enqueue(
-                ProcessingOutcomeDraft(
-                    organization_id=organization_id,
-                    source_event_id=event_id,
-                    outcome_type=ProcessingOutcomeType.REVERSAL_REASON_REQUIRED,
-                    aggregate_id=result_id,
-                    chat_id=chat_id,
-                    payload={},
-                )
-            )
+            outcome_type = ProcessingOutcomeType.REVERSAL_REASON_REQUIRED
+            aggregate_id = result_id
+            payload = {}
             text = "Reversal requested. I sent a separate message asking for the reason."
-            keyboard = None
         elif action is CallbackAction.CONFIRM_REVERSAL:
-            text = "Transaction reversed."
-            keyboard = None
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "Transaction reversed."}
+            text = "Reversal confirmed. See the new status message."
         elif action is CallbackAction.CANCEL_REVERSAL:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "Reversal cancelled."}
             text = "Reversal cancelled."
-            keyboard = None
         else:
             raise ValueError("Completed callback action is not supported")
 
+        await self._outbox.enqueue(
+            ProcessingOutcomeDraft(
+                organization_id=organization_id,
+                source_event_id=event_id,
+                outcome_type=outcome_type,
+                aggregate_id=aggregate_id,
+                chat_id=chat_id,
+                payload=payload,
+            )
+        )
         await self._message_editor.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=text,
-            inline_keyboard=keyboard,
+            inline_keyboard=None,
         )
-
-
-def _intent_label(intent: str) -> str:
-    labels = {
-        "receive_stock": "stock receipt",
-        "issue_stock": "stock issue",
-        "adjust_stock": "stock adjustment",
-    }
-    return labels.get(intent, intent.replace("_", " "))
-
-
-def _keyboard(message: ConfirmationMessage) -> list[list[dict[str, str]]]:
-    return [[button.model_dump(mode="json") for button in row] for row in message.inline_keyboard]
