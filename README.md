@@ -32,6 +32,13 @@ proposal actions, and sends a new Telegram message after every successful action
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and data design.
 
+An isolated LLM-led orchestration experiment now lives on
+`experiment/llm-inventory-agent`. It gives one conversational model strict read and
+proposal tools while keeping all inventory writes unavailable. See
+[docs/AGENT_SPIKE.md](docs/AGENT_SPIKE.md) for its safety boundary, evaluation scenarios,
+commands, and initial results. It is not connected to the Telegram worker or Supabase
+inventory mutations.
+
 ## Technology stack
 
 - Python 3.12 or 3.13
@@ -339,6 +346,25 @@ Live OpenAI and Telegram end-to-end tests have not been automated yet. Those wil
 dedicated test bot, test organization, and explicit opt-in so ordinary test runs cannot
 spend API credits or message real users.
 
+### Experimental LLM-led agent evaluation
+
+The isolated agent spike has deterministic unit tests that use fake model responses:
+
+```bash
+uv run pytest tests/test_agent_tools.py tests/test_agent_runtime.py \
+  tests/test_agent_simulator.py
+```
+
+Its live evaluation is an explicit, billable opt-in. It uses only an in-memory catalog,
+ledger, and proposal store, so it cannot alter inventory:
+
+```bash
+uv run python -m inventory_agent.agent.simulator --live
+```
+
+Use `--scenario NAME` to run one case. The scenario names and expected behaviors are
+documented in [docs/AGENT_SPIKE.md](docs/AGENT_SPIKE.md).
+
 ## Configuration
 
 Configuration is read from environment variables and `.env` by
@@ -351,6 +377,8 @@ Configuration is read from environment variables and `.env` by
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |
 | `OPENAI_MODEL` | Extraction and intent model | `gpt-5.6-luna` |
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |
+| `INVENTORY_AGENT_MODEL` | Isolated LLM-led agent evaluation model | `gpt-5.6-sol` |
+| `INVENTORY_AGENT_REASONING_EFFORT` | Reasoning level for the isolated agent | `low` |
 | `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
 | `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |
