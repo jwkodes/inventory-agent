@@ -15,9 +15,10 @@ VARIANT_ID = UUID("21000000-0000-0000-0000-000000000001")
 
 
 class RecordingAnswerer:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], *, fail: bool = False) -> None:
         self.events = events
         self.alert = False
+        self.fail = fail
 
     async def answer_callback_query(
         self,
@@ -28,6 +29,8 @@ class RecordingAnswerer:
     ) -> None:
         self.events.append("ack")
         self.alert = show_alert
+        if self.fail:
+            raise RuntimeError("Telegram acknowledgement expired")
 
 
 class RecordingActions:
@@ -91,3 +94,22 @@ async def test_confirm_and_cancel_route_to_distinct_actions() -> None:
         )
 
     assert events == ["ack", "confirm", "ack", "cancel"]
+
+
+async def test_expired_acknowledgement_does_not_block_idempotent_database_action() -> None:
+    events: list[str] = []
+    dispatcher = TelegramCallbackDispatcher(
+        answerer=RecordingAnswerer(events, fail=True),
+        repository=RecordingActions(events),
+    )
+
+    outcome = await dispatcher.dispatch(
+        callback_query_id="expired-callback",
+        callback_data=encode_callback(
+            CallbackCommand(CallbackAction.CONFIRM_PROPOSAL, PROPOSAL_ID)
+        ),
+        actor_id=ACTOR_ID,
+    )
+
+    assert events == ["ack", "confirm"]
+    assert outcome.status is CallbackOutcomeStatus.COMPLETED

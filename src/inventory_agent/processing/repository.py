@@ -9,12 +9,16 @@ from inventory_agent.processing.models import (
     ClaimedProcessingOutcome,
     OutboxCompletionStatus,
     ProcessingOutcomeDraft,
+    TelegramCallbackEventContext,
     TelegramTextEventContext,
 )
 from inventory_agent.telegram.confirmation import ProposalConfirmationView
 
 
 class SourceEventWorkRepository(Protocol):
+    async def claim_next_callback_event(self) -> TelegramCallbackEventContext | None:
+        """Claim the oldest eligible Telegram callback event."""
+
     async def claim_next_text_event(self) -> TelegramTextEventContext | None:
         """Claim the oldest eligible Telegram text event."""
 
@@ -67,6 +71,17 @@ class SupabaseSourceEventWorkRepository:
         self._headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
         self._timeout_seconds = timeout_seconds
         self._transport = transport
+
+    async def claim_next_callback_event(self) -> TelegramCallbackEventContext | None:
+        response = await self._post_rpc("claim_next_telegram_callback_event", {})
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError("Supabase returned an invalid callback event claim response")
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("Supabase returned more than one claimed callback event")
+        return TelegramCallbackEventContext.model_validate(rows[0])
 
     async def claim_next_text_event(self) -> TelegramTextEventContext | None:
         response = await self._post_rpc("claim_next_telegram_text_event", {})

@@ -110,6 +110,39 @@ async def test_source_repository_claims_next_event_without_an_id() -> None:
     assert context.event_id == EVENT_ID
 
 
+async def test_source_repository_claims_next_callback_context() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/v1/rpc/claim_next_telegram_callback_event"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "event_id": str(EVENT_ID),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "organization_user_id": str(MEMBER_ID),
+                    "external_event_id": "70005",
+                    "callback_query_id": "callback-5",
+                    "callback_data": "opaque-data",
+                    "chat_id": -100123,
+                    "telegram_message_id": 77,
+                    "telegram_user_id": 100000001,
+                }
+            ],
+        )
+
+    repository = SupabaseSourceEventWorkRepository(
+        supabase_url="http://supabase.test",
+        secret_key="test-secret",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    context = await repository.claim_next_callback_event()
+
+    assert context is not None
+    assert context.callback_query_id == "callback-5"
+    assert context.telegram_message_id == 77
+
+
 async def test_outbox_repository_serializes_durable_outcome() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/rest/v1/rpc/enqueue_processing_outcome"

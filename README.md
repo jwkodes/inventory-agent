@@ -13,7 +13,9 @@ OpenAI Responses API interpreter run inside the continuous text-processing worke
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
 then falls back to typo-tolerant PostgreSQL trigram candidates. The persisted text-event
 processor now joins extraction, matching, and idempotent proposal creation, and records
-its result in a durable outbound-message outbox.
+its result in a durable outbound-message outbox. The same worker processes stored
+Telegram button callbacks, applies idempotent proposal actions, and edits the original
+confirmation message.
 
 ## Architecture principles
 
@@ -205,10 +207,12 @@ The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
 uv run python -m inventory_agent.processing.worker --watch
 ```
 
-Each cycle claims at most one text event first, then one outbound result so a newly created
-proposal can be sent immediately. It polls every two seconds when both queues are idle. Use
-`--poll-seconds N` to choose an interval from greater than zero through 60 seconds. Without
-`--watch`, it runs one processing-and-delivery cycle, which is useful while debugging.
+Each cycle claims at most one button callback, one text event, and one outbound result, in
+that order. Button actions are prioritized so confirmation stays responsive; the remaining
+work still runs if one callback attempt fails. The worker polls every two seconds when all
+three queues are idle. Use `--poll-seconds N` to choose an interval from greater than zero
+through 60 seconds. Without `--watch`, it runs one complete cycle, which is useful while
+debugging.
 
 ## Development checks
 
@@ -237,17 +241,19 @@ The test suite deliberately separates these levels:
   boundaries. They are fast, deterministic, and run with `uv run pytest`.
 - Database component tests run migrations, constraints, and functions against the real
   local Supabase PostgreSQL using `supabase test db`.
-- Application component tests cross the text processor, matching and proposal adapters,
-  delivery service, and real local Supabase while keeping OpenAI and Telegram fake. They are
-  opt-in because they require running infrastructure and create temporary rows:
+- Application component tests cross text processing, matching, proposal creation, outbox
+  delivery, stored callback claiming, and cancellation against real local Supabase while
+  keeping OpenAI and Telegram fake. They are opt-in because they require running
+  infrastructure and create temporary rows:
 
 ```bash
 RUN_COMPONENT_TESTS=1 uv run pytest -m component
 ```
 
 Before running that command, start and reset local Supabase and copy its local secret key
-into `.env` as `SUPABASE_SECRET_KEY`. The component test refuses any Supabase URL whose host
-is not `127.0.0.1` or `localhost`, and deletes its temporary source event and outbox row.
+into `.env` as `SUPABASE_SECRET_KEY`. The component tests refuse any Supabase URL whose host
+is not `127.0.0.1` or `localhost`, and delete their temporary events, proposals, and outbox
+rows.
 
 Live OpenAI and Telegram end-to-end tests have not been automated yet. Those will use a
 dedicated test bot, test organization, and explicit opt-in so ordinary test runs cannot
@@ -317,14 +323,22 @@ evidence but have no stock delta, so they cannot be applied accidentally.
 Telegram confirmation rendering uses compact opaque callback data containing only action
 codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully
 resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets candidate
-buttons and cannot be confirmed. The outbox delivery worker now renders and sends these
-messages, while callback acknowledgement and database action dispatch remain separate.
+buttons and cannot be confirmed. The outbox delivery worker renders and sends these
+messages.
 
-The callback dispatcher acknowledges valid Telegram button presses before database work,
-then routes decoded Select, Confirm, and Cancel actions to separate database functions.
-Malformed callback data is acknowledged with an alert and never reaches Supabase. Confirm
-uses the existing atomic `apply_inventory_proposal` function; duplicate confirmations
-remain safe at the database boundary.
+Callback webhooks are stored before processing. The callback worker atomically claims the
+oldest due event, resolves its active organization member, and routes decoded Select,
+Confirm, and Cancel actions to separate database functions. It acknowledges valid Telegram
+button presses before database work when possible; an expired acknowledgement does not
+prevent the durable action. Malformed callback data is acknowledged with an alert and
+never reaches Supabase. Confirm uses the existing atomic `apply_inventory_proposal`
+function, so duplicate confirmations remain safe at the database boundary.
+
+After an action, the worker edits the original Telegram message: selection refreshes the
+proposal and its buttons, confirmation reports that inventory was updated, and cancellation
+removes the buttons. Replayed identical edits are treated as success because Telegram may
+answer that the message is already unchanged. Callback failures retry after 30 seconds and
+become `failed` after the third unsuccessful attempt, matching text-event handling.
 
 Variant selection rechecks organization membership, verifies that the variant was actually
 offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and

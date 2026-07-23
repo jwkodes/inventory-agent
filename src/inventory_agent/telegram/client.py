@@ -55,11 +55,40 @@ class TelegramBotClient:
             raise RuntimeError("Telegram returned an invalid message ID")
         return message_id
 
+    async def edit_message_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> None:
+        """Replace a bot message and its inline keyboard after a callback action."""
+
+        if not text.strip():
+            raise ValueError("Telegram message text must not be empty")
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": {"inline_keyboard": inline_keyboard or []},
+        }
+        response = await self._post(
+            "editMessageText",
+            body,
+            "message edit",
+            acceptable_error_descriptions=("message is not modified",),
+        )
+        if response.get("ok") is not True:
+            raise RuntimeError("Telegram rejected the message edit")
+
     async def _post(
         self,
         method: str,
         body: dict[str, object],
         operation: str,
+        *,
+        acceptable_error_descriptions: tuple[str, ...] = (),
     ) -> dict[str, object]:
         try:
             async with httpx.AsyncClient(
@@ -69,9 +98,18 @@ class TelegramBotClient:
                 response = await client.post(f"{self._base_url}/{method}", json=body)
         except httpx.HTTPError as error:
             raise RuntimeError(f"Telegram {operation} failed") from error
-        if not response.is_success:
-            raise RuntimeError(f"Telegram {operation} failed with HTTP {response.status_code}")
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError as error:
+            raise RuntimeError(f"Telegram returned an invalid {operation} response") from error
         if not isinstance(result, dict):
             raise RuntimeError(f"Telegram returned an invalid {operation} response")
+        description = result.get("description")
+        if not response.is_success:
+            if isinstance(description, str) and any(
+                accepted.casefold() in description.casefold()
+                for accepted in acceptable_error_descriptions
+            ):
+                return {"ok": True, "result": True}
+            raise RuntimeError(f"Telegram {operation} failed with HTTP {response.status_code}")
         return result

@@ -69,6 +69,14 @@ enter the transaction application path.
 Telegram delivery is at-least-once. Every event and confirmation handler must therefore
 be idempotent.
 
+Callback queries are persisted by the same gateway. The runtime prioritizes one due
+callback per cycle, resolves the active organization member again at claim time, then
+acknowledges and dispatches only compact decoded actions. Selection, confirmation, and
+cancellation use idempotent database functions and edit the original Telegram message.
+Expired callback acknowledgements do not block database work, and a repeated identical
+message edit is accepted as an already-completed side effect. Failed callback attempts
+retry after 30 seconds and the third failure is retained for operations.
+
 The text worker atomically claims a persisted event, resolves the organization member and
 default active location, then runs extraction, matching, and proposal creation. It writes
 the outcome to `processing_outbox` before completing the source event. Proposal and outbox

@@ -22,6 +22,22 @@ class TelegramTextEventContext(BaseModel):
     message_text: str
 
 
+class TelegramCallbackEventContext(BaseModel):
+    """Actor and source-message data resolved when a callback event is claimed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: UUID
+    organization_id: UUID
+    organization_user_id: UUID
+    external_event_id: str
+    callback_query_id: str
+    callback_data: str
+    chat_id: int
+    telegram_message_id: int
+    telegram_user_id: int
+
+
 class ProcessingOutcomeType(StrEnum):
     """Durable handoffs understood by a later outbound-delivery worker."""
 

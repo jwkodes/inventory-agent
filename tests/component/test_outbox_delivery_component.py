@@ -13,6 +13,7 @@ from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.service import InventoryItemMatcher
+from inventory_agent.processing.callback_events import TelegramCallbackEventProcessor
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.models import OutboxDeliveryStatus, TextEventProcessingStatus
 from inventory_agent.processing.repository import (
@@ -21,7 +22,10 @@ from inventory_agent.processing.repository import (
     SupabaseSourceEventWorkRepository,
 )
 from inventory_agent.processing.text_events import TelegramTextEventProcessor
+from inventory_agent.proposals.actions import SupabaseProposalActionRepository
 from inventory_agent.proposals.repository import SupabaseProposalRepository
+from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
+from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
 
 pytestmark = pytest.mark.component
 
@@ -31,6 +35,8 @@ ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 class RecordingTelegramSender:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
+        self.answers: list[str] = []
+        self.edits: list[tuple[int, int, str]] = []
 
     async def send_message(
         self,
@@ -41,6 +47,25 @@ class RecordingTelegramSender:
     ) -> int:
         self.messages.append((chat_id, text))
         return 991
+
+    async def answer_callback_query(
+        self,
+        *,
+        callback_query_id: str,
+        text: str | None = None,
+        show_alert: bool = False,
+    ) -> None:
+        self.answers.append(callback_query_id)
+
+    async def edit_message_text(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> None:
+        self.edits.append((chat_id, message_id, text))
 
 
 class FixedCommandInterpreter:
@@ -253,5 +278,140 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
             cleanup = await client.delete(
                 "/source_events",
                 params={"id": f"eq.{event_id}"},
+            )
+            cleanup.raise_for_status()
+
+
+async def test_callback_processing_crosses_python_and_local_supabase_boundaries() -> None:
+    settings, secret_key = local_supabase()
+    proposal_event_id = uuid4()
+    callback_event_id = uuid4()
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        proposal_source = await client.post(
+            "/source_events",
+            headers={"Prefer": "return=minimal"},
+            json={
+                "id": str(proposal_event_id),
+                "organization_id": str(ORGANIZATION_ID),
+                "provider": "component_test",
+                "external_event_id": f"component-proposal-{proposal_event_id}",
+                "event_type": "message",
+                "status": "processed",
+                "processed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        proposal_source.raise_for_status()
+        proposal_id: UUID | None = None
+        try:
+            create_proposal = await client.post(
+                "/rpc/create_inventory_proposal",
+                json={
+                    "p_organization_id": str(ORGANIZATION_ID),
+                    "p_location_id": "12000000-0000-0000-0000-000000000001",
+                    "p_source_event_id": str(proposal_event_id),
+                    "p_created_by": "11000000-0000-0000-0000-000000000001",
+                    "p_intent": "receive_stock",
+                    "p_idempotency_key": f"component-callback-{proposal_event_id}",
+                    "p_raw_command": {},
+                    "p_model_name": None,
+                    "p_model_response_id": None,
+                    "p_prompt_version": None,
+                    "p_notes": None,
+                    "p_lines": [
+                        {
+                            "line_number": 1,
+                            "source_text": "three milk",
+                            "requested_quantity": 3,
+                            "item_variant_id": ("21000000-0000-0000-0000-000000000002"),
+                            "match_method": "exact_identifier",
+                            "match_score": 1,
+                        }
+                    ],
+                },
+            )
+            create_proposal.raise_for_status()
+            proposal_id = UUID(create_proposal.json())
+            callback_data = encode_callback(
+                CallbackCommand(CallbackAction.CANCEL_PROPOSAL, proposal_id)
+            )
+            create_callback = await client.post(
+                "/source_events",
+                headers={"Prefer": "return=minimal"},
+                json={
+                    "id": str(callback_event_id),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "provider": "telegram",
+                    "external_event_id": f"component-callback-{callback_event_id}",
+                    "event_type": "callback_query",
+                    "payload": {
+                        "callback_query": {
+                            "id": f"query-{callback_event_id}",
+                            "from": {"id": 100000001},
+                            "data": callback_data,
+                            "message": {
+                                "message_id": 77,
+                                "chat": {"id": 100000001},
+                            },
+                        }
+                    },
+                },
+            )
+            create_callback.raise_for_status()
+
+            telegram = RecordingTelegramSender()
+            processor = TelegramCallbackEventProcessor(
+                events=SupabaseSourceEventWorkRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                dispatcher=TelegramCallbackDispatcher(
+                    answerer=telegram,
+                    repository=SupabaseProposalActionRepository(
+                        supabase_url=settings.supabase_url,
+                        secret_key=secret_key,
+                    ),
+                ),
+                proposal_views=SupabaseProcessingOutboxDeliveryRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                message_editor=telegram,
+            )
+            result = await processor.process_next()
+
+            assert result is not None
+            assert result.outcome.action is CallbackAction.CANCEL_PROPOSAL
+            assert telegram.answers == [f"query-{callback_event_id}"]
+            assert telegram.edits == [(100000001, 77, "Proposal cancelled.")]
+
+            proposal = await client.get(
+                "/transaction_proposals",
+                params={"select": "status", "id": f"eq.{proposal_id}"},
+            )
+            proposal.raise_for_status()
+            assert proposal.json() == [{"status": "rejected"}]
+            callback = await client.get(
+                "/source_events",
+                params={"select": "status", "id": f"eq.{callback_event_id}"},
+            )
+            callback.raise_for_status()
+            assert callback.json() == [{"status": "processed"}]
+        finally:
+            if proposal_id is not None:
+                delete_proposal = await client.delete(
+                    "/transaction_proposals",
+                    params={"id": f"eq.{proposal_id}"},
+                )
+                delete_proposal.raise_for_status()
+            delete_callback = await client.delete(
+                "/source_events",
+                params={"id": f"eq.{callback_event_id}"},
+            )
+            delete_callback.raise_for_status()
+            cleanup = await client.delete(
+                "/source_events",
+                params={"id": f"eq.{proposal_event_id}"},
             )
             cleanup.raise_for_status()

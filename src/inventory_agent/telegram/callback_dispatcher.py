@@ -58,7 +58,7 @@ class TelegramCallbackDispatcher:
         try:
             command = decode_callback(callback_data)
         except ValueError:
-            await self._answerer.answer_callback_query(
+            await self._try_answer(
                 callback_query_id=callback_query_id,
                 text="This action is invalid or expired.",
                 show_alert=True,
@@ -70,7 +70,7 @@ class TelegramCallbackDispatcher:
                 "Malformed callback data",
             )
 
-        await self._answerer.answer_callback_query(callback_query_id=callback_query_id)
+        await self._try_answer(callback_query_id=callback_query_id)
 
         try:
             if command.action is CallbackAction.SELECT_VARIANT:
@@ -115,3 +115,21 @@ class TelegramCallbackDispatcher:
             result_id,
             message,
         )
+
+    async def _try_answer(
+        self,
+        *,
+        callback_query_id: str,
+        text: str | None = None,
+        show_alert: bool = False,
+    ) -> None:
+        """Acknowledgement is best-effort; durable database work must remain retryable."""
+
+        try:
+            await self._answerer.answer_callback_query(
+                callback_query_id=callback_query_id,
+                text=text,
+                show_alert=show_alert,
+            )
+        except (RuntimeError, httpx.HTTPError):
+            return
