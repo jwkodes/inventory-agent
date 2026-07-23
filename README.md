@@ -8,7 +8,8 @@ compensating transactions.
 This repository is in the prototype stage. It currently includes the application
 foundation, a health endpoint, the first Supabase inventory schema, atomic stock
 application, immutable movements, compensating reversals, and authenticated,
-idempotent Telegram webhook ingestion.
+idempotent Telegram webhook ingestion. A versioned Structured Outputs contract and
+OpenAI Responses API interpreter are ready for the text-processing worker.
 
 ## Architecture principles
 
@@ -233,6 +234,19 @@ Configuration is read from environment variables and `.env` by
 The default model is a configuration baseline, not a permanent product decision. Model
 quality, latency, and cost will be measured against representative text and invoice cases.
 
+## Structured command extraction
+
+[`schema.py`](src/inventory_agent/extraction/schema.py) is the single source of truth for
+model output. The interpreter uses the OpenAI Responses API's native Pydantic Structured
+Outputs support; it does not parse ad-hoc JSON. The schema permits receive, issue,
+adjustment, query, and unknown intents. It carries source item references, positive
+decimal-string quantities, units, and a list of company-specific attribute hints.
+
+The model cannot provide database IDs or apply an item match. Unclear and unrelated input
+has an explicit clarification state, and refusals are raised separately. Provider response
+ID, model, prompt version, and token usage are returned for later persistence and
+evaluation. Automated tests use local fake responses and never spend API credits.
+
 ## Repository layout
 
 ```text
@@ -282,8 +296,8 @@ data only and must never be loaded into production.
 1. Project setup and health endpoint — complete
 2. Supabase schema, seed inventory, atomic apply, and reversal functions — complete
 3. Telegram webhook authentication and idempotent event ingestion — complete
-4. Text intent extraction using a strict structured schema — next
-5. Exact identifier, alias, and fuzzy name matching
+4. Text intent extraction using a strict structured schema — complete
+5. Exact identifier, alias, and fuzzy name matching — next
 6. Telegram confirmation, editing, cancellation, and reversal
 7. Invoice image extraction
 8. Voice-note transcription

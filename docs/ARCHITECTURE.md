@@ -91,10 +91,12 @@ Example model output:
       "description": null,
       "quantity": "3",
       "unit": null,
-      "attributes": {}
+      "attributes": []
     }
   ],
-  "notes": null
+  "notes": null,
+  "needs_clarification": false,
+  "clarification_question": null
 }
 ```
 
