@@ -11,7 +11,9 @@ application, immutable movements, compensating reversals, and authenticated,
 idempotent Telegram webhook ingestion. A versioned Structured Outputs contract and
 OpenAI Responses API interpreter are ready for the text-processing worker.
 Organization-scoped catalog matching resolves exact identifiers and confirmed aliases,
-then falls back to typo-tolerant PostgreSQL trigram candidates.
+then falls back to typo-tolerant PostgreSQL trigram candidates. The persisted text-event
+processor now joins extraction, matching, and idempotent proposal creation, and records
+its result in a durable outbound-message outbox.
 
 ## Architecture principles
 
@@ -295,6 +297,31 @@ and retain a reason first.
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
 two"), because those operations have different concurrency and reversal semantics.
+
+## Background text processing
+
+`claim_telegram_text_event` atomically changes one stored Telegram message from `received`
+to `processing` and resolves its organization member and active inventory location. A
+second worker cannot claim the same event. A claim abandoned for 15 minutes can be reclaimed
+after a worker crash, with every attempt counted for operations and audit. The Python
+processor then:
+
+1. Extracts the strict, versioned command.
+2. Matches each mutation line within the organization's catalog.
+3. Stores an idempotent proposal with either a resolved variant or selectable candidates.
+4. Enqueues a `proposal_ready`, `clarification_required`, or `unsupported_command` outcome.
+5. Marks the source event `processed`; failures are marked `failed` with a sanitized error.
+
+The `processing_outbox` is the durable boundary between interpretation and Telegram
+delivery. This matters because a Telegram outage must not cause the OpenAI call or proposal
+creation to run again. Outcome insertion and proposal creation each have database-level
+idempotency keys. A delivery worker that claims pending outbox rows and sends the rendered
+confirmation is the next integration slice.
+
+The prototype selects the organization's configured `settings.default_location_id` when
+it names an active location; otherwise it deterministically uses the first active location
+by code. Location selection from message hints and per-user defaults is not implemented yet.
+Failed events remain available for audit but are not automatically retried yet.
 
 ## Repository layout
 

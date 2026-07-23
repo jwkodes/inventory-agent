@@ -18,6 +18,10 @@ Telegram text / photo / voice
   authentication + deduplication
               |
               v
+      Persisted source event
+       atomic worker claim
+              |
+              v
        Input interpretation
  text/image -> structured command
  voice -> transcript -> structured command
@@ -29,6 +33,10 @@ Telegram text / photo / voice
               v
        Transaction proposal
  resolved items + quantities + warnings
+              |
+              v
+       Processing outbox
+ durable Telegram-delivery handoff
               |
               v
       Telegram confirmation
@@ -60,6 +68,13 @@ enter the transaction application path.
 
 Telegram delivery is at-least-once. Every event and confirmation handler must therefore
 be idempotent.
+
+The text worker atomically claims a persisted event, resolves the organization member and
+default active location, then runs extraction, matching, and proposal creation. It writes
+the outcome to `processing_outbox` before completing the source event. Proposal and outbox
+keys are idempotent, so a repeated processing attempt cannot create duplicate business or
+delivery records. A 15-minute claim lease permits recovery after a worker crash. A separate
+worker owns Telegram delivery and its retry policy.
 
 ### Source artifact service
 
@@ -184,6 +199,7 @@ Implemented core tables:
 | `item_aliases` | Human-confirmed supplier/name mappings |
 | `source_events` | Telegram event and processing audit |
 | `source_artifacts` | Private image, document, and audio metadata |
+| `processing_outbox` | Durable outcomes awaiting outbound Telegram delivery |
 
 All tenant-owned rows contain `organization_id`. Foreign keys, uniqueness constraints,
 and Supabase Row Level Security provide tenant isolation.
