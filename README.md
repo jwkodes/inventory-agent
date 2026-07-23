@@ -149,16 +149,43 @@ Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 
 Telegram can deliver webhooks only to a public HTTPS URL. For local development, keep
 the API running and expose port 8000 through an HTTPS tunnel. One development-only
-option is a Cloudflare Quick Tunnel:
+option is a Cloudflare Quick Tunnel. It generates a temporary HTTPS hostname without
+requiring a domain or Cloudflare account.
+
+Install `cloudflared` once:
 
 ```bash
 brew install cloudflared
+```
+
+Then keep the following processes open in separate terminals.
+
+Terminal 1 — API:
+
+```bash
+uv run uvicorn inventory_agent.main:app --reload
+```
+
+Terminal 2 — public tunnel:
+
+```bash
 cloudflared tunnel --url http://127.0.0.1:8000
 ```
 
 You can use another tunnel provider instead. Copy the generated HTTPS hostname, append
 `/webhooks/telegram`, and put the full URL in `.env` as `TELEGRAM_WEBHOOK_URL`.
 Quick Tunnel hostnames change when restarted and are not suitable for production.
+Verify the public route before registering it:
+
+```bash
+curl https://YOUR-GENERATED-HOSTNAME.trycloudflare.com/health
+```
+
+It should return:
+
+```json
+{"status":"ok","service":"inventory-agent"}
+```
 
 Before registering a webhook, identify your Telegram numeric user ID:
 
@@ -186,7 +213,7 @@ openssl rand -hex 32
 ```
 
 Put the result in `.env` as `TELEGRAM_WEBHOOK_SECRET`, set the tunnel URL in
-`TELEGRAM_WEBHOOK_URL`, and register it:
+`TELEGRAM_WEBHOOK_URL`, and register it from a third terminal:
 
 ```bash
 uv run python -m inventory_agent.telegram.setup_webhook
@@ -201,6 +228,18 @@ User discovery uses Telegram's `getUpdates` endpoint, which is unavailable after
 webhook is active. If the webhook URL changes, update `TELEGRAM_WEBHOOK_URL` and rerun the
 registration command. Never paste a real bot token or webhook secret into source files,
 terminal screenshots, issues, or chat.
+
+After restarting the computer or stopping the Quick Tunnel:
+
+1. Start Docker Desktop and run `supabase start`.
+2. Restart the API in terminal 1.
+3. Restart `cloudflared` in terminal 2.
+4. Copy its new hostname into `TELEGRAM_WEBHOOK_URL`.
+5. Rerun `uv run python -m inventory_agent.telegram.setup_webhook`.
+6. Start the background worker described below.
+
+Press `Ctrl+C` in the API or tunnel terminal to stop that process. Closing Codex or a
+terminal session may also stop processes launched from it.
 
 ### 8. Run the background worker
 
