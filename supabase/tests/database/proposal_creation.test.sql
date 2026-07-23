@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(9);
+select plan(14);
 
 select has_function(
   'public',
@@ -135,6 +135,74 @@ select is(
   ),
   null::numeric,
   'unresolved lines do not invent a stock delta'
+);
+
+update public.proposal_lines as line
+set match_evidence = jsonb_build_object(
+  'candidates', jsonb_build_array(
+    jsonb_build_object(
+      'item_variant_id', '21000000-0000-0000-0000-000000000002',
+      'label', 'Full Cream Milk 1L'
+    )
+  )
+)
+from public.transaction_proposals as proposal
+where proposal.id = line.proposal_id
+  and proposal.idempotency_key = 'proposal-test-unresolved';
+
+select lives_ok(
+  format(
+    'select public.resolve_proposal_line(%L, %L, %L)',
+    (
+      select line.id from public.proposal_lines as line
+      join public.transaction_proposals as proposal on proposal.id = line.proposal_id
+      where proposal.idempotency_key = 'proposal-test-unresolved'
+    ),
+    '21000000-0000-0000-0000-000000000002',
+    '11000000-0000-0000-0000-000000000001'
+  ),
+  'a user can select an offered simple variant'
+);
+
+select is(
+  (
+    select line.match_method::text from public.proposal_lines as line
+    join public.transaction_proposals as proposal on proposal.id = line.proposal_id
+    where proposal.idempotency_key = 'proposal-test-unresolved'
+  ),
+  'human_selected',
+  'human selection is retained as matching evidence'
+);
+
+select is(
+  (
+    select line.base_quantity_delta from public.proposal_lines as line
+    join public.transaction_proposals as proposal on proposal.id = line.proposal_id
+    where proposal.idempotency_key = 'proposal-test-unresolved'
+  ),
+  3::numeric,
+  'human selection derives the base-unit delta'
+);
+
+select lives_ok(
+  format(
+    'select public.cancel_inventory_proposal(%L, %L)',
+    (
+      select proposal.id from public.transaction_proposals as proposal
+      where proposal.idempotency_key = 'proposal-test-unresolved'
+    ),
+    '11000000-0000-0000-0000-000000000001'
+  ),
+  'a pending proposal can be cancelled'
+);
+
+select is(
+  (
+    select proposal.status::text from public.transaction_proposals as proposal
+    where proposal.idempotency_key = 'proposal-test-unresolved'
+  ),
+  'rejected',
+  'cancelled proposal is retained as rejected'
 );
 
 select throws_like(

@@ -277,8 +277,14 @@ evidence but have no stock delta, so they cannot be applied accidentally.
 Telegram confirmation rendering uses compact opaque callback data containing only action
 codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully
 resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets candidate
-buttons and cannot be confirmed. Callback execution, immediate callback acknowledgement,
-and outbound Telegram delivery are the next integration step.
+buttons and cannot be confirmed. Immediate callback acknowledgement and outbound Telegram
+delivery are the next integration step.
+
+The database action layer supports selecting an offered variant for a pending simple item
+and cancelling a pending proposal. Selection rechecks organization membership, verifies
+that the variant was actually offered, derives its base-unit delta, and records
+`human_selected` evidence. Lot- and serial-tracked selections remain blocked until their
+required tracking-detail prompts are implemented.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to
