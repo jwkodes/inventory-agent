@@ -119,6 +119,28 @@ async def test_send_message_safely_renders_bold_markdown_as_telegram_html() -> N
     )
 
 
+async def test_send_message_renders_inline_code_without_leaking_backticks() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "Add <code>SHIRT-BLUE-L</code> and keep <code>A&amp;B&lt;1&gt;</code> literal."
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 78}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text="Add `SHIRT-BLUE-L` and keep `A&B<1>` literal.",
+    )
+
+
 async def test_send_message_safely_renders_both_markdown_italic_styles() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
         assert json.loads(request.content) == {

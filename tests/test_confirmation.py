@@ -106,7 +106,7 @@ def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() ->
     assert "No confident catalog match" in message.text
 
 
-def test_multi_line_buttons_include_their_line_numbers() -> None:
+def test_multiple_unmatched_lines_use_descriptions_instead_of_internal_numbers() -> None:
     second_line_id = UUID("41000000-0000-0000-0000-000000000002")
     message = render_proposal_confirmation(
         proposal_id=PROPOSAL_ID,
@@ -130,13 +130,45 @@ def test_multi_line_buttons_include_their_line_numbers() -> None:
     )
 
     assert [button.text for button in message.inline_keyboard[0]] == [
-        "1: Add new item",
-        "1: Choose existing",
+        "Add new item: Purple Widget",
+        "Choose existing: Purple Widget",
     ]
     assert [button.text for button in message.inline_keyboard[1]] == [
-        "2: Add new item",
-        "2: Choose existing",
+        "Add new item: Orange Widget",
+        "Choose existing: Orange Widget",
     ]
+
+
+def test_only_unmatched_line_uses_plain_buttons_even_when_proposal_has_two_lines() -> None:
+    second_line_id = UUID("41000000-0000-0000-0000-000000000002")
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Classic T-Shirt - Blue / L",
+                quantity=Decimal("100"),
+                unit="each",
+                matched_label="Classic T-Shirt - Blue / L · SHIRT-BLUE-L",
+            ),
+            ProposalLineView(
+                proposal_line_id=second_line_id,
+                description="Classic T-Shirt",
+                quantity=Decimal("100"),
+                unit="each",
+                match_decision="not_found",
+            ),
+        ],
+    )
+
+    assert [button.text for button in message.inline_keyboard[0]] == [
+        "Add new item",
+        "Choose existing",
+    ]
+    assert {
+        decode_callback(button.callback_data).target_id for button in message.inline_keyboard[0]
+    } == {second_line_id}
 
 
 def test_match_clarification_asks_for_one_natural_reply_without_candidate_buttons() -> None:

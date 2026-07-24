@@ -22,6 +22,7 @@ _FENCED_CODE_BLOCK = re.compile(
     r"(?:\r?\n)?```",
     flags=re.DOTALL,
 )
+_INLINE_CODE_MARKDOWN = re.compile(r"(?<!`)`(?P<code>[^`\r\n]+)`(?!`)")
 _TABLE_DELIMITER_CELL = re.compile(r"^:?-{3,}:?$")
 
 
@@ -268,6 +269,17 @@ def _render_plain_telegram_html(text: str) -> str:
 
 
 def _render_inline_telegram_html(text: str) -> str:
+    rendered: list[str] = []
+    cursor = 0
+    for match in _INLINE_CODE_MARKDOWN.finditer(text):
+        rendered.append(_render_emphasis_telegram_html(text[cursor : match.start()]))
+        rendered.append(f"<code>{escape(match.group('code'), quote=False)}</code>")
+        cursor = match.end()
+    rendered.append(_render_emphasis_telegram_html(text[cursor:]))
+    return "".join(rendered)
+
+
+def _render_emphasis_telegram_html(text: str) -> str:
     escaped = escape(text, quote=False)
     rendered = _BOLD_MARKDOWN.sub(r"<b>\1</b>", escaped)
     rendered = _ITALIC_ASTERISK_MARKDOWN.sub(r"<i>\1</i>", rendered)

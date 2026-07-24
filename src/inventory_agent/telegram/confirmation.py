@@ -61,9 +61,9 @@ def render_proposal_confirmation(
     unresolved = False
     clarification_prompt_shown = False
     has_multiple_lines = len(lines) > 1
+    has_multiple_unresolved_lines = sum(line.matched_label is None for line in lines) > 1
 
     for index, line in enumerate(lines, start=1):
-        button_prefix = f"{index}: " if has_multiple_lines else ""
         unit = f" {line.unit}" if line.unit else ""
         match = line.matched_label or "match required"
         text_lines.append(f"{index}. {line.quantity}{unit} — {line.description} → {match}")
@@ -85,7 +85,11 @@ def render_proposal_confirmation(
                 keyboard.append(
                     [
                         InlineButton(
-                            text=f"{button_prefix}Add new item",
+                            text=_line_action_label(
+                                "Add new item",
+                                line.description,
+                                disambiguate=has_multiple_unresolved_lines,
+                            ),
                             callback_data=encode_callback(
                                 CallbackCommand(
                                     CallbackAction.ADD_NEW_ITEM,
@@ -94,7 +98,11 @@ def render_proposal_confirmation(
                             ),
                         ),
                         InlineButton(
-                            text=f"{button_prefix}Choose existing",
+                            text=_line_action_label(
+                                "Choose existing",
+                                line.description,
+                                disambiguate=has_multiple_unresolved_lines,
+                            ),
                             callback_data=encode_callback(
                                 CallbackCommand(
                                     CallbackAction.SHOW_EXISTING_ITEMS,
@@ -109,7 +117,11 @@ def render_proposal_confirmation(
                     keyboard.append(
                         [
                             InlineButton(
-                                text=f"{button_prefix}{choice.label}"[:64],
+                                text=_candidate_label(
+                                    choice.label,
+                                    line.description,
+                                    disambiguate=has_multiple_unresolved_lines,
+                                ),
                                 callback_data=encode_callback(
                                     CallbackCommand(
                                         action=CallbackAction.SELECT_VARIANT,
@@ -152,6 +164,28 @@ def render_proposal_confirmation(
         )
 
     return ConfirmationMessage(text="\n".join(text_lines), inline_keyboard=keyboard)
+
+
+def _line_action_label(
+    action: str,
+    description: str,
+    *,
+    disambiguate: bool,
+) -> str:
+    if not disambiguate:
+        return action
+    return f"{action}: {description}"[:64]
+
+
+def _candidate_label(
+    candidate: str,
+    description: str,
+    *,
+    disambiguate: bool,
+) -> str:
+    if not disambiguate:
+        return candidate[:64]
+    return f"{description} → {candidate}"[:64]
 
 
 def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> ConfirmationMessage:
