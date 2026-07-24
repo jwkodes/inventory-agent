@@ -346,17 +346,33 @@ class ProductionInventoryAgentTools:
         self,
         arguments: TransactionReadArguments,
     ) -> dict[str, object]:
-        transactions = await self._reads.read_transactions(
+        targeted = await self._reads.read_transactions(
             organization_id=self._context.organization_id,
             query=arguments.query,
             limit=arguments.limit,
         )
+        transactions = targeted
+        included_recent_fallback = False
+        if arguments.query is not None and arguments.query.strip():
+            recent = await self._reads.read_transactions(
+                organization_id=self._context.organization_id,
+                query=None,
+                limit=arguments.limit,
+            )
+            seen = {transaction.transaction_id for transaction in targeted}
+            transactions = [
+                *targeted,
+                *(transaction for transaction in recent if transaction.transaction_id not in seen),
+            ][: arguments.limit]
+            included_recent_fallback = len(transactions) > len(targeted)
         self.allowed_transaction_ids.update(
             UUID(transaction.transaction_id) for transaction in transactions
         )
         return {
             "ok": True,
             "count": len(transactions),
+            "targeted_count": len(targeted),
+            "included_recent_fallback": included_recent_fallback,
             "transactions": [transaction.model_dump(mode="json") for transaction in transactions],
         }
 

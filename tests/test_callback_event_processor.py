@@ -84,6 +84,33 @@ class RecordingOutbox:
         return OUTBOX_ID
 
 
+class RecordingConversation:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record_callback_outcome(
+        self,
+        *,
+        organization_id: UUID,
+        organization_user_id: UUID,
+        chat_id: int,
+        source_event_id: UUID,
+        action: str,
+        result_id: UUID,
+    ) -> UUID | None:
+        self.calls.append(
+            {
+                "organization_id": organization_id,
+                "organization_user_id": organization_user_id,
+                "chat_id": chat_id,
+                "source_event_id": source_event_id,
+                "action": action,
+                "result_id": result_id,
+            }
+        )
+        return UUID("65000000-0000-0000-0000-000000000001")
+
+
 def context() -> TelegramCallbackEventContext:
     return TelegramCallbackEventContext(
         event_id=EVENT_ID,
@@ -129,6 +156,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()
     outbox = RecordingOutbox()
+    conversation = RecordingConversation()
     processor = TelegramCallbackEventProcessor(
         events=events,
         dispatcher=FakeDispatcher(
@@ -141,6 +169,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
         ),
         message_editor=editor,
         outbox=outbox,
+        conversation_recorder=conversation,
     )
 
     await processor.process_next()
@@ -148,6 +177,16 @@ async def test_confirmation_offers_a_reversal_button() -> None:
     assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "transaction_applied"
     assert outbox.drafts[0].aggregate_id == TRANSACTION_ID
+    assert conversation.calls == [
+        {
+            "organization_id": ORGANIZATION_ID,
+            "organization_user_id": ACTOR_ID,
+            "chat_id": -100123,
+            "source_event_id": EVENT_ID,
+            "action": "confirm_proposal",
+            "result_id": TRANSACTION_ID,
+        }
+    ]
     assert events.finishes == [(EVENT_ID, True, None)]
 
 

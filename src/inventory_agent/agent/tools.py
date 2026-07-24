@@ -129,7 +129,9 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "name": "read_transactions",
         "description": (
             "Search recent immutable inventory transactions before proposing a reversal. "
-            "Returns authoritative transaction IDs."
+            "Returns authoritative transaction IDs. A filtered search also includes recent "
+            "transactions as fallback evidence so natural wording cannot hide an existing "
+            "transaction."
         ),
         "strict": True,
         "parameters": {

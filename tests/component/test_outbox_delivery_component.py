@@ -46,6 +46,7 @@ from inventory_agent.telegram.client import DownloadedTelegramFile
 pytestmark = pytest.mark.component
 
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
+ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 
 
 class RecordingTelegramSender:
@@ -987,6 +988,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
     settings, secret_key = local_supabase()
     proposal_event_id = uuid4()
     callback_event_id = uuid4()
+    component_chat_id = 800_000_000 + callback_event_id.int % 100_000_000
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
     async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
@@ -1006,7 +1008,18 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
         )
         proposal_source.raise_for_status()
         proposal_id: UUID | None = None
+        conversation_id: UUID | None = None
         try:
+            agent_repository = SupabaseAgentRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            conversation = await agent_repository.load(
+                organization_id=ORGANIZATION_ID,
+                organization_user_id=ACTOR_ID,
+                chat_id=component_chat_id,
+            )
+            conversation_id = conversation.conversation_id
             create_proposal = await client.post(
                 "/rpc/create_inventory_proposal",
                 json={
@@ -1054,7 +1067,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                             "data": callback_data,
                             "message": {
                                 "message_id": 77,
-                                "chat": {"id": 100000001},
+                                "chat": {"id": component_chat_id},
                             },
                         }
                     },
@@ -1088,13 +1101,34 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),
+                conversation_recorder=agent_repository,
             )
             result = await processor.process_next()
 
             assert result is not None
             assert result.outcome.action is CallbackAction.CANCEL_PROPOSAL
             assert telegram.answers == [f"query-{callback_event_id}"]
-            assert telegram.removed_keyboards == [(100000001, 77)]
+            assert telegram.removed_keyboards == [(component_chat_id, 77)]
+
+            updated_conversation = await agent_repository.load(
+                organization_id=ORGANIZATION_ID,
+                organization_user_id=ACTOR_ID,
+                chat_id=component_chat_id,
+            )
+            callback_items = [
+                item for item in updated_conversation.history if item.get("role") == "system"
+            ]
+            assert callback_items == [
+                {
+                    "role": "system",
+                    "content": (
+                        "Inventory system event: The user cancelled stock proposal "
+                        f"{proposal_id}. It was not applied and no inventory change "
+                        "resulted from that proposal."
+                    ),
+                }
+            ]
+            assert updated_conversation.active_turns[-1].source_event_id == callback_event_id
 
             callback_outbox = await client.get(
                 "/processing_outbox",
@@ -1118,7 +1152,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             assert delivery.status is OutboxDeliveryStatus.SENT
             assert telegram.messages == [
                 (
-                    100000001,
+                    component_chat_id,
                     "🚫 **Proposal cancelled**\nNo inventory changes were applied.",
                 )
             ]
@@ -1136,6 +1170,12 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             callback.raise_for_status()
             assert callback.json() == [{"status": "processed"}]
         finally:
+            if conversation_id is not None:
+                delete_conversation = await client.delete(
+                    "/inventory_agent_conversations",
+                    params={"id": f"eq.{conversation_id}"},
+                )
+                delete_conversation.raise_for_status()
             if proposal_id is not None:
                 delete_proposal = await client.delete(
                     "/transaction_proposals",

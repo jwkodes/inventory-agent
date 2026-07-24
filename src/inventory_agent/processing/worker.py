@@ -190,6 +190,14 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        agent_repository = (
+            SupabaseAgentRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            if settings.inventory_agent_enabled
+            else None
+        )
         callback_processor = TelegramCallbackEventProcessor(
             events=event_repository,
             dispatcher=TelegramCallbackDispatcher(
@@ -203,6 +211,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             ),
             message_editor=telegram_client,
             outbox=outbox,
+            conversation_recorder=agent_repository,
         )
         candidate_judge = (
             OpenAICandidateJudge(
@@ -255,10 +264,8 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             reasoning_effort=settings.openai_reasoning_effort,
         )
         if settings.inventory_agent_enabled:
-            agent_repository = SupabaseAgentRepository(
-                supabase_url=settings.supabase_url,
-                secret_key=secret_key,
-            )
+            if agent_repository is None:  # pragma: no cover - construction invariant
+                raise RuntimeError("Inventory agent repository is unavailable")
             agent_model = OpenAIResponsesAgentModel(
                 client=openai_client,
                 model=settings.inventory_agent_model,

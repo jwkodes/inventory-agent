@@ -36,6 +36,7 @@ flowchart TD
     CALLBACK -->|Cancel| CANCEL["Reject proposal<br/>No inventory write"]
     CALLBACK -->|Select match or add item| RESUME["Update pending workflow<br/>No model"]
     CALLBACK -->|Confirm reversal| REVERSE["Apply compensating transaction"]
+    CALLBACK -->|Completed lifecycle action| CONTEXT_EVENT[("Append authoritative system turn<br/>Agent context · no model")]
 
     WORKER -->|Text| PENDING{"Pending deterministic flow?"}
     PENDING -->|Reversal reason| REASON["Store reason and request confirmation<br/>No model"]
@@ -55,7 +56,7 @@ flowchart TD
     EMBED --> SEARCH["pgvector candidate retrieval"]
     EXACT --> AGENT
     SEARCH --> AGENT
-    AGENT -->|Read ledger| LEDGER["Read recent transactions<br/>No model"]
+    AGENT -->|Read ledger| LEDGER["Token-ranked transaction search<br/>plus recent fallback · no model"]
     LEDGER --> AGENT
     AGENT -->|ADD or DEDUCT| PROPOSAL["Create pending stock proposal<br/>No inventory write"]
     AGENT -->|New catalog item| ITEM_REVIEW
@@ -103,7 +104,7 @@ flowchart TD
     class AGENT,SUMMARY primary;
     class CATALOG,TEXT_EXTRACT,IMAGE,JUDGE routine;
     class EMBED,SEMANTIC embed;
-    class EVENT,OUTBOX storage;
+    class EVENT,OUTBOX,CONTEXT_EVENT storage;
     class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
 ```
 
@@ -177,6 +178,14 @@ edits or deletes the original applied transaction.
   name-based retrieval, not for exact identifiers or broad inventory listings.
 - Context summarisation is conditional housekeeping, not an automatic call on every turn.
 - Callback confirmations, cancellations and transaction application do not call a model.
+- Successful confirmation and cancellation callbacks append a deterministic system turn
+  to active agent context. The next agent turn can see that lifecycle result but must
+  still read the authoritative transaction ledger before a correction or reversal.
+- Filtered ledger reads rank normalized query tokens and automatically include recent
+  fallback transactions. A failed literal phrase can no longer establish that no
+  transaction exists.
+- Reversal applies to a complete transaction. Correcting one line requires reversing the
+  original transaction and then confirming a corrected replacement.
 - Voice-note transcription is not yet implemented in the current worker and is therefore
   not shown as an active branch.
 

@@ -520,6 +520,12 @@ The agent can:
   transaction; and
 - answer inventory questions while declining unrelated chat.
 
+Filtered transaction reads use ranked token matching rather than one literal phrase. They
+also include recent transactions as fallback evidence, so wording such as “red T-shirt
+sale” can still retrieve a stored `issue` transaction whose summary uses different terms.
+The agent may not conclude that a transaction is absent until it has inspected the recent
+unfiltered ledger.
+
 Every mutation remains pending until the user presses the Telegram confirmation button.
 The agent reply and the rendered review are sent together as a new Telegram message.
 Turning `INVENTORY_AGENT_ENABLED` back to `false` restores the previous structured text
@@ -810,6 +816,13 @@ treated as success because Telegram may answer that the markup is already unchan
 Callback failures retry after 30 seconds and become `failed` after the third unsuccessful
 attempt, matching text-event handling.
 
+When the LLM-led agent is enabled, completed proposal, catalog-item, and reversal
+confirmations or cancellations also append a deterministic `system` item to that user's
+durable conversation. The next model turn therefore knows whether the preceding proposal
+was applied or cancelled, while still being required to read the authoritative ledger
+before correcting or reversing a transaction. Callback records contain no model call and
+are retained and compacted under the same conversation policy as agent turns.
+
 System-generated Telegram messages use a small visual status vocabulary so the write
 state is visible at a glance:
 
@@ -848,6 +861,11 @@ edits or deletes the original ledger. The request retains its reason and compens
 transaction ID. Cancellation changes no stock. Request creation, reason capture, final
 confirmation, cancellation, Telegram message edits, and all callback-notification
 enqueueing are safe to replay after a worker crash.
+
+Reversal currently applies to the complete transaction rather than selected lines. To
+correct one line in a multi-line transaction, reverse the complete original transaction
+and then create and confirm one corrected replacement transaction. The agent is explicitly
+instructed not to add a second deduction on top of the incorrect applied transaction.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to

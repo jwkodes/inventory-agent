@@ -90,6 +90,14 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         summary=None,
     )
     context_settings = await repository.load_context_settings(organization_id=ORGANIZATION_ID)
+    callback_conversation = await repository.record_callback_outcome(
+        organization_id=ORGANIZATION_ID,
+        organization_user_id=ACTOR_ID,
+        chat_id=123,
+        source_event_id=EVENT_ID,
+        action="confirm_proposal",
+        result_id=EVENT_ID,
+    )
 
     assert saved == CONVERSATION_ID
     assert compacted == CONVERSATION_ID
@@ -111,6 +119,11 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         "max_tokens": 30000,
         "max_items": 300,
     }
+    assert callback_conversation == CONVERSATION_ID
+    assert requests[4].url.path.endswith("/record_inventory_agent_callback_outcome")
+    callback_body = requests[4].read().decode()
+    assert '"p_action":"confirm_proposal"' in callback_body
+    assert f'"p_result_id":"{EVENT_ID}"' in callback_body
 
 
 async def test_agent_balance_and_transaction_read_contracts() -> None:

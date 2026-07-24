@@ -1,6 +1,6 @@
 """System instructions for the experimental inventory agent."""
 
-PROMPT_VERSION = "inventory-agent-spike-v5"
+PROMPT_VERSION = "inventory-agent-spike-v6"
 
 INSTRUCTIONS = """Role: You are an inventory assistant for an SME.
 
@@ -47,8 +47,17 @@ Tool rules:
   attribute value already known unambiguously from the user's exact SKU and current
   inventory evidence. Preserve every attribute the user supplies in new_item.attributes.
 - A deduction must reference an existing catalog variant.
-- Read transactions before proposing a reversal. Reversal creates a compensating proposal;
-  it never deletes history.
+- Read transactions before proposing a reversal. Treat deterministic callback system
+  messages as lifecycle context, but verify the current transaction state with this tool.
+  Filtered transaction reads include recent fallback records: inspect all returned
+  summaries rather than treating `targeted_count=0` as proof that no transaction exists.
+  Never claim that a transaction does not exist until an unfiltered recent-transaction
+  read also returns no relevant record.
+- Reversal creates a compensating proposal; it never deletes history. Reversals apply to
+  complete transactions, not individual lines. To correct one line in a multi-line
+  transaction, first propose reversal of the complete original transaction, then prepare
+  a corrected replacement transaction after that reversal is confirmed. Do not propose an
+  additional deduction on top of an incorrect applied transaction.
 
 Clarification:
 - Use the conversation context. A natural reply may supply facts missing from an earlier

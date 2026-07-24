@@ -119,6 +119,30 @@ class FakeReads(AgentReadRepository):
         return []
 
 
+class FallbackTransactionReads(FakeReads):
+    def __init__(self) -> None:
+        self.queries: list[str | None] = []
+        self.transaction = TransactionRecord(
+            transaction_id="60000000-0000-0000-0000-000000000001",
+            transaction_type="issue",
+            occurred_at="2026-07-24T11:33:35+00:00",
+            summary=(
+                "Issue: 100 each Classic T-Shirt [SHIRT-BLUE-S], "
+                "12 each Classic T-Shirt - Red / M [SHIRT-RED-M]"
+            ),
+        )
+
+    async def read_transactions(
+        self,
+        *,
+        organization_id: UUID,
+        query: str | None,
+        limit: int,
+    ) -> list[TransactionRecord]:
+        self.queries.append(query)
+        return [] if query is not None else [self.transaction]
+
+
 class FakeProposals:
     def __init__(self) -> None:
         self.drafts: list[ProposalDraft] = []
@@ -334,3 +358,37 @@ async def test_production_tool_rejects_non_simple_new_item() -> None:
     assert result["ok"] is False
     assert "simple tracking only" in result["error"]
     assert proposals.drafts == []
+
+
+async def test_filtered_transaction_read_includes_recent_fallback_evidence() -> None:
+    proposals = FakeProposals()
+    reads = FallbackTransactionReads()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-correction",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=reads,
+        proposals=proposals,
+        reversals=FakeReversals(),
+    )
+
+    result = json.loads(
+        await tools.execute(
+            call_id="read-sale",
+            name="read_transactions",
+            arguments={"query": "Classic T-Shirt red sale", "limit": 20},
+        )
+    )
+
+    assert reads.queries == ["Classic T-Shirt red sale", None]
+    assert result["targeted_count"] == 0
+    assert result["included_recent_fallback"] is True
+    assert result["count"] == 1
+    assert result["transactions"][0]["transaction_id"] == ("60000000-0000-0000-0000-000000000001")
+    assert tools.allowed_transaction_ids == {UUID("60000000-0000-0000-0000-000000000001")}

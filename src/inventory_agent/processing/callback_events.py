@@ -15,6 +15,15 @@ from inventory_agent.telegram.callback_dispatcher import (
 )
 from inventory_agent.telegram.callbacks import CallbackAction
 
+_CONTEXT_LIFECYCLE_ACTIONS = {
+    CallbackAction.CONFIRM_PROPOSAL,
+    CallbackAction.CANCEL_PROPOSAL,
+    CallbackAction.CONFIRM_NEW_ITEM,
+    CallbackAction.CANCEL_NEW_ITEM,
+    CallbackAction.CONFIRM_REVERSAL,
+    CallbackAction.CANCEL_REVERSAL,
+}
+
 
 class CallbackDispatcher(Protocol):
     async def dispatch(
@@ -47,6 +56,20 @@ class ProcessingOutbox(Protocol):
         """Persist one idempotent outbound Telegram message."""
 
 
+class AgentCallbackOutcomeRecorder(Protocol):
+    async def record_callback_outcome(
+        self,
+        *,
+        organization_id: UUID,
+        organization_user_id: UUID,
+        chat_id: int,
+        source_event_id: UUID,
+        action: str,
+        result_id: UUID,
+    ) -> UUID | None:
+        """Add a deterministic callback result to agent-visible context."""
+
+
 class TelegramMessageEditor(Protocol):
     async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
         """Remove controls without replacing the message that originated a callback."""
@@ -70,11 +93,13 @@ class TelegramCallbackEventProcessor:
         dispatcher: CallbackDispatcher,
         message_editor: TelegramMessageEditor,
         outbox: ProcessingOutbox,
+        conversation_recorder: AgentCallbackOutcomeRecorder | None = None,
     ) -> None:
         self._events = events
         self._dispatcher = dispatcher
         self._message_editor = message_editor
         self._outbox = outbox
+        self._conversation_recorder = conversation_recorder
 
     async def process_next(self) -> CallbackEventProcessingResult | None:
         context = await self._events.claim_next_callback_event()
@@ -97,6 +122,7 @@ class TelegramCallbackEventProcessor:
                     result_id=outcome.result_id,
                     event_id=context.event_id,
                     organization_id=context.organization_id,
+                    actor_id=context.organization_user_id,
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
                     catalog_status=outcome.catalog_status,
@@ -125,6 +151,7 @@ class TelegramCallbackEventProcessor:
         result_id: UUID | None,
         event_id: UUID,
         organization_id: UUID,
+        actor_id: UUID,
         chat_id: int,
         message_id: int,
         catalog_status: str | None,
@@ -200,6 +227,15 @@ class TelegramCallbackEventProcessor:
                 payload=payload,
             )
         )
+        if self._conversation_recorder is not None and action in _CONTEXT_LIFECYCLE_ACTIONS:
+            await self._conversation_recorder.record_callback_outcome(
+                organization_id=organization_id,
+                organization_user_id=actor_id,
+                chat_id=chat_id,
+                source_event_id=event_id,
+                action=action.name.casefold(),
+                result_id=result_id,
+            )
         await self._message_editor.remove_inline_keyboard(
             chat_id=chat_id,
             message_id=message_id,

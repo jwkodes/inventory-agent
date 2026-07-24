@@ -106,6 +106,18 @@ class AgentConversationRepository(Protocol):
     ) -> dict[str, object] | None:
         """Load the organization's complete context-setting override when configured."""
 
+    async def record_callback_outcome(
+        self,
+        *,
+        organization_id: UUID,
+        organization_user_id: UUID,
+        chat_id: int,
+        source_event_id: UUID,
+        action: str,
+        result_id: UUID,
+    ) -> UUID | None:
+        """Add an authoritative callback result to agent-visible conversation history."""
+
 
 class AgentReadRepository(Protocol):
     async def get_variant_balances(
@@ -250,6 +262,33 @@ class SupabaseAgentRepository:
         if not isinstance(result, dict):
             raise ValueError("Supabase returned invalid organization context settings")
         return result
+
+    async def record_callback_outcome(
+        self,
+        *,
+        organization_id: UUID,
+        organization_user_id: UUID,
+        chat_id: int,
+        source_event_id: UUID,
+        action: str,
+        result_id: UUID,
+    ) -> UUID | None:
+        result = await self._call(
+            "record_inventory_agent_callback_outcome",
+            {
+                "p_organization_id": str(organization_id),
+                "p_actor_id": str(organization_user_id),
+                "p_chat_id": chat_id,
+                "p_source_event_id": str(source_event_id),
+                "p_action": action,
+                "p_result_id": str(result_id),
+            },
+        )
+        if result is None:
+            return None
+        if not isinstance(result, str):
+            raise ValueError("Supabase returned an invalid callback conversation ID")
+        return UUID(result)
 
     async def get_variant_balances(
         self,
