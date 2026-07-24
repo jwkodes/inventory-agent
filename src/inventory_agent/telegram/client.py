@@ -8,6 +8,12 @@ import httpx
 
 TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 _BOLD_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", flags=re.DOTALL)
+_FENCED_CODE_BLOCK = re.compile(
+    r"```[ \t]*(?:[A-Za-z0-9_+.-]+)?[ \t]*\r?\n"
+    r"(?P<code>.*?)"
+    r"(?:\r?\n)?```",
+    flags=re.DOTALL,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +202,18 @@ class TelegramBotClient:
 
 
 def _render_telegram_html(text: str) -> str:
-    """Escape model text and translate only supported **bold** spans to Telegram HTML."""
+    """Translate supported Markdown while keeping all model text safe for Telegram HTML."""
 
+    rendered: list[str] = []
+    cursor = 0
+    for match in _FENCED_CODE_BLOCK.finditer(text):
+        rendered.append(_render_plain_telegram_html(text[cursor : match.start()]))
+        rendered.append(f"<pre>{escape(match.group('code'), quote=False)}</pre>")
+        cursor = match.end()
+    rendered.append(_render_plain_telegram_html(text[cursor:]))
+    return "".join(rendered)
+
+
+def _render_plain_telegram_html(text: str) -> str:
     escaped = escape(text, quote=False)
     return _BOLD_MARKDOWN.sub(r"<b>\1</b>", escaped)

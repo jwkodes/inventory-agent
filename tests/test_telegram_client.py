@@ -119,6 +119,61 @@ async def test_send_message_safely_renders_bold_markdown_as_telegram_html() -> N
     )
 
 
+async def test_send_message_renders_fenced_inventory_table_as_preformatted_html() -> None:
+    table = (
+        "```text\n"
+        "S/N | ITEM_NAME          | QTY\n"
+        "----|--------------------|----\n"
+        "1   | AMOX-502           |   3\n"
+        "2   | Anchor Butter 500g | 120\n"
+        "```"
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<pre>S/N | ITEM_NAME          | QTY\n"
+                "----|--------------------|----\n"
+                "1   | AMOX-502           |   3\n"
+                "2   | Anchor Butter 500g | 120</pre>"
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 79}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(chat_id=-100123, text=table)
+
+
+async def test_send_message_keeps_code_literal_and_formats_bold_outside_it() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<b>Current stock</b>\n"
+                "<pre>**literal** | A&amp;B | &lt;item&gt;</pre>\n"
+                "Ready &amp; checked"
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 80}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text=("**Current stock**\n```\n**literal** | A&B | <item>\n```\nReady & checked"),
+    )
+
+
 async def test_remove_inline_keyboard_preserves_message_text() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/bottest-token/editMessageReplyMarkup"
