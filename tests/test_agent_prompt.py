@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v9"
+    assert PROMPT_VERSION == "inventory-agent-spike-v10"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -13,6 +13,14 @@ def test_new_item_attributes_are_optional_but_preserved() -> None:
     assert "already known unambiguously" in INSTRUCTIONS
     assert "Preserve every attribute the user supplies" in INSTRUCTIONS
     assert "similar catalog item" in INSTRUCTIONS
+
+
+def test_generic_count_units_do_not_trigger_catalog_clarification() -> None:
+    normalized = " ".join(INSTRUCTIONS.split())
+    assert "silently use canonical base unit `each`" in normalized
+    assert "never ask the user to choose between them" in normalized
+    assert '"buy 1 Nintendo Switch second edition" is `1 each`' in normalized
+    assert "box versus individual tablets" in normalized
 
 
 def test_confirmation_claims_require_authoritative_deterministic_events() -> None:

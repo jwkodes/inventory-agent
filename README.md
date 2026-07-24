@@ -557,10 +557,14 @@ processor; no migration rollback is required.
 For this testing phase, the demo catalog and agent assume `simple` tracking for every
 item. The database retains its lot/serial design for later implementation, but the agent
 must not request lot, batch, expiry, or serial details and new catalog items are constrained
-to simple tracking. New items generally require only a product name, SKU or internal code,
-and base unit. The agent may suggest useful custom attributes such as strength, colour, or
-size, but must present them as optional unless the company has explicitly configured a
-field as required. Every attribute question includes its reason: either the current
+to simple tracking. New items generally require only a product name and SKU or internal
+code. An individually counted physical item silently defaults to canonical base unit
+`each`; `unit`, `units`, `item`, and `items` are equivalent input and never require a user
+choice. The agent asks about units only when packaging or measurement changes the inventory
+meaning, such as boxes versus individual tablets, kilograms, or litres. The agent may
+suggest useful custom attributes such as strength, colour, or size, but must present them
+as optional unless the company has explicitly configured a field as required. Every
+attribute question includes its reason: either the current
 inventory tracks that field, the field distinguishes existing variants, or a similar
 catalog item suggests it may be useful. Similar-item suggestions can be skipped and do not
 become requirements. The agent does not ask for a value already established by an exact
@@ -702,8 +706,9 @@ uses the same schema and matching path as text. Automated tests use local fake r
 and never spend API credits.
 
 Catalog creation has its own smaller Structured Output schema. The bot states the facts it
-needs—item name, SKU or internal code, base unit, and optional company-specific
-attributes—but does not require the user to fill in JSON or a fixed text form. The worker
+needs—item name, SKU or internal code, any materially ambiguous package or measurement
+unit, and optional company-specific attributes—but does not require the user to fill in
+JSON or a fixed text form. Individually counted items default to `each`. The worker
 extracts those facts from natural language, combines them with safe suggestions already
 derived from the transaction, persists partial answers across clarification turns, and
 asks only for fields that remain missing. A final Telegram confirmation is required before
@@ -810,10 +815,11 @@ For resolved lines, PostgreSQL validates the variant and derives the signed base
 quantity using the configured unit conversion. Unresolved lines retain their candidate
 evidence but have no stock delta, so they cannot be applied accidentally.
 
-The explicitly generic words `unit`, `units`, `item`, and `items` mean one unit of the
-matched SKU and receive a factor-one conversion. Package words such as `box`, `carton`,
-and `case` still require an organization-and-variant-specific conversion; the system does
-not guess package sizes.
+The explicitly generic words `each`, `unit`, `units`, `item`, and `items` mean one unit of
+the matched SKU and receive a factor-one conversion. For a new individually counted item,
+all five are stored canonically as `each` so equivalent vocabulary cannot fragment the
+catalog. Package words such as `box`, `carton`, and `case` still require an
+organization-and-variant-specific conversion; the system does not guess package sizes.
 
 Telegram confirmation rendering uses compact opaque callback data containing only action
 codes and UUIDs. Variant-selection callbacks fit below Telegram's 64-byte limit. A fully

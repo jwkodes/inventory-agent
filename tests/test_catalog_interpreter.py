@@ -4,13 +4,23 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
-from inventory_agent.catalog.interpreter import OpenAICatalogDetailsInterpreter
+from inventory_agent.catalog.interpreter import (
+    CATALOG_DETAILS_INSTRUCTIONS,
+    CATALOG_DETAILS_PROMPT_VERSION,
+    OpenAICatalogDetailsInterpreter,
+)
 from inventory_agent.catalog.models import (
     CatalogItemCreationView,
     ExtractedCatalogItemDetails,
 )
 
 REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
+
+
+def test_catalog_extractor_normalizes_explicit_generic_count_vocabulary() -> None:
+    assert CATALOG_DETAILS_PROMPT_VERSION == "catalog-item-details-v3"
+    assert "each, unit, units, item, and items" in CATALOG_DETAILS_INSTRUCTIONS
+    assert 'return "each"' in CATALOG_DETAILS_INSTRUCTIONS
 
 
 class FakeResponses:

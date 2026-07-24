@@ -4,7 +4,9 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from inventory_agent.units import canonicalize_base_unit
 
 
 class TrackingMode(StrEnum):
@@ -55,6 +57,11 @@ class NewCatalogItemDraft(BaseModel):
     base_unit: str = Field(min_length=1)
     tracking_mode: TrackingMode
     attributes: list[AttributeValue]
+
+    @field_validator("base_unit")
+    @classmethod
+    def normalize_base_unit(cls, value: str) -> str:
+        return canonicalize_base_unit(value)
 
 
 class StockProposalLine(BaseModel):

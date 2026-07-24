@@ -40,7 +40,15 @@ NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
     "properties": {
         "name": {"type": "string", "minLength": 1},
         "sku": {"type": _nullable("string")},
-        "base_unit": {"type": "string", "minLength": 1},
+        "base_unit": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "Canonical stock-counting unit. Silently use 'each' for an individually "
+                "counted physical item; unit, units, item, and items mean the same thing. "
+                "Use a package or measurement unit only when it is materially specified."
+            ),
+        },
         "tracking_mode": {"type": "string", "enum": ["simple"]},
         "attributes": {"type": "array", "items": ATTRIBUTE_SCHEMA},
     },
@@ -54,7 +62,14 @@ STOCK_LINE_SCHEMA: Final[dict[str, object]] = {
         "variant_id": {"type": _nullable("string")},
         "new_item": {"anyOf": [NEW_ITEM_SCHEMA, {"type": "null"}]},
         "quantity": {"type": "number", "exclusiveMinimum": 0},
-        "unit": {"type": "string", "minLength": 1},
+        "unit": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "Unit used by this quantity. Generic unit/item wording means one counted "
+                "SKU and does not require user clarification."
+            ),
+        },
         "attributes": {"type": "array", "items": ATTRIBUTE_SCHEMA},
     },
     "required": ["variant_id", "new_item", "quantity", "unit", "attributes"],

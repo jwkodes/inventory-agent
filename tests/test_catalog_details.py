@@ -22,6 +22,18 @@ def test_catalog_detail_form_parses_required_fields_and_attributes() -> None:
     assert details.attributes == {"colour": "purple"}
 
 
+@pytest.mark.parametrize("generic_unit", ["unit", "units", "item", "items", "each"])
+def test_catalog_details_normalize_generic_count_words(generic_unit: str) -> None:
+    details = parse_catalog_item_details(
+        "Name: Nintendo Switch second edition\n"
+        "SKU: SWITCH-2\n"
+        f"Base unit: {generic_unit}\n"
+        "Tracking: simple"
+    )
+
+    assert details.base_unit == "each"
+
+
 @pytest.mark.parametrize(
     "text",
     [

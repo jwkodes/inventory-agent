@@ -5,7 +5,12 @@ from decimal import Decimal
 
 import pytest
 
-from inventory_agent.agent.models import CatalogVariant, TransactionRecord
+from inventory_agent.agent.models import (
+    CatalogVariant,
+    NewCatalogItemDraft,
+    TrackingMode,
+    TransactionRecord,
+)
 from inventory_agent.agent.tools import INVENTORY_TOOL_DEFINITIONS, SimulatedInventoryTools
 
 
@@ -30,6 +35,31 @@ def test_new_catalog_item_tool_schema_allows_simple_tracking_only() -> None:
     ]["anyOf"][0]["properties"]["tracking_mode"]
 
     assert tracking_schema == {"type": "string", "enum": ["simple"]}
+
+
+@pytest.mark.parametrize("base_unit", ["each", "unit", "units", "item", "items", " UNIT "])
+def test_new_catalog_item_normalizes_generic_count_words_to_each(base_unit: str) -> None:
+    item = NewCatalogItemDraft(
+        name="Nintendo Switch second edition",
+        sku="SWITCH-2",
+        base_unit=base_unit,
+        tracking_mode=TrackingMode.SIMPLE,
+        attributes=[],
+    )
+
+    assert item.base_unit == "each"
+
+
+def test_new_catalog_item_schema_tells_model_not_to_clarify_generic_count_words() -> None:
+    add_tool = next(
+        tool for tool in INVENTORY_TOOL_DEFINITIONS if tool["name"] == "propose_add_inventory"
+    )
+    base_unit_schema = add_tool["parameters"]["properties"]["lines"]["items"]["properties"][
+        "new_item"
+    ]["anyOf"][0]["properties"]["base_unit"]
+
+    assert "Silently use 'each'" in base_unit_schema["description"]
+    assert "unit, units, item, and items mean the same thing" in base_unit_schema["description"]
 
 
 @pytest.mark.asyncio

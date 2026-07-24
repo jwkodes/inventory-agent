@@ -4,7 +4,9 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from inventory_agent.units import canonicalize_base_unit
 
 
 class CatalogTrackingMode(StrEnum):
@@ -21,6 +23,11 @@ class CatalogItemDetails(BaseModel):
     base_unit: str = Field(min_length=1, max_length=50)
     tracking_mode: CatalogTrackingMode
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("base_unit")
+    @classmethod
+    def normalize_base_unit(cls, value: str) -> str:
+        return canonicalize_base_unit(value)
 
 
 class ExtractedCatalogAttribute(BaseModel):
