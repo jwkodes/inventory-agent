@@ -258,3 +258,37 @@ async def test_production_tool_rejects_unread_variant() -> None:
     assert result["ok"] is False
     assert "not returned by read_inventory" in result["error"]
     assert proposals.drafts == []
+
+
+async def test_production_tool_rejects_non_simple_new_item() -> None:
+    proposals = FakeProposals()
+    tools = production_tools(proposals)
+
+    result = json.loads(
+        await tools.execute(
+            call_id="add-lot-item",
+            name="propose_add_inventory",
+            arguments={
+                "lines": [
+                    {
+                        "variant_id": None,
+                        "new_item": {
+                            "name": "Lot item",
+                            "sku": None,
+                            "base_unit": "each",
+                            "tracking_mode": "lot",
+                            "attributes": [],
+                        },
+                        "quantity": 1,
+                        "unit": "each",
+                        "attributes": [],
+                    }
+                ],
+                "reason": "Delivery",
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert "simple tracking only" in result["error"]
+    assert proposals.drafts == []

@@ -325,6 +325,11 @@ The agent reply and the rendered review are sent together as a new Telegram mess
 Turning `INVENTORY_AGENT_ENABLED` back to `false` restores the previous structured text
 processor; no migration rollback is required.
 
+For this testing phase, the demo catalog and agent assume `simple` tracking for every
+item. The database retains its lot/serial design for later implementation, but the agent
+must not request lot, batch, expiry, or serial details and new catalog items are constrained
+to simple tracking.
+
 Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP document.
 The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
 downloading. The prototype deliberately leaves PDFs and voice notes for later slices;
@@ -701,9 +706,9 @@ that has already been shared or deployed. `supabase db reset` targets the local 
 by default. Never add `--linked` unless you intentionally mean to destroy and rebuild a
 remote development environment.
 
-The seed data creates one demo organization, manager, warehouse, ordinary products, a
-medicine lot with an expiry date, and colour/size clothing variants. It is development
-data only and must never be loaded into production.
+The seed data creates one demo organization, manager, warehouse, simple-tracked products,
+and colour/size clothing variants. It retains an unused example lot record for database
+lot-function tests. It is development data only and must never be loaded into production.
 
 ## Build sequence
 

@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from inventory_agent.agent.models import CatalogVariant, TransactionRecord
-from inventory_agent.agent.tools import SimulatedInventoryTools
+from inventory_agent.agent.tools import INVENTORY_TOOL_DEFINITIONS, SimulatedInventoryTools
 
 
 def catalog() -> list[CatalogVariant]:
@@ -19,6 +19,17 @@ def catalog() -> list[CatalogVariant]:
             on_hand=Decimal("5"),
         )
     ]
+
+
+def test_new_catalog_item_tool_schema_allows_simple_tracking_only() -> None:
+    add_tool = next(
+        tool for tool in INVENTORY_TOOL_DEFINITIONS if tool["name"] == "propose_add_inventory"
+    )
+    tracking_schema = add_tool["parameters"]["properties"]["lines"]["items"]["properties"][
+        "new_item"
+    ]["anyOf"][0]["properties"]["tracking_mode"]
+
+    assert tracking_schema == {"type": "string", "enum": ["simple"]}
 
 
 @pytest.mark.asyncio
@@ -124,6 +135,39 @@ async def test_deduction_cannot_create_a_catalog_item() -> None:
     assert result["ok"] is False
     assert "deductions cannot create" in result["error"]
     assert tools.proposals == []
+
+
+@pytest.mark.asyncio
+async def test_addition_rejects_non_simple_new_catalog_item() -> None:
+    tools = SimulatedInventoryTools(catalog=catalog())
+
+    result = json.loads(
+        await tools.execute(
+            call_id="add-lot-item",
+            name="propose_add_inventory",
+            arguments={
+                "lines": [
+                    {
+                        "variant_id": None,
+                        "new_item": {
+                            "name": "Lot item",
+                            "sku": None,
+                            "base_unit": "each",
+                            "tracking_mode": "lot",
+                            "attributes": [],
+                        },
+                        "quantity": 1,
+                        "unit": "each",
+                        "attributes": [],
+                    }
+                ],
+                "reason": "Delivery",
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert "simple tracking only" in result["error"]
 
 
 @pytest.mark.asyncio

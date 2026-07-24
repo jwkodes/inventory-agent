@@ -15,6 +15,7 @@ from inventory_agent.agent.models import (
     ReversalProposalArguments,
     SimulationProposal,
     StockProposalArguments,
+    TrackingMode,
     TransactionReadArguments,
     TransactionRecord,
 )
@@ -40,7 +41,7 @@ NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
         "name": {"type": "string", "minLength": 1},
         "sku": {"type": _nullable("string")},
         "base_unit": {"type": "string", "minLength": 1},
-        "tracking_mode": {"type": "string", "enum": ["simple", "lot", "serial"]},
+        "tracking_mode": {"type": "string", "enum": ["simple"]},
         "attributes": {"type": "array", "items": ATTRIBUTE_SCHEMA},
     },
     "required": ["name", "sku", "base_unit", "tracking_mode", "attributes"],
@@ -266,6 +267,8 @@ class SimulatedInventoryTools:
         for line in arguments.lines:
             if operation == "DEDUCT" and line.new_item is not None:
                 raise ValueError("deductions cannot create catalog items")
+            if line.new_item is not None and line.new_item.tracking_mode is not TrackingMode.SIMPLE:
+                raise ValueError("the prototype currently supports simple tracking only")
             if line.variant_id is not None and line.variant_id not in self._seen_variant_ids:
                 raise ValueError(
                     f"variant_id {line.variant_id!r} was not returned by read_inventory"

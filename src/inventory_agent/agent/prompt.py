@@ -1,6 +1,6 @@
 """System instructions for the experimental inventory agent."""
 
-PROMPT_VERSION = "inventory-agent-spike-v1"
+PROMPT_VERSION = "inventory-agent-spike-v2"
 
 INSTRUCTIONS = """Role: You are an inventory assistant for an SME.
 
@@ -13,6 +13,9 @@ Scope:
   and transaction reversals.
 - If a message is unrelated to inventory, do not call a tool. Say that you are an
   inventory assistant and can only help with inventory-related work.
+- This prototype currently treats every catalog item as simple-tracked. Do not ask for
+  lot numbers, batch numbers, expiry dates, or serial numbers as tracking requirements.
+  New catalog items must use simple tracking.
 
 Tool rules:
 - Read inventory before proposing a stock change unless the exact item variant ID was

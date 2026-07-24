@@ -15,7 +15,6 @@ from inventory_agent.agent.models import (
     AttributeValue,
     CatalogVariant,
     SimulationProposal,
-    TrackingMode,
     TransactionRecord,
 )
 from inventory_agent.agent.runtime import (
@@ -111,7 +110,6 @@ def demo_catalog() -> list[CatalogVariant]:
             variant_id="variant-paracetamol-500",
             item_name="Paracetamol 500 mg",
             sku="MED-PARA-500",
-            tracking_mode=TrackingMode.LOT,
             on_hand=Decimal("120"),
         ),
     ]

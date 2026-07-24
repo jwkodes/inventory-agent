@@ -19,6 +19,7 @@ from inventory_agent.agent.models import (
     TrackingMode,
     TransactionReadArguments,
 )
+from inventory_agent.agent.prompt import PROMPT_VERSION
 from inventory_agent.agent.repository import AgentReadRepository
 from inventory_agent.extraction.schema import ItemReferenceType
 from inventory_agent.matching.models import InventoryCandidate
@@ -241,6 +242,8 @@ class ProductionInventoryAgentTools:
                     f"variant_id {line.variant_id!r} was not returned by read_inventory"
                 )
             new_item = line.new_item
+            if new_item is not None and new_item.tracking_mode is not TrackingMode.SIMPLE:
+                raise ValueError("the prototype currently supports simple tracking only")
             candidate = (
                 self._candidate_evidence.get(item_variant_id)
                 if item_variant_id is not None
@@ -322,7 +325,7 @@ class ProductionInventoryAgentTools:
                     "tool_call_id": call_id,
                     "lines": raw_lines,
                 },
-                prompt_version="inventory-agent-spike-v1",
+                prompt_version=PROMPT_VERSION,
                 notes=arguments.reason,
                 lines=lines,
             )

@@ -350,6 +350,10 @@ select is(
   'a failed application leaves no partial inventory transaction'
 );
 
+update public.items
+set tracking_mode = 'lot'
+where id = '20000000-0000-0000-0000-000000000003';
+
 insert into public.transaction_proposals (
   id,
   organization_id,
@@ -414,7 +418,7 @@ select is(
     where balance.item_variant_id = '21000000-0000-0000-0000-000000000003'
       and balance.lot_id = '22000000-0000-0000-0000-000000000001'
   ),
-  55::numeric,
+  5::numeric,
   'lot-tracked inventory updates the specific lot balance'
 );
 
