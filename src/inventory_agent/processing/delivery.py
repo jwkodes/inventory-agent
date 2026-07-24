@@ -2,6 +2,7 @@
 
 from typing import Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from inventory_agent.processing.models import (
     OutboxCompletionStatus,
@@ -15,6 +16,7 @@ from inventory_agent.telegram.confirmation import (
     render_catalog_item_confirmation,
     render_catalog_item_details_prompt,
     render_proposal_confirmation,
+    render_reversal_applied,
     render_reversal_confirmation,
     render_reversal_reason_prompt,
 )
@@ -42,10 +44,12 @@ class TelegramOutboxDeliveryWorker:
         repository: ProcessingOutboxDeliveryRepository,
         sender: TelegramMessageSender,
         retry_delay_seconds: int = 30,
+        display_timezone: str = "Asia/Singapore",
     ) -> None:
         self._repository = repository
         self._sender = sender
         self._retry_delay_seconds = retry_delay_seconds
+        self._display_timezone = ZoneInfo(display_timezone)
 
     async def deliver_one(self, outbox_id: UUID | None = None) -> OutboxDeliveryResult:
         """Claim and deliver at most one due outcome."""
@@ -72,7 +76,15 @@ class TelegramOutboxDeliveryWorker:
             elif outcome.outcome_type is ProcessingOutcomeType.TRANSACTION_APPLIED:
                 if outcome.aggregate_id is None:
                     raise ValueError("Applied outcome is missing its transaction ID")
-                message = render_applied_transaction(outcome.aggregate_id)
+                applied_at = await self._repository.get_transaction_applied_at(
+                    organization_id=outcome.organization_id,
+                    transaction_id=outcome.aggregate_id,
+                )
+                message = render_applied_transaction(
+                    outcome.aggregate_id,
+                    applied_at=applied_at,
+                    display_timezone=self._display_timezone,
+                )
                 text = message.text
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
@@ -114,15 +126,35 @@ class TelegramOutboxDeliveryWorker:
                 reason = outcome.payload.get("reason")
                 if not isinstance(reason, str) or not reason.strip():
                     raise ValueError("Reversal outcome is missing its reason")
+                original_applied_at = (
+                    await self._repository.get_reversal_original_transaction_applied_at(
+                        organization_id=outcome.organization_id,
+                        request_id=outcome.aggregate_id,
+                    )
+                )
                 message = render_reversal_confirmation(
                     request_id=outcome.aggregate_id,
                     reason=reason.strip(),
+                    original_transaction_applied_at=original_applied_at,
+                    display_timezone=self._display_timezone,
                 )
                 text = _with_agent_reply(message.text, outcome.payload)
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard
                 ]
+            elif outcome.outcome_type is ProcessingOutcomeType.CALLBACK_NOTICE and (
+                reversal_transaction_id := _payload_transaction_id(outcome.payload)
+            ):
+                reversal_applied_at = await self._repository.get_transaction_applied_at(
+                    organization_id=outcome.organization_id,
+                    transaction_id=reversal_transaction_id,
+                )
+                text = render_reversal_applied(
+                    applied_at=reversal_applied_at,
+                    display_timezone=self._display_timezone,
+                )
+                keyboard = None
             else:
                 payload_message = outcome.payload.get("message")
                 if not isinstance(payload_message, str) or not payload_message.strip():
@@ -193,3 +225,12 @@ def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> s
     if outcome_type is ProcessingOutcomeType.UNSUPPORTED_COMMAND:
         return f"🤖 **Inventory assistant**\n{stripped}"
     return stripped
+
+
+def _payload_transaction_id(payload: dict[str, object]) -> UUID | None:
+    value = payload.get("transaction_id")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("Transaction callback notice has an invalid transaction ID")
+    return UUID(value)

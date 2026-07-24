@@ -268,7 +268,8 @@ async def test_confirmed_reversal_removes_buttons() -> None:
         "message": (
             "✅ **Transaction reversed**\n"
             "The opposite inventory transaction was applied successfully."
-        )
+        ),
+        "transaction_id": str(TRANSACTION_ID),
     }
 
 

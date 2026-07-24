@@ -334,6 +334,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
         delivery_worker = TelegramOutboxDeliveryWorker(
             repository=proposal_view_repository,
             sender=telegram_client,
+            display_timezone=settings.inventory_display_timezone,
         )
         await run_loop(
             callback_processor=callback_processor,

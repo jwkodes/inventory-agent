@@ -1,5 +1,6 @@
 """Supabase adapters for atomic event claims, completion, and outbox handoff."""
 
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -64,6 +65,22 @@ class ProcessingOutboxDeliveryRepository(Protocol):
 
     async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
         """Load suggestions or submitted details for a catalog creation request."""
+
+    async def get_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        transaction_id: UUID,
+    ) -> datetime:
+        """Load the authoritative timestamp of an applied inventory transaction."""
+
+    async def get_reversal_original_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        request_id: UUID,
+    ) -> datetime:
+        """Load the original transaction timestamp for a reversal request."""
 
 
 class SupabaseSourceEventWorkRepository:
@@ -257,6 +274,70 @@ class SupabaseProcessingOutboxDeliveryRepository:
             {"p_request_id": str(request_id)},
         )
         return CatalogItemCreationView.model_validate(response.json())
+
+    async def get_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        transaction_id: UUID,
+    ) -> datetime:
+        row = await self._get_single_row(
+            "inventory_transactions",
+            params={
+                "select": "applied_at",
+                "organization_id": f"eq.{organization_id}",
+                "id": f"eq.{transaction_id}",
+                "status": "eq.applied",
+            },
+            record_name="applied transaction",
+        )
+        applied_at = row.get("applied_at")
+        if not isinstance(applied_at, str):
+            raise ValueError("Supabase returned an invalid transaction timestamp")
+        return datetime.fromisoformat(applied_at)
+
+    async def get_reversal_original_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        request_id: UUID,
+    ) -> datetime:
+        row = await self._get_single_row(
+            "transaction_reversal_requests",
+            params={
+                "select": "transaction_id",
+                "organization_id": f"eq.{organization_id}",
+                "id": f"eq.{request_id}",
+            },
+            record_name="reversal request",
+        )
+        transaction_id = row.get("transaction_id")
+        if not isinstance(transaction_id, str):
+            raise ValueError("Supabase returned an invalid reversal transaction ID")
+        return await self.get_transaction_applied_at(
+            organization_id=organization_id,
+            transaction_id=UUID(transaction_id),
+        )
+
+    async def _get_single_row(
+        self,
+        table: str,
+        *,
+        params: dict[str, str],
+        record_name: str,
+    ) -> dict[str, object]:
+        async with httpx.AsyncClient(
+            base_url=self._rest_url,
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            transport=self._transport,
+        ) as client:
+            response = await client.get(f"/{table}", params=params)
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            raise ValueError(f"Supabase returned an invalid {record_name}")
+        return rows[0]
 
     async def _post_rpc(self, function_name: str, body: dict[str, object]) -> httpx.Response:
         async with httpx.AsyncClient(

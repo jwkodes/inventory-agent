@@ -1,5 +1,6 @@
 """Tests for retry-safe Telegram outbox delivery."""
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from inventory_agent.catalog.models import CatalogItemCreationView
@@ -20,6 +21,8 @@ TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000006")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000005")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000002")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000005")
+REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000005")
+APPLIED_AT = datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
 
 
 class FakeRepository:
@@ -35,6 +38,8 @@ class FakeRepository:
         self.catalog_status = catalog_status
         self.finishes: list[tuple[UUID, bool, str | None, int]] = []
         self.requested_proposals: list[UUID] = []
+        self.requested_transactions: list[tuple[UUID, UUID]] = []
+        self.requested_reversals: list[tuple[UUID, UUID]] = []
 
     async def claim(self, outbox_id: UUID | None = None) -> ClaimedProcessingOutcome | None:
         return self.outcome
@@ -90,6 +95,24 @@ class FakeRepository:
             ),
         )
 
+    async def get_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        transaction_id: UUID,
+    ) -> datetime:
+        self.requested_transactions.append((organization_id, transaction_id))
+        return APPLIED_AT
+
+    async def get_reversal_original_transaction_applied_at(
+        self,
+        *,
+        organization_id: UUID,
+        request_id: UUID,
+    ) -> datetime:
+        self.requested_reversals.append((organization_id, request_id))
+        return APPLIED_AT
+
 
 class FakeSender:
     def __init__(self, error: Exception | None = None) -> None:
@@ -125,7 +148,7 @@ def outcome(
             ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED: CATALOG_REQUEST_ID,
             ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION: CATALOG_REQUEST_ID,
             ProcessingOutcomeType.REVERSAL_REASON_REQUIRED: PROPOSAL_ID,
-            ProcessingOutcomeType.REVERSAL_CONFIRMATION: PROPOSAL_ID,
+            ProcessingOutcomeType.REVERSAL_CONFIRMATION: REVERSAL_REQUEST_ID,
         }.get(outcome_type),
         chat_id=-100123,
         payload=payload or {},
@@ -202,6 +225,8 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages[0][1].startswith("✅ **Inventory updated**")
+    assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
+    assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is not None
 
 
@@ -269,7 +294,34 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
     assert sender.messages[0][1].startswith("⏳ **Pending reversal confirmation**")
     assert "💬 **Agent note**\nI found the transaction to reverse." in sender.messages[0][1]
     assert "Wrong delivery was entered" in sender.messages[0][1]
+    assert "Original transaction time: 24 Jul 2026, 07:42:19 PM" in sender.messages[0][1]
+    assert repository.requested_reversals == [(ORGANIZATION_ID, REVERSAL_REQUEST_ID)]
     assert sender.messages[0][2] is not None
+
+
+async def test_delivers_successful_reversal_with_timestamp_and_state_boundary() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.CALLBACK_NOTICE,
+            payload={
+                "message": "legacy fallback",
+                "transaction_id": str(TRANSACTION_ID),
+            },
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert sender.messages[0][1].startswith("✅ **Transaction reversed**")
+    assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
+    assert "corrected replacement is a separate transaction" in sender.messages[0][1]
+    assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
+    assert sender.messages[0][2] is None
 
 
 async def test_delivers_reversal_reason_as_separate_message_with_cancel_button() -> None:

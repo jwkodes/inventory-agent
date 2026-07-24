@@ -1,7 +1,9 @@
 """Tests for Telegram proposal confirmation rendering."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from inventory_agent.catalog.models import CatalogItemCreationView, CatalogTrackingMode
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
@@ -22,6 +24,8 @@ VARIANT_ID = UUID("21000000-0000-0000-0000-000000000001")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
+APPLIED_AT = datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Singapore")
 
 
 def test_resolved_proposal_has_confirm_and_cancel_buttons() -> None:
@@ -236,11 +240,16 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
 
 
 def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None:
-    applied = render_applied_transaction(TRANSACTION_ID)
+    applied = render_applied_transaction(
+        TRANSACTION_ID,
+        applied_at=APPLIED_AT,
+        display_timezone=DISPLAY_TIMEZONE,
+    )
     reverse = decode_callback(applied.inline_keyboard[0][0].callback_data)
     assert reverse.action is CallbackAction.REVERSE_TRANSACTION
     assert reverse.target_id == TRANSACTION_ID
     assert applied.text.startswith("✅ **Inventory updated**")
+    assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in applied.text
 
     reason_prompt = render_reversal_reason_prompt(REVERSAL_REQUEST_ID)
     cancel_prompt = decode_callback(reason_prompt.inline_keyboard[0][0].callback_data)
@@ -249,10 +258,13 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
     confirmation = render_reversal_confirmation(
         request_id=REVERSAL_REQUEST_ID,
         reason="Duplicate delivery",
+        original_transaction_applied_at=APPLIED_AT,
+        display_timezone=DISPLAY_TIMEZONE,
     )
     actions = [
         decode_callback(button.callback_data).action for button in confirmation.inline_keyboard[0]
     ]
     assert actions == [CallbackAction.CONFIRM_REVERSAL, CallbackAction.CANCEL_REVERSAL]
     assert "Duplicate delivery" in confirmation.text
+    assert "Original transaction time: 24 Jul 2026, 07:42:19 PM" in confirmation.text
     assert confirmation.text.startswith("⏳ **Pending reversal confirmation**")

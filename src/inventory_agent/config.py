@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     openai_embedding_dimensions: Literal[512] = 512
     inventory_matching_strategy: Literal["semantic", "fuzzy", "hybrid"] = "semantic"
     inventory_candidate_judging_enabled: bool = True
+    inventory_display_timezone: str = "Asia/Singapore"
 
     telegram_bot_token: SecretStr | None = None
     telegram_webhook_secret: SecretStr | None = None

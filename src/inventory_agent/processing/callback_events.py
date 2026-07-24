@@ -208,7 +208,8 @@ class TelegramCallbackEventProcessor:
                 "message": (
                     "✅ **Transaction reversed**\n"
                     "The opposite inventory transaction was applied successfully."
-                )
+                ),
+                "transaction_id": str(result_id),
             }
         elif action is CallbackAction.CANCEL_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE

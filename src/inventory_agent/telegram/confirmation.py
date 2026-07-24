@@ -1,7 +1,9 @@
 """Render proposal review messages and inline keyboards."""
 
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -263,11 +265,20 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
     )
 
 
-def render_applied_transaction(transaction_id: UUID) -> ConfirmationMessage:
+def render_applied_transaction(
+    transaction_id: UUID,
+    *,
+    applied_at: datetime,
+    display_timezone: ZoneInfo,
+) -> ConfirmationMessage:
     """Offer a complete reversal after a proposal has been applied."""
 
     return ConfirmationMessage(
-        text="✅ **Inventory updated**\nThe transaction was applied successfully.",
+        text=(
+            "✅ **Inventory updated**\n"
+            "The transaction was applied successfully.\n"
+            f"🕒 Transaction time: {_format_timestamp(applied_at, display_timezone)}"
+        ),
         inline_keyboard=[
             [
                 InlineButton(
@@ -303,13 +314,21 @@ def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
     )
 
 
-def render_reversal_confirmation(*, request_id: UUID, reason: str) -> ConfirmationMessage:
+def render_reversal_confirmation(
+    *,
+    request_id: UUID,
+    reason: str,
+    original_transaction_applied_at: datetime,
+    display_timezone: ZoneInfo,
+) -> ConfirmationMessage:
     """Render the final human checkpoint before applying a reversal."""
 
     return ConfirmationMessage(
         text=(
             "⏳ **Pending reversal confirmation**\n"
             "Review complete transaction reversal:\n"
+            "🕒 Original transaction time: "
+            f"{_format_timestamp(original_transaction_applied_at, display_timezone)}\n"
             f"Reason: {reason}\n"
             "Confirming will create an opposite inventory transaction. "
             "No inventory has changed yet."
@@ -331,3 +350,27 @@ def render_reversal_confirmation(*, request_id: UUID, reason: str) -> Confirmati
             ]
         ],
     )
+
+
+def render_reversal_applied(
+    *,
+    applied_at: datetime,
+    display_timezone: ZoneInfo,
+) -> str:
+    """Render a successful compensating transaction with its durable timestamp."""
+
+    return (
+        "✅ **Transaction reversed**\n"
+        "The opposite inventory transaction was applied successfully, restoring the "
+        "original stock.\n"
+        f"🕒 Reversal time: {_format_timestamp(applied_at, display_timezone)}\n"
+        "A corrected replacement is a separate transaction and will still require "
+        "confirmation."
+    )
+
+
+def _format_timestamp(value: datetime, display_timezone: ZoneInfo) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Transaction timestamp must include a timezone")
+    localized = value.astimezone(display_timezone)
+    return f"{localized:%d %b %Y, %I:%M:%S %p} ({display_timezone.key})"
