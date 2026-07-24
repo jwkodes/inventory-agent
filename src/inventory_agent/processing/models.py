@@ -76,6 +76,7 @@ class InventoryEventProcessingStatus(StrEnum):
 
     ALREADY_CLAIMED = "already_claimed"
     PROPOSAL_READY = "proposal_ready"
+    TRANSACTION_APPLIED = "transaction_applied"
     REVERSAL_CONFIRMATION = "reversal_confirmation"
     CATALOG_ITEM_CONFIRMATION = "catalog_item_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"

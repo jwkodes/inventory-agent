@@ -6,6 +6,10 @@ from uuid import UUID
 import httpx
 
 
+class ProposalActionRejectedError(RuntimeError):
+    """A deterministic proposal action was rejected without changing inventory."""
+
+
 class ProposalActionRepository(Protocol):
     async def select_variant(self, *, line_id: UUID, variant_id: UUID, actor_id: UUID) -> UUID:
         """Resolve one proposal line and return its proposal ID."""
@@ -63,6 +67,8 @@ class SupabaseProposalActionRepository:
             transport=self._transport,
         ) as client:
             response = await client.post(f"/{function_name}", json=body)
+        if response.status_code in {400, 404, 409}:
+            raise ProposalActionRejectedError(f"Supabase rejected proposal action {function_name}")
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, str):

@@ -198,14 +198,15 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             if settings.inventory_agent_enabled
             else None
         )
+        proposal_actions = SupabaseProposalActionRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         callback_processor = TelegramCallbackEventProcessor(
             events=event_repository,
             dispatcher=TelegramCallbackDispatcher(
                 answerer=telegram_client,
-                repository=SupabaseProposalActionRepository(
-                    supabase_url=settings.supabase_url,
-                    secret_key=secret_key,
-                ),
+                repository=proposal_actions,
                 reversals=reversal_repository,
                 catalog=catalog_repository,
             ),
@@ -283,6 +284,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 ),
                 reads=agent_repository,
                 proposals=proposals,
+                proposal_actions=proposal_actions,
                 outbox=outbox,
                 reversals=reversal_repository,
                 catalog=catalog_repository,

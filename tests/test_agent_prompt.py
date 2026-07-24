@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v7"
+    assert PROMPT_VERSION == "inventory-agent-spike-v8"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -13,6 +13,13 @@ def test_new_item_attributes_are_optional_but_preserved() -> None:
     assert "already known unambiguously" in INSTRUCTIONS
     assert "Preserve every attribute the user supplies" in INSTRUCTIONS
     assert "similar catalog item" in INSTRUCTIONS
+
+
+def test_confirmation_claims_require_authoritative_deterministic_events() -> None:
+    normalized = " ".join(INSTRUCTIONS.split())
+    assert "exact standalone `Confirm`" in normalized
+    assert "exact standalone `Cancel`" in normalized
+    assert "Never interpret conversational text as proof" in normalized
 
 
 def test_telegram_tables_use_fenced_fixed_width_text() -> None:

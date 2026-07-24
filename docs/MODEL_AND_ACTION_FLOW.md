@@ -149,15 +149,17 @@ model for semantic retrieval.
 ## Confirmation and mutation boundary
 
 Models can read authoritative data and create pending proposals, but they cannot apply
-inventory changes. Button callbacks use deterministic code:
+inventory changes. Telegram buttons and the exact standalone `Confirm`/`Cancel` fallback
+commands use deterministic code:
 
 ```mermaid
 flowchart LR
-    P["Pending proposal"] --> U{"User button"}
+    P["Active pending proposal"] --> U{"Button or exact text control"}
     U -->|Confirm| F["Security-definer database function"]
     F --> B["Lock and update balance"]
     F --> L["Append immutable transaction and lines"]
     U -->|Cancel| C["Mark proposal rejected"]
+    N["No active proposal"] --> R["Refuse to guess<br/>No stock change"]
     B --> M["Send new status message"]
     L --> M
     C --> M
@@ -179,10 +181,12 @@ edits or deletes the original applied transaction.
 - Exact SKU reads query the database directly. Semantic embeddings are used for
   name-based retrieval, not for exact identifiers or broad inventory listings.
 - Context summarisation is conditional housekeeping, not an automatic call on every turn.
-- Callback confirmations, cancellations and transaction application do not call a model.
-- Successful confirmation and cancellation callbacks append a deterministic system turn
-  to active agent context. The next agent turn can see that lifecycle result but must
-  still read the authoritative transaction ledger before a correction or reversal.
+- Button callbacks and exact standalone proposal controls do not call a model.
+- Successful confirmation and cancellation actions append a deterministic system turn to
+  active agent context. The next agent turn can see that lifecycle result but must still
+  read the authoritative transaction ledger before a correction or reversal.
+- Typed proposal controls target only the proposal currently attached to that actor and
+  chat. They never infer a target from old pending rows.
 - Filtered ledger reads rank normalized query tokens and automatically include recent
   fallback transactions. A failed literal phrase can no longer establish that no
   transaction exists.

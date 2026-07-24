@@ -58,6 +58,9 @@ metadata, so a later natural-language reply continues after a worker restart.
 
 - Mutation-named tools create `awaiting_confirmation` proposals only.
 - There is no confirmation, apply, or commit tool in the agent.
+- Telegram buttons and exact standalone `Confirm`/`Cancel` messages are handled before the
+  conversational model. Typed controls target only the conversation's active proposal and
+  refuse to guess when none is attached.
 - A proposed existing variant ID must be refreshed by `read_inventory` during the current
   user message. Durable history can guide the query but cannot substitute for current
   grounding evidence.

@@ -704,6 +704,7 @@ async def test_text_processing_crosses_python_and_local_supabase_boundaries() ->
 async def test_agent_text_processing_crosses_python_and_local_supabase_boundaries() -> None:
     settings, secret_key = local_supabase()
     event_id = uuid4()
+    cancel_event_id = uuid4()
     component_chat_id = -(3_000_000_000 + event_id.int % 1_000_000_000)
     headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
     rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
@@ -756,6 +757,10 @@ async def test_agent_text_processing_crosses_python_and_local_supabase_boundarie
                 ),
                 reads=agent_repository,
                 proposals=SupabaseProposalRepository(
+                    supabase_url=settings.supabase_url,
+                    secret_key=secret_key,
+                ),
+                proposal_actions=SupabaseProposalActionRepository(
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),
@@ -844,6 +849,58 @@ async def test_agent_text_processing_crosses_python_and_local_supabase_boundarie
                     },
                 }
             ]
+
+            create_cancel_event = await client.post(
+                "/source_events",
+                headers={"Prefer": "return=minimal"},
+                json={
+                    "id": str(cancel_event_id),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "provider": "telegram",
+                    "external_event_id": f"component-agent-cancel-{cancel_event_id}",
+                    "event_type": "message",
+                    "payload": {
+                        "update_id": 88003,
+                        "message": {
+                            "message_id": 90,
+                            "from": {"id": telegram_user_id},
+                            "chat": {"id": component_chat_id},
+                            "text": "Cancel",
+                        },
+                    },
+                },
+            )
+            create_cancel_event.raise_for_status()
+
+            cancel_result = await processor.process(cancel_event_id)
+
+            assert cancel_result.status is TextEventProcessingStatus.AGENT_MESSAGE
+            assert cancel_result.proposal_id == result.proposal_id
+            assert model.calls == 3
+            cancelled_proposal = await client.get(
+                "/transaction_proposals",
+                params={
+                    "select": "status",
+                    "id": f"eq.{result.proposal_id}",
+                },
+            )
+            cancelled_proposal.raise_for_status()
+            assert cancelled_proposal.json() == [{"status": "rejected"}]
+            cancelled_conversation = await client.get(
+                "/inventory_agent_conversations",
+                params={
+                    "select": "last_source_event_id,last_proposal_id,model_name",
+                    "chat_id": f"eq.{component_chat_id}",
+                },
+            )
+            cancelled_conversation.raise_for_status()
+            assert cancelled_conversation.json() == [
+                {
+                    "last_source_event_id": str(cancel_event_id),
+                    "last_proposal_id": None,
+                    "model_name": "deterministic-proposal-control",
+                }
+            ]
         finally:
             delete_conversation = await client.delete(
                 "/inventory_agent_conversations",
@@ -857,7 +914,7 @@ async def test_agent_text_processing_crosses_python_and_local_supabase_boundarie
             delete_proposal.raise_for_status()
             cleanup = await client.delete(
                 "/source_events",
-                params={"id": f"eq.{event_id}"},
+                params={"id": f"in.({event_id},{cancel_event_id})"},
             )
             cleanup.raise_for_status()
 

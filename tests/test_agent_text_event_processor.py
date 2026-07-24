@@ -17,6 +17,7 @@ from inventory_agent.processing.models import (
     TelegramTextEventContext,
     TextEventProcessingStatus,
 )
+from inventory_agent.proposals.actions import ProposalActionRejectedError
 
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -25,6 +26,8 @@ LOCATION_ID = UUID("12000000-0000-0000-0000-000000000001")
 CONVERSATION_ID = UUID("65000000-0000-0000-0000-000000000001")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000001")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
+PROPOSAL_ID = UUID("72000000-0000-0000-0000-000000000001")
+TRANSACTION_ID = UUID("73000000-0000-0000-0000-000000000001")
 
 
 class FakeEvents:
@@ -109,6 +112,34 @@ class FakeConversations:
     async def save(self, **kwargs: object) -> UUID:
         self.saved.append(kwargs)
         return CONVERSATION_ID
+
+
+class FakeProposalActions:
+    def __init__(self, *, reject: bool = False) -> None:
+        self.confirmed: list[tuple[UUID, UUID]] = []
+        self.cancelled: list[tuple[UUID, UUID]] = []
+        self.reject = reject
+
+    async def select_variant(
+        self,
+        *,
+        line_id: UUID,
+        variant_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        raise AssertionError("not expected")
+
+    async def confirm(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        self.confirmed.append((proposal_id, actor_id))
+        if self.reject:
+            raise ProposalActionRejectedError("not confirmable")
+        return TRANSACTION_ID
+
+    async def cancel(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        self.cancelled.append((proposal_id, actor_id))
+        if self.reject:
+            raise ProposalActionRejectedError("not cancellable")
+        return proposal_id
 
 
 class FakeContextManager:
@@ -242,7 +273,11 @@ def context(message_text: str = "tell me a joke") -> TelegramTextEventContext:
     )
 
 
-def conversation(*, replay: bool = False) -> AgentConversation:
+def conversation(
+    *,
+    replay: bool = False,
+    proposal_id: UUID | None = None,
+) -> AgentConversation:
     return AgentConversation(
         conversation_id=CONVERSATION_ID,
         organization_id=ORGANIZATION_ID,
@@ -250,6 +285,7 @@ def conversation(*, replay: bool = False) -> AgentConversation:
         chat_id=123,
         last_source_event_id=EVENT_ID if replay else None,
         last_reply_text="Previously saved reply." if replay else None,
+        last_proposal_id=proposal_id,
     )
 
 
@@ -262,6 +298,7 @@ def processor(
     catalog: FakeCatalog | None = None,
     catalog_interpreter: object | None = None,
     context_manager: object | None = None,
+    proposal_actions: FakeProposalActions | None = None,
 ) -> TelegramAgentTextEventProcessor:
     return TelegramAgentTextEventProcessor(
         events=events,  # type: ignore[arg-type]
@@ -270,6 +307,7 @@ def processor(
         catalog_reader=UnusedCatalogReader(),  # type: ignore[arg-type]
         reads=UnusedReads(),  # type: ignore[arg-type]
         proposals=UnusedProposals(),  # type: ignore[arg-type]
+        proposal_actions=proposal_actions or FakeProposalActions(),
         outbox=outbox,
         reversals=FakeReversals(),
         catalog=catalog or FakeCatalog(),  # type: ignore[arg-type]
@@ -363,3 +401,129 @@ async def test_new_inventory_request_bypasses_stale_catalog_details_flow() -> No
     assert catalog.saved is False
     assert model.calls == 1
     assert conversations.saved[0]["source_event_id"] == EVENT_ID
+
+
+async def test_exact_typed_confirm_applies_active_proposal_without_calling_model() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation(proposal_id=PROPOSAL_ID))
+    outbox = FakeOutbox()
+    events = FakeEvents("Confirm")
+    proposal_actions = FakeProposalActions()
+    context_manager = FakeContextManager()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        proposal_actions=proposal_actions,
+        context_manager=context_manager,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.TRANSACTION_APPLIED
+    assert result.proposal_id == PROPOSAL_ID
+    assert model.calls == 0
+    assert context_manager.calls == 0
+    assert proposal_actions.confirmed == [(PROPOSAL_ID, ACTOR_ID)]
+    assert proposal_actions.cancelled == []
+    assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.TRANSACTION_APPLIED
+    assert outbox.drafts[0].aggregate_id == TRANSACTION_ID
+    assert conversations.saved[0]["proposal_id"] is None
+    assert TRANSACTION_ID in conversations.saved[0]["allowed_transaction_ids"]
+    assert conversations.saved[0]["model_name"] == "deterministic-proposal-control"
+    assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_exact_typed_cancel_rejects_active_proposal_without_calling_model() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation(proposal_id=PROPOSAL_ID))
+    outbox = FakeOutbox()
+    events = FakeEvents("  CANCEL  ")
+    proposal_actions = FakeProposalActions()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        proposal_actions=proposal_actions,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert model.calls == 0
+    assert proposal_actions.cancelled == [(PROPOSAL_ID, ACTOR_ID)]
+    assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.CALLBACK_NOTICE
+    assert outbox.drafts[0].aggregate_id is None
+    assert conversations.saved[0]["proposal_id"] is None
+    assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_exact_typed_confirm_without_active_proposal_refuses_to_guess() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation())
+    outbox = FakeOutbox()
+    events = FakeEvents("confirm")
+    proposal_actions = FakeProposalActions()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        proposal_actions=proposal_actions,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert model.calls == 0
+    assert proposal_actions.confirmed == []
+    assert proposal_actions.cancelled == []
+    assert conversations.saved == []
+    assert "not currently pointing" in outbox.drafts[0].payload["message"]
+    assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_non_exact_confirmation_language_remains_a_conversation_turn() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation(proposal_id=PROPOSAL_ID))
+    outbox = FakeOutbox()
+    events = FakeEvents("Can you confirm which quantities you used?")
+    proposal_actions = FakeProposalActions()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        proposal_actions=proposal_actions,
+    ).process_next()
+
+    assert result is not None
+    assert model.calls == 1
+    assert proposal_actions.confirmed == []
+    assert proposal_actions.cancelled == []
+
+
+async def test_rejected_typed_confirmation_reports_no_change_without_model() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation(proposal_id=PROPOSAL_ID))
+    outbox = FakeOutbox()
+    events = FakeEvents("Confirm")
+    proposal_actions = FakeProposalActions(reject=True)
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        proposal_actions=proposal_actions,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert model.calls == 0
+    assert conversations.saved == []
+    assert "No additional stock change was made" in outbox.drafts[0].payload["message"]
+    assert events.finished == [(EVENT_ID, True)]

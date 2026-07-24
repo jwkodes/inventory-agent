@@ -539,8 +539,14 @@ sale” can still retrieve a stored `issue` transaction whose summary uses diffe
 The agent may not conclude that a transaction is absent until it has inspected the recent
 unfiltered ledger.
 
-Every mutation remains pending until the user presses the Telegram confirmation button.
-The agent reply and the rendered review are sent together as a new Telegram message.
+Every mutation remains pending until the user presses the Telegram confirmation button
+or sends the exact standalone text command `Confirm` while that proposal is the active
+proposal for their conversation. Exact standalone `Cancel` has the same effect as the
+Cancel button. These commands bypass the model and use the same deterministic database
+actions as the buttons; broader conversational uses of “confirm” or “cancel” remain
+ordinary agent messages. If there is no active proposal, the bot refuses to guess among
+older pending records and changes no stock. The agent reply and the rendered review are
+sent together as a new Telegram message.
 Turning `INVENTORY_AGENT_ENABLED` back to `false` restores the previous structured text
 processor; no migration rollback is required.
 
@@ -811,6 +817,15 @@ resolved proposal gets Confirm and Cancel buttons; an unresolved proposal gets c
 buttons and cannot be confirmed. The outbox delivery worker renders and sends these
 messages.
 
+As a fallback when Telegram controls are temporarily unavailable, a user may send exactly
+`Confirm` or `Cancel`. The text worker resolves that command only against
+`inventory_agent_conversations.last_proposal_id`, which is scoped by organization member
+and Telegram chat. It never selects a proposal merely because it is the newest database
+row. Confirmation calls the same idempotent `apply_inventory_proposal` function; the
+result is recorded as a deterministic conversation system turn and delivered using the
+normal transaction-success message. A command with no active proposal produces an
+explicit no-change notice and never reaches the LLM.
+
 Callback webhooks are stored before processing. The callback worker atomically claims the
 oldest due event, resolves its active organization member, and routes decoded selection,
 proposal, and reversal actions to separate database functions. It acknowledges valid
@@ -832,10 +847,11 @@ attempt, matching text-event handling.
 
 When the LLM-led agent is enabled, completed proposal, catalog-item, and reversal
 confirmations or cancellations also append a deterministic `system` item to that user's
-durable conversation. The next model turn therefore knows whether the preceding proposal
-was applied or cancelled, while still being required to read the authoritative ledger
-before correcting or reversing a transaction. Callback records contain no model call and
-are retained and compacted under the same conversation policy as agent turns.
+durable conversation. Exact typed proposal controls do the same without a model call. The
+next model turn therefore knows whether the preceding proposal was applied or cancelled,
+while still being required to read the authoritative ledger before correcting or
+reversing a transaction. These lifecycle records are retained and compacted under the
+same conversation policy as agent turns.
 
 System-generated Telegram messages use a small visual status vocabulary so the write
 state is visible at a glance:

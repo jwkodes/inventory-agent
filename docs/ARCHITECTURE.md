@@ -171,8 +171,11 @@ The system must not treat a model's self-reported confidence as calibrated proba
 Match decisions use match method, identifier agreement, package and unit compatibility,
 top-candidate margin, alias history, and results measured on labelled examples.
 
-During the prototype, every inventory write requires confirmation. A low-confidence item
-also requires explicit candidate selection before transaction confirmation.
+During the prototype, every inventory write requires confirmation. Proposal confirmation
+is deterministic through either its Telegram button or an exact standalone `Confirm`
+message bound to the conversation's active proposal; the conversational model cannot
+apply stock. Exact `Cancel` is handled by the same boundary. A low-confidence item also
+requires explicit candidate selection before transaction confirmation.
 
 The implemented baseline accepts a fuzzy candidate only when its normalized score is at
 least `0.72` and its margin over the runner-up is at least `0.12`. Exact identifiers and

@@ -37,6 +37,10 @@ from inventory_agent.processing.repository import (
     ProcessingOutboxRepository,
     SourceEventWorkRepository,
 )
+from inventory_agent.proposals.actions import (
+    ProposalActionRejectedError,
+    ProposalActionRepository,
+)
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
 
@@ -69,6 +73,7 @@ class TelegramAgentTextEventProcessor:
         catalog_reader: AgentCatalogReader,
         reads: AgentReadRepository,
         proposals: ProposalRepository,
+        proposal_actions: ProposalActionRepository,
         outbox: ProcessingOutboxRepository,
         reversals: ReversalRepository,
         catalog: CatalogItemCreationRepository,
@@ -81,6 +86,7 @@ class TelegramAgentTextEventProcessor:
         self._catalog_reader = catalog_reader
         self._reads = reads
         self._proposals = proposals
+        self._proposal_actions = proposal_actions
         self._outbox = outbox
         self._reversals = reversals
         self._catalog = catalog
@@ -120,6 +126,14 @@ class TelegramAgentTextEventProcessor:
                 result = await self._enqueue_replayed_turn(context, conversation)
                 await self._require_finish(context.event_id)
                 return result
+
+            proposal_control = await self._handle_typed_proposal_control(
+                context,
+                conversation,
+            )
+            if proposal_control is not None:
+                return proposal_control
+
             if self._context_manager is not None:
                 conversation = await self._context_manager.compact_if_needed(conversation)
 
@@ -313,6 +327,145 @@ class TelegramAgentTextEventProcessor:
             outbox_id=outbox_id,
         )
 
+    async def _handle_typed_proposal_control(
+        self,
+        context: TelegramTextEventContext,
+        conversation: AgentConversation,
+    ) -> TextEventProcessingResult | None:
+        action = _typed_proposal_control(context.message_text)
+        if action is None:
+            return None
+        if conversation.last_proposal_id is None:
+            outbox_id = await self._outbox.enqueue(
+                ProcessingOutcomeDraft(
+                    organization_id=context.organization_id,
+                    source_event_id=context.event_id,
+                    outcome_type=ProcessingOutcomeType.AGENT_MESSAGE,
+                    chat_id=context.chat_id,
+                    payload={
+                        "message": (
+                            "⚠️ **No active proposal selected**\n"
+                            f"I did not {action} anything because this conversation is "
+                            "not currently pointing to a pending stock proposal. Ask me "
+                            "to prepare or show the intended change again."
+                        )
+                    },
+                )
+            )
+            await self._require_finish(context.event_id)
+            return TextEventProcessingResult(
+                event_id=context.event_id,
+                status=TextEventProcessingStatus.AGENT_MESSAGE,
+                chat_id=context.chat_id,
+                outbox_id=outbox_id,
+            )
+
+        proposal_id = conversation.last_proposal_id
+        try:
+            result_id = await (
+                self._proposal_actions.confirm(
+                    proposal_id=proposal_id,
+                    actor_id=context.organization_user_id,
+                )
+                if action == "confirm"
+                else self._proposal_actions.cancel(
+                    proposal_id=proposal_id,
+                    actor_id=context.organization_user_id,
+                )
+            )
+        except ProposalActionRejectedError:
+            outbox_id = await self._outbox.enqueue(
+                ProcessingOutcomeDraft(
+                    organization_id=context.organization_id,
+                    source_event_id=context.event_id,
+                    outcome_type=ProcessingOutcomeType.AGENT_MESSAGE,
+                    chat_id=context.chat_id,
+                    payload={
+                        "message": (
+                            "⚠️ **Proposal action not applied**\n"
+                            f"I could not {action} the active proposal. It may still "
+                            "need an item match, may no longer be pending, or may fail an "
+                            "inventory validation. No additional stock change was made. "
+                            "Ask me to show or prepare the intended change again."
+                        )
+                    },
+                )
+            )
+            await self._require_finish(context.event_id)
+            return TextEventProcessingResult(
+                event_id=context.event_id,
+                status=TextEventProcessingStatus.AGENT_MESSAGE,
+                chat_id=context.chat_id,
+                proposal_id=proposal_id,
+                outbox_id=outbox_id,
+            )
+
+        if action == "confirm":
+            outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
+            status = TextEventProcessingStatus.TRANSACTION_APPLIED
+            aggregate_id: UUID | None = result_id
+            payload: dict[str, object] = {}
+            lifecycle_message = (
+                "Inventory system event: The user typed the exact Confirm command for "
+                f"stock proposal {proposal_id}. Inventory transaction {result_id} was "
+                "applied successfully. The proposal is no longer pending. Read "
+                "authoritative transactions before correcting or reversing it."
+            )
+            allowed_transaction_ids = set(conversation.allowed_transaction_ids) | {result_id}
+        else:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            status = TextEventProcessingStatus.AGENT_MESSAGE
+            aggregate_id = None
+            payload = {"message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."}
+            lifecycle_message = (
+                "Inventory system event: The user typed the exact Cancel command for "
+                f"stock proposal {result_id}. It was cancelled and no inventory change "
+                "resulted from that proposal."
+            )
+            allowed_transaction_ids = set(conversation.allowed_transaction_ids)
+
+        outbox_id = await self._outbox.enqueue(
+            ProcessingOutcomeDraft(
+                organization_id=context.organization_id,
+                source_event_id=context.event_id,
+                outcome_type=outcome_type,
+                aggregate_id=aggregate_id,
+                chat_id=context.chat_id,
+                payload=payload,
+            )
+        )
+        history_item: dict[str, object] = {
+            "role": "system",
+            "content": lifecycle_message,
+        }
+        await self._conversations.save(
+            conversation_id=conversation.conversation_id,
+            source_event_id=context.event_id,
+            organization_user_id=context.organization_user_id,
+            history=[*conversation.history, history_item],
+            turn_history=[history_item],
+            estimated_tokens=estimate_history_tokens([history_item]),
+            allowed_variant_ids=set(conversation.allowed_variant_ids),
+            allowed_transaction_ids=allowed_transaction_ids,
+            reply_text=lifecycle_message,
+            proposal_id=None,
+            reversal_request_id=None,
+            reversal_reason=None,
+            response_id=f"deterministic-proposal-{action}-{context.event_id}",
+            model_name="deterministic-proposal-control",
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+        )
+        await self._require_finish(context.event_id)
+        return TextEventProcessingResult(
+            event_id=context.event_id,
+            status=status,
+            chat_id=context.chat_id,
+            proposal_id=proposal_id,
+            outbox_id=outbox_id,
+        )
+
     async def _enqueue_replayed_turn(
         self,
         context: TelegramTextEventContext,
@@ -382,3 +535,10 @@ def _natural_list(values: list[str]) -> str:
     if len(values) == 1:
         return values[0]
     return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
+def _typed_proposal_control(message_text: str) -> str | None:
+    normalized = message_text.strip().casefold()
+    if normalized in {"confirm", "cancel"}:
+        return normalized
+    return None
