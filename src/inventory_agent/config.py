@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
         "low"
     )
     inventory_agent_enabled: bool = False
+    inventory_agent_context_policy: Literal["discard", "summarize"] = "summarize"
+    inventory_agent_context_retention_days: int = Field(default=7, ge=1)
+    inventory_agent_context_max_tokens: int = Field(default=30_000, ge=1)
+    inventory_agent_context_max_items: int = Field(default=300, ge=1, le=350)
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dimensions: Literal[512] = 512
     inventory_matching_strategy: Literal["semantic", "fuzzy", "hybrid"] = "semantic"

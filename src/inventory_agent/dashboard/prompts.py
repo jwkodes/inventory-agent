@@ -1,5 +1,6 @@
 """Expose the current LLM contracts to the development dashboard."""
 
+from inventory_agent.agent.context import SUMMARY_INSTRUCTIONS, SUMMARY_PROMPT_VERSION
 from inventory_agent.agent.prompt import (
     INSTRUCTIONS as AGENT_INSTRUCTIONS,
 )
@@ -52,6 +53,14 @@ def prompt_catalog(
             "prompt_version": EXTRACTION_PROMPT_VERSION,
             "model": extraction_model,
             "instructions": EXTRACTION_INSTRUCTIONS,
+            "tools": [],
+        },
+        {
+            "layer": "context_summary",
+            "label": "Conversation context summary",
+            "prompt_version": SUMMARY_PROMPT_VERSION,
+            "model": agent_model,
+            "instructions": SUMMARY_INSTRUCTIONS,
             "tools": [],
         },
         {

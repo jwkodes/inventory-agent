@@ -21,6 +21,7 @@ class FakeModel:
 
     def __post_init__(self) -> None:
         self.requests: list[list[dict[str, object]]] = []
+        self.instructions: list[str] = []
 
     async def respond(
         self,
@@ -30,6 +31,7 @@ class FakeModel:
         tools: list[dict[str, object]],
     ) -> ModelTurn:
         self.requests.append(list(input_items))
+        self.instructions.append(instructions)
         assert "inventory assistant" in instructions
         assert {tool["name"] for tool in tools} >= {
             "read_inventory",
@@ -166,6 +168,22 @@ async def test_agent_preserves_history_across_natural_follow_up() -> None:
         "role": "user",
         "content": "They are black, in L and XS",
     }
+
+
+@pytest.mark.asyncio
+async def test_agent_supplies_compacted_summary_as_untrusted_instructions() -> None:
+    model = FakeModel(turns=[turn(1, text="What would you like to do next?")])
+    session = InventoryAgentSession(
+        model=model,
+        tools=SimulatedInventoryTools(catalog=[]),
+        summary="The user previously discussed AMOX-500.",
+    )
+
+    await session.handle("What was I working on?")
+
+    assert "untrusted reference data" in model.instructions[0]
+    assert "The user previously discussed AMOX-500." in model.instructions[0]
+    assert model.requests[0] == [{"role": "user", "content": "What was I working on?"}]
 
 
 @pytest.mark.asyncio

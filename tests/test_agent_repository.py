@@ -58,6 +58,8 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         source_event_id=EVENT_ID,
         organization_user_id=ACTOR_ID,
         history=[{"role": "user", "content": "show stock"}],
+        turn_history=[{"role": "user", "content": "show stock"}],
+        estimated_tokens=12,
         allowed_variant_ids={VARIANT_ID},
         allowed_transaction_ids=set(),
         reply_text="Here is the stock.",
@@ -66,14 +68,31 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         reversal_reason=None,
         response_id="resp-1",
         model_name="gpt-test",
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+    )
+    compacted = await repository.compact(
+        conversation_id=CONVERSATION_ID,
+        organization_user_id=ACTOR_ID,
+        turn_ids=[EVENT_ID],
+        policy="discard",
+        summary=None,
     )
 
     assert saved == CONVERSATION_ID
+    assert compacted == CONVERSATION_ID
     load_body = requests[0].read().decode()
     assert str(ORGANIZATION_ID) in load_body
     save_body = requests[1].read().decode()
+    assert requests[1].url.path.endswith("/save_inventory_agent_conversation_turn")
     assert str(VARIANT_ID) in save_body
     assert "Here is the stock." in save_body
+    assert '"p_estimated_tokens":12' in save_body
+    assert requests[2].url.path.endswith("/compact_inventory_agent_conversation")
+    compact_body = requests[2].read().decode()
+    assert '"p_policy":"discard"' in compact_body
+    assert str(EVENT_ID) in compact_body
 
 
 async def test_agent_balance_and_transaction_read_contracts() -> None:

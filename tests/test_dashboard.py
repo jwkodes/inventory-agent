@@ -106,6 +106,7 @@ async def test_dashboard_read_apis_are_authenticated_and_organization_scoped() -
     assert inventory.json()["metrics"]["active_skus"] == 1
     assert {prompt["layer"] for prompt in prompts.json()["prompts"]} >= {
         "inventory_agent",
+        "context_summary",
         "candidate_judge",
         "semantic_retrieval",
     }

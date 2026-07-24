@@ -420,6 +420,9 @@
 
       if (flow.conversation) {
         const conversation = flow.conversation;
+        const turns = Array.isArray(flow.conversation_turns) ? flow.conversation_turns : [];
+        const activeTurns = turns.filter(turn => !turn.compacted_at);
+        const compactedTurns = turns.filter(turn => turn.compacted_at);
         const history = Array.isArray(conversation.history) ? conversation.history : [];
         const recent = history.slice(-14);
         const exactTurn = conversation.last_source_event_id === event.id;
@@ -436,9 +439,12 @@
         }).join("");
         steps.push(step("agent", exactTurn ? "LLM input, tools & output" : "Persisted conversation context", `
           <div class="kv"><dt>Model</dt><dd>${esc(conversation.model_name || "—")}</dd><dt>Response ID</dt><dd>${esc(conversation.last_response_id || "—")}</dd>
-          <dt>Conversation</dt><dd>${esc(conversation.id)}</dd><dt>History items</dt><dd>${history.length}</dd></div>
+          <dt>Conversation</dt><dd>${esc(conversation.id)}</dd><dt>Active history items</dt><dd>${history.length}</dd>
+          <dt>Active turns</dt><dd>${activeTurns.length}</dd><dt>Compacted turns</dt><dd>${compactedTurns.length}</dd></div>
           <p style="color:var(--muted)">${exactTurn ? "This snapshot ends at the selected model turn." : "This event did not run the main agent. The latest context for the same Telegram chat is shown for reference."}</p>
-          ${exchanges}${raw("Complete persisted model history", history)}`, "agent"));
+          ${conversation.summary ? `<div class="tool" style="border-color:var(--violet)"><div class="tool-name">Rolling summary</div><p>${esc(conversation.summary)}</p></div>` : ""}
+          ${exchanges}${raw("Complete active model history", history)}
+          ${raw("Immutable turn audit (latest 200)", turns)}`, "agent"));
       }
 
       (flow.proposals || []).forEach(proposal => {

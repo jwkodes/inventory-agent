@@ -311,12 +311,51 @@ supabase migration up --local
 INVENTORY_AGENT_ENABLED=true
 INVENTORY_AGENT_MODEL=gpt-5.6-sol
 INVENTORY_AGENT_REASONING_EFFORT=low
+INVENTORY_AGENT_CONTEXT_POLICY=summarize
+INVENTORY_AGENT_CONTEXT_RETENTION_DAYS=7
+INVENTORY_AGENT_CONTEXT_MAX_TOKENS=30000
+INVENTORY_AGENT_CONTEXT_MAX_ITEMS=300
 ```
 
 Restart the worker after changing `.env`. This switch affects Telegram text only. Invoice
 images continue through the existing structured extraction and matching pipeline, while
 button confirmations, cancellations, catalog creation, transaction application, and
 reversal application continue through their existing deterministic handlers.
+
+#### Conversation context retention
+
+The application—not OpenAI—maintains a separate conversation for each organization,
+organization user, and Telegram chat. OpenAI requests use `store=false`. For each agent
+turn, the worker loads that conversation's active history from Supabase, appends the new
+user/model/tool items, sends the resulting item list to the Responses API, and saves an
+immutable timestamped turn in `inventory_agent_turns`.
+
+Context limits are checked twice:
+
+1. Immediately before an LLM call, so an oversized context is never knowingly sent.
+2. After a successful turn, so the background worker prepares the next request in advance.
+
+A turn leaves active context when it is older than
+`INVENTORY_AGENT_CONTEXT_RETENTION_DAYS`, or when retaining it would exceed either the
+approximate token budget or item limit. The token estimate uses the serialized history
+size and is deliberately conservative; `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` also stays
+below the database's hard 400-item ceiling.
+
+`INVENTORY_AGENT_CONTEXT_POLICY` controls what replaces removed active history:
+
+- `summarize` asks the configured inventory-agent model for an incremental rolling
+  summary, then sends that summary with the exact recent turns. This can make an additional
+  model call only when compaction is required.
+- `discard` excludes the old turns without generating or retaining a rolling summary.
+
+Both policies retain immutable raw turn rows for the development dashboard and audit.
+They only remove turns from future model prompts; they do not delete Telegram source
+events, proposals, catalog data, inventory transactions, or balances. Compaction clears
+previously grounded variant and transaction IDs, forcing later mutations to retrieve
+authoritative database state again. Summaries are explicitly non-authoritative and must
+not be used as current stock or transaction state. Encrypted/private reasoning output is
+retained in the immutable turn audit but removed from later model inputs and summaries at
+the end of each turn.
 
 ### 9. Use the development dashboard
 
@@ -493,6 +532,10 @@ Configuration is read from environment variables and `.env` by
 | `INVENTORY_AGENT_MODEL` | LLM-led Telegram text and spike-evaluation model | `gpt-5.6-sol` |
 | `INVENTORY_AGENT_REASONING_EFFORT` | Reasoning level for the LLM-led agent | `low` |
 | `INVENTORY_AGENT_ENABLED` | Route Telegram text through the LLM-led agent | `false` |
+| `INVENTORY_AGENT_CONTEXT_POLICY` | Old context handling: `summarize` or `discard` | `summarize` |
+| `INVENTORY_AGENT_CONTEXT_RETENTION_DAYS` | Exact-turn retention window per user/chat | `7` |
+| `INVENTORY_AGENT_CONTEXT_MAX_TOKENS` | Approximate active-context token ceiling | `30000` |
+| `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` | Active Responses API item ceiling; maximum `350` | `300` |
 | `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
 | `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |

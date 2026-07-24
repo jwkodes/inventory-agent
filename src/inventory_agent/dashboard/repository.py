@@ -103,6 +103,7 @@ class DashboardRepository:
             },
         )
         conversations: list[dict[str, object]] = []
+        conversation_turns: list[dict[str, object]] = []
         if chat_id is not None:
             conversations = await self._get(
                 "inventory_agent_conversations",
@@ -114,6 +115,20 @@ class DashboardRepository:
                     "limit": "1",
                 },
             )
+            if conversations:
+                conversation_turns = await self._get(
+                    "inventory_agent_turns",
+                    {
+                        "select": (
+                            "id,source_event_id,history,estimated_tokens,input_tokens,"
+                            "output_tokens,total_tokens,created_at,compacted_at,"
+                            "compaction_policy"
+                        ),
+                        "conversation_id": f"eq.{conversations[0]['id']}",
+                        "order": "created_at.desc",
+                        "limit": "200",
+                    },
+                )
 
         proposal_ids = [str(proposal["id"]) for proposal in proposals]
         proposal_ids.extend(
@@ -205,6 +220,7 @@ class DashboardRepository:
                 "callback": _callback_details(payload),
             },
             "conversation": conversations[0] if conversations else None,
+            "conversation_turns": conversation_turns,
             "proposals": proposals,
             "outbox": outbox,
             "artifacts": artifacts,

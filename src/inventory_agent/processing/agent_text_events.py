@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 from uuid import UUID
 
+from inventory_agent.agent.context import (
+    AgentContextManager,
+    durable_history_items,
+    estimate_history_tokens,
+)
 from inventory_agent.agent.production_tools import (
     AgentCatalogReader,
     ProductionInventoryAgentTools,
@@ -33,6 +39,8 @@ from inventory_agent.processing.repository import (
 )
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CatalogDetailsInterpreter(Protocol):
@@ -65,6 +73,7 @@ class TelegramAgentTextEventProcessor:
         reversals: ReversalRepository,
         catalog: CatalogItemCreationRepository,
         catalog_interpreter: CatalogDetailsInterpreter,
+        context_manager: AgentContextManager | None = None,
     ) -> None:
         self._events = events
         self._model = model
@@ -76,6 +85,7 @@ class TelegramAgentTextEventProcessor:
         self._reversals = reversals
         self._catalog = catalog
         self._catalog_interpreter = catalog_interpreter
+        self._context_manager = context_manager
 
     async def process(self, event_id: UUID) -> TextEventProcessingResult:
         context = await self._events.claim_text_event(event_id)
@@ -110,6 +120,8 @@ class TelegramAgentTextEventProcessor:
                 result = await self._enqueue_replayed_turn(context, conversation)
                 await self._require_finish(context.event_id)
                 return result
+            if self._context_manager is not None:
+                conversation = await self._context_manager.compact_if_needed(conversation)
 
             tools = ProductionInventoryAgentTools(
                 context=ProductionToolContext(
@@ -127,17 +139,25 @@ class TelegramAgentTextEventProcessor:
                 allowed_variant_ids=set(conversation.allowed_variant_ids),
                 allowed_transaction_ids=set(conversation.allowed_transaction_ids),
             )
+            active_history = durable_history_items(conversation.history)
             session = InventoryAgentSession(
                 model=self._model,
                 tools=tools,
-                history=conversation.history,
+                history=active_history,
+                summary=conversation.summary,
             )
+            history_start = len(active_history)
             reply = await session.handle(context.message_text)
+            raw_turn_history = session.history[history_start:]
+            turn_history = durable_history_items(raw_turn_history)
+            persisted_history = active_history + turn_history
             await self._conversations.save(
                 conversation_id=conversation.conversation_id,
                 source_event_id=context.event_id,
                 organization_user_id=context.organization_user_id,
-                history=session.history,
+                history=persisted_history,
+                turn_history=raw_turn_history,
+                estimated_tokens=estimate_history_tokens(turn_history),
                 allowed_variant_ids=tools.allowed_variant_ids,
                 allowed_transaction_ids=tools.allowed_transaction_ids,
                 reply_text=reply.text,
@@ -146,6 +166,9 @@ class TelegramAgentTextEventProcessor:
                 reversal_reason=tools.reversal_reason,
                 response_id=reply.response_id,
                 model_name=reply.model,
+                input_tokens=reply.input_tokens,
+                output_tokens=reply.output_tokens,
+                total_tokens=reply.total_tokens,
             )
             result = await self._enqueue_agent_turn(
                 context=context,
@@ -155,6 +178,7 @@ class TelegramAgentTextEventProcessor:
                 reversal_reason=tools.reversal_reason,
             )
             await self._require_finish(context.event_id)
+            await self._compact_after_turn(context)
             return result
         except Exception as error:
             failure = f"{type(error).__name__}: agent text event processing failed"
@@ -169,6 +193,22 @@ class TelegramAgentTextEventProcessor:
                     "Agent processing and failure recording both failed"
                 ) from finish_error
             raise AgentTextEventProcessingError("Agent text event processing failed") from error
+
+    async def _compact_after_turn(self, context: TelegramTextEventContext) -> None:
+        if self._context_manager is None:
+            return
+        try:
+            conversation = await self._conversations.load(
+                organization_id=context.organization_id,
+                organization_user_id=context.organization_user_id,
+                chat_id=context.chat_id,
+            )
+            await self._context_manager.compact_if_needed(conversation)
+        except Exception:
+            logger.exception(
+                "agent_context_compaction status=failed conversation_chat_id=%s",
+                context.chat_id,
+            )
 
     async def _handle_pending_deterministic_flow(
         self,

@@ -9,6 +9,11 @@ from typing import Protocol
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
+from inventory_agent.agent.context import (
+    AgentContextManager,
+    ContextRetentionPolicy,
+    ModelConversationSummarizer,
+)
 from inventory_agent.agent.production_tools import GroundedAgentCatalogReader
 from inventory_agent.agent.repository import SupabaseAgentRepository
 from inventory_agent.agent.runtime import OpenAIResponsesAgentModel
@@ -253,13 +258,14 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 supabase_url=settings.supabase_url,
                 secret_key=secret_key,
             )
+            agent_model = OpenAIResponsesAgentModel(
+                client=openai_client,
+                model=settings.inventory_agent_model,
+                reasoning_effort=settings.inventory_agent_reasoning_effort,
+            )
             text_processor: NextTextEventProcessor = TelegramAgentTextEventProcessor(
                 events=event_repository,
-                model=OpenAIResponsesAgentModel(
-                    client=openai_client,
-                    model=settings.inventory_agent_model,
-                    reasoning_effort=settings.inventory_agent_reasoning_effort,
-                ),
+                model=agent_model,
                 conversations=agent_repository,
                 catalog_reader=GroundedAgentCatalogReader(
                     candidates=candidate_repository,
@@ -273,6 +279,18 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reversals=reversal_repository,
                 catalog=catalog_repository,
                 catalog_interpreter=catalog_interpreter,
+                context_manager=AgentContextManager(
+                    conversations=agent_repository,
+                    policy=ContextRetentionPolicy(settings.inventory_agent_context_policy),
+                    retention_days=settings.inventory_agent_context_retention_days,
+                    max_tokens=settings.inventory_agent_context_max_tokens,
+                    max_items=settings.inventory_agent_context_max_items,
+                    summarizer=(
+                        ModelConversationSummarizer(model=agent_model)
+                        if settings.inventory_agent_context_policy == "summarize"
+                        else None
+                    ),
+                ),
             )
         else:
             text_processor = TelegramTextEventProcessor(

@@ -111,6 +111,18 @@ class FakeConversations:
         return CONVERSATION_ID
 
 
+class FakeContextManager:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def compact_if_needed(
+        self,
+        conversation: AgentConversation,
+    ) -> AgentConversation:
+        self.calls += 1
+        return conversation
+
+
 class FakeOutbox:
     def __init__(self) -> None:
         self.drafts: list[ProcessingOutcomeDraft] = []
@@ -249,6 +261,7 @@ def processor(
     events: FakeEvents,
     catalog: FakeCatalog | None = None,
     catalog_interpreter: object | None = None,
+    context_manager: object | None = None,
 ) -> TelegramAgentTextEventProcessor:
     return TelegramAgentTextEventProcessor(
         events=events,  # type: ignore[arg-type]
@@ -261,6 +274,7 @@ def processor(
         reversals=FakeReversals(),
         catalog=catalog or FakeCatalog(),  # type: ignore[arg-type]
         catalog_interpreter=catalog_interpreter or UnusedCatalogInterpreter(),  # type: ignore[arg-type]
+        context_manager=context_manager,  # type: ignore[arg-type]
     )
 
 
@@ -280,9 +294,30 @@ async def test_unrelated_telegram_message_saves_conversation_and_enqueues_new_me
     assert result is not None
     assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
     assert conversations.saved[0]["source_event_id"] == EVENT_ID
+    assert conversations.saved[0]["turn_history"][0] == {
+        "role": "user",
+        "content": "tell me a joke",
+    }
+    assert conversations.saved[0]["estimated_tokens"] > 0
     assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.AGENT_MESSAGE
     assert "inventory assistant" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_context_is_checked_before_and_after_a_completed_agent_turn() -> None:
+    context_manager = FakeContextManager()
+    conversations = FakeConversations(conversation())
+
+    result = await processor(
+        model=FakeModel(),
+        conversations=conversations,
+        outbox=FakeOutbox(),
+        events=FakeEvents(),
+        context_manager=context_manager,
+    ).process_next()
+
+    assert result is not None
+    assert context_manager.calls == 2
 
 
 async def test_retried_saved_turn_reuses_reply_without_another_model_call() -> None:

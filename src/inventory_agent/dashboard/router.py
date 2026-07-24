@@ -128,6 +128,10 @@ async def prompts(
         "configuration": {
             "agent_enabled": settings.inventory_agent_enabled,
             "agent_reasoning_effort": settings.inventory_agent_reasoning_effort,
+            "agent_context_policy": settings.inventory_agent_context_policy,
+            "agent_context_retention_days": settings.inventory_agent_context_retention_days,
+            "agent_context_max_tokens": settings.inventory_agent_context_max_tokens,
+            "agent_context_max_items": settings.inventory_agent_context_max_items,
             "extraction_reasoning_effort": settings.openai_reasoning_effort,
             "matching_strategy": settings.inventory_matching_strategy,
             "candidate_judging_enabled": settings.inventory_candidate_judging_enabled,
