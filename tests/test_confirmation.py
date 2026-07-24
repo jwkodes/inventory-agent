@@ -47,9 +47,30 @@ def test_resolved_proposal_has_confirm_and_cancel_buttons() -> None:
         decode_callback(button.callback_data).action for button in message.inline_keyboard[-1]
     ]
     assert actions == [CallbackAction.CONFIRM_PROPOSAL, CallbackAction.CANCEL_PROPOSAL]
-    assert "3 each" in message.text
-    assert message.text.startswith("⏳ **Pending confirmation**")
+    assert "➕ ADD 3 each" in message.text
+    assert message.text.startswith("⏳ **Pending stock addition**")
     assert "No inventory has changed yet." in message.text
+
+
+def test_stock_issue_is_visually_explicit_on_heading_and_every_line() -> None:
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock issue",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Classic T-Shirt - Red / M",
+                quantity=Decimal("5.00000000"),
+                unit="each",
+                matched_label="Classic T-Shirt - Red / M · SHIRT-RED-M",
+            )
+        ],
+    )
+
+    assert message.text.startswith("⏳ **Pending stock deduction**")
+    assert "Review stock deduction:" in message.text
+    assert "1. ➖ DEDUCT 5 each" in message.text
+    assert "5.00000000" not in message.text
 
 
 def test_unresolved_proposal_requires_candidate_selection() -> None:
@@ -242,13 +263,15 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
 def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None:
     applied = render_applied_transaction(
         TRANSACTION_ID,
+        transaction_type="issue",
         applied_at=APPLIED_AT,
         display_timezone=DISPLAY_TIMEZONE,
     )
     reverse = decode_callback(applied.inline_keyboard[0][0].callback_data)
     assert reverse.action is CallbackAction.REVERSE_TRANSACTION
     assert reverse.target_id == TRANSACTION_ID
-    assert applied.text.startswith("✅ **Inventory updated**")
+    assert applied.text.startswith("✅ **Stock deducted**")
+    assert "deduction transaction was applied" in applied.text
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in applied.text
 
     reason_prompt = render_reversal_reason_prompt(REVERSAL_REQUEST_ID)

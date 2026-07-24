@@ -1,5 +1,6 @@
 """Supabase adapters for atomic event claims, completion, and outbox handoff."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -16,6 +17,13 @@ from inventory_agent.processing.models import (
     TelegramTextEventContext,
 )
 from inventory_agent.telegram.confirmation import ProposalConfirmationView
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedTransactionRecord:
+    transaction_id: UUID
+    transaction_type: str
+    applied_at: datetime
 
 
 class SourceEventWorkRepository(Protocol):
@@ -66,21 +74,21 @@ class ProcessingOutboxDeliveryRepository(Protocol):
     async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
         """Load suggestions or submitted details for a catalog creation request."""
 
-    async def get_transaction_applied_at(
+    async def get_applied_transaction(
         self,
         *,
         organization_id: UUID,
         transaction_id: UUID,
-    ) -> datetime:
-        """Load the authoritative timestamp of an applied inventory transaction."""
+    ) -> AppliedTransactionRecord:
+        """Load authoritative display fields for an applied inventory transaction."""
 
-    async def get_reversal_original_transaction_applied_at(
+    async def get_reversal_original_transaction(
         self,
         *,
         organization_id: UUID,
         request_id: UUID,
-    ) -> datetime:
-        """Load the original transaction timestamp for a reversal request."""
+    ) -> AppliedTransactionRecord:
+        """Load the original applied transaction for a reversal request."""
 
 
 class SupabaseSourceEventWorkRepository:
@@ -275,16 +283,16 @@ class SupabaseProcessingOutboxDeliveryRepository:
         )
         return CatalogItemCreationView.model_validate(response.json())
 
-    async def get_transaction_applied_at(
+    async def get_applied_transaction(
         self,
         *,
         organization_id: UUID,
         transaction_id: UUID,
-    ) -> datetime:
+    ) -> AppliedTransactionRecord:
         row = await self._get_single_row(
             "inventory_transactions",
             params={
-                "select": "applied_at",
+                "select": "id,transaction_type,applied_at",
                 "organization_id": f"eq.{organization_id}",
                 "id": f"eq.{transaction_id}",
                 "status": "eq.applied",
@@ -294,14 +302,22 @@ class SupabaseProcessingOutboxDeliveryRepository:
         applied_at = row.get("applied_at")
         if not isinstance(applied_at, str):
             raise ValueError("Supabase returned an invalid transaction timestamp")
-        return datetime.fromisoformat(applied_at)
+        returned_transaction_id = row.get("id")
+        transaction_type = row.get("transaction_type")
+        if not isinstance(returned_transaction_id, str) or not isinstance(transaction_type, str):
+            raise ValueError("Supabase returned invalid applied transaction details")
+        return AppliedTransactionRecord(
+            transaction_id=UUID(returned_transaction_id),
+            transaction_type=transaction_type,
+            applied_at=datetime.fromisoformat(applied_at),
+        )
 
-    async def get_reversal_original_transaction_applied_at(
+    async def get_reversal_original_transaction(
         self,
         *,
         organization_id: UUID,
         request_id: UUID,
-    ) -> datetime:
+    ) -> AppliedTransactionRecord:
         row = await self._get_single_row(
             "transaction_reversal_requests",
             params={
@@ -314,7 +330,7 @@ class SupabaseProcessingOutboxDeliveryRepository:
         transaction_id = row.get("transaction_id")
         if not isinstance(transaction_id, str):
             raise ValueError("Supabase returned an invalid reversal transaction ID")
-        return await self.get_transaction_applied_at(
+        return await self.get_applied_transaction(
             organization_id=organization_id,
             transaction_id=UUID(transaction_id),
         )

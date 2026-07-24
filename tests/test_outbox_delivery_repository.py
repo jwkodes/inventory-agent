@@ -104,16 +104,25 @@ async def test_delivery_repository_loads_confirmation_view() -> None:
     assert view.lines[0].quantity.as_tuple().exponent == -8
 
 
-async def test_delivery_repository_loads_applied_transaction_timestamp() -> None:
+async def test_delivery_repository_loads_applied_transaction_details() -> None:
     def handle_request(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/rest/v1/inventory_transactions"
         assert dict(request.url.params) == {
-            "select": "applied_at",
+            "select": "id,transaction_type,applied_at",
             "organization_id": f"eq.{ORGANIZATION_ID}",
             "id": f"eq.{TRANSACTION_ID}",
             "status": "eq.applied",
         }
-        return httpx.Response(200, json=[{"applied_at": "2026-07-24T11:42:19+00:00"}])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": str(TRANSACTION_ID),
+                    "transaction_type": "issue",
+                    "applied_at": "2026-07-24T11:42:19+00:00",
+                }
+            ],
+        )
 
     repository = SupabaseProcessingOutboxDeliveryRepository(
         supabase_url="http://supabase.test",
@@ -121,12 +130,14 @@ async def test_delivery_repository_loads_applied_transaction_timestamp() -> None
         transport=httpx.MockTransport(handle_request),
     )
 
-    applied_at = await repository.get_transaction_applied_at(
+    transaction = await repository.get_applied_transaction(
         organization_id=ORGANIZATION_ID,
         transaction_id=TRANSACTION_ID,
     )
 
-    assert applied_at == datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
+    assert transaction.transaction_id == TRANSACTION_ID
+    assert transaction.transaction_type == "issue"
+    assert transaction.applied_at == datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
 
 
 async def test_delivery_repository_resolves_original_transaction_for_reversal() -> None:
@@ -142,7 +153,16 @@ async def test_delivery_repository_resolves_original_transaction_for_reversal() 
             }
             return httpx.Response(200, json=[{"transaction_id": str(TRANSACTION_ID)}])
         assert request.url.path == "/rest/v1/inventory_transactions"
-        return httpx.Response(200, json=[{"applied_at": "2026-07-24T11:42:19+00:00"}])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": str(TRANSACTION_ID),
+                    "transaction_type": "issue",
+                    "applied_at": "2026-07-24T11:42:19+00:00",
+                }
+            ],
+        )
 
     repository = SupabaseProcessingOutboxDeliveryRepository(
         supabase_url="http://supabase.test",
@@ -150,12 +170,13 @@ async def test_delivery_repository_resolves_original_transaction_for_reversal() 
         transport=httpx.MockTransport(handle_request),
     )
 
-    applied_at = await repository.get_reversal_original_transaction_applied_at(
+    transaction = await repository.get_reversal_original_transaction(
         organization_id=ORGANIZATION_ID,
         request_id=REVERSAL_REQUEST_ID,
     )
 
-    assert applied_at == datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
+    assert transaction.transaction_type == "issue"
+    assert transaction.applied_at == datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
     assert requests == [
         "/rest/v1/transaction_reversal_requests",
         "/rest/v1/inventory_transactions",

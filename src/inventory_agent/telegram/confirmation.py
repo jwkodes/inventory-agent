@@ -58,7 +58,8 @@ def render_proposal_confirmation(
     intent_label: str,
     lines: list[ProposalLineView],
 ) -> ConfirmationMessage:
-    text_lines = [f"Review {intent_label}:"]
+    operation_label, line_action = _movement_labels(intent_label)
+    text_lines = [f"Review {operation_label}:"]
     keyboard: list[list[InlineButton]] = []
     unresolved = False
     clarification_prompt_shown = False
@@ -67,8 +68,9 @@ def render_proposal_confirmation(
 
     for index, line in enumerate(lines, start=1):
         unit = f" {line.unit}" if line.unit else ""
+        quantity = format(line.quantity.normalize(), "f")
         match = line.matched_label or "match required"
-        text_lines.append(f"{index}. {line.quantity}{unit} — {line.description} → {match}")
+        text_lines.append(f"{index}. {line_action} {quantity}{unit} — {line.description} → {match}")
         if line.matched_label is None:
             unresolved = True
             if line.match_decision == "clarification_required" and line.clarification_question:
@@ -136,7 +138,7 @@ def render_proposal_confirmation(
                     )
 
     if not unresolved:
-        text_lines.insert(0, "⏳ **Pending confirmation**")
+        text_lines.insert(0, f"⏳ **Pending {operation_label}**")
         text_lines.append("No inventory has changed yet.")
         keyboard.append(
             [
@@ -171,6 +173,16 @@ def render_proposal_confirmation(
         )
 
     return ConfirmationMessage(text="\n".join(text_lines), inline_keyboard=keyboard)
+
+
+def _movement_labels(intent_label: str) -> tuple[str, str]:
+    if intent_label == "stock receipt":
+        return "stock addition", "➕ ADD"
+    if intent_label == "stock issue":
+        return "stock deduction", "➖ DEDUCT"
+    if intent_label == "stock adjustment":
+        return "stock adjustment", "↕️ ADJUST"
+    return intent_label, "↕️ CHANGE"
 
 
 def _line_action_label(
@@ -268,15 +280,17 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
 def render_applied_transaction(
     transaction_id: UUID,
     *,
+    transaction_type: str,
     applied_at: datetime,
     display_timezone: ZoneInfo,
 ) -> ConfirmationMessage:
     """Offer a complete reversal after a proposal has been applied."""
 
+    heading, result = _applied_transaction_copy(transaction_type)
     return ConfirmationMessage(
         text=(
-            "✅ **Inventory updated**\n"
-            "The transaction was applied successfully.\n"
+            f"{heading}\n"
+            f"{result}\n"
             f"🕒 Transaction time: {_format_timestamp(applied_at, display_timezone)}"
         ),
         inline_keyboard=[
@@ -290,6 +304,16 @@ def render_applied_transaction(
             ]
         ],
     )
+
+
+def _applied_transaction_copy(transaction_type: str) -> tuple[str, str]:
+    if transaction_type == "receive":
+        return "✅ **Stock added**", "The addition transaction was applied successfully."
+    if transaction_type == "issue":
+        return "✅ **Stock deducted**", "The deduction transaction was applied successfully."
+    if transaction_type == "adjustment":
+        return "✅ **Stock adjusted**", "The adjustment transaction was applied successfully."
+    raise ValueError("Applied proposal has an unsupported transaction type")
 
 
 def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:

@@ -76,13 +76,14 @@ class TelegramOutboxDeliveryWorker:
             elif outcome.outcome_type is ProcessingOutcomeType.TRANSACTION_APPLIED:
                 if outcome.aggregate_id is None:
                     raise ValueError("Applied outcome is missing its transaction ID")
-                applied_at = await self._repository.get_transaction_applied_at(
+                transaction = await self._repository.get_applied_transaction(
                     organization_id=outcome.organization_id,
                     transaction_id=outcome.aggregate_id,
                 )
                 message = render_applied_transaction(
                     outcome.aggregate_id,
-                    applied_at=applied_at,
+                    transaction_type=transaction.transaction_type,
+                    applied_at=transaction.applied_at,
                     display_timezone=self._display_timezone,
                 )
                 text = message.text
@@ -126,16 +127,14 @@ class TelegramOutboxDeliveryWorker:
                 reason = outcome.payload.get("reason")
                 if not isinstance(reason, str) or not reason.strip():
                     raise ValueError("Reversal outcome is missing its reason")
-                original_applied_at = (
-                    await self._repository.get_reversal_original_transaction_applied_at(
-                        organization_id=outcome.organization_id,
-                        request_id=outcome.aggregate_id,
-                    )
+                original_transaction = await self._repository.get_reversal_original_transaction(
+                    organization_id=outcome.organization_id,
+                    request_id=outcome.aggregate_id,
                 )
                 message = render_reversal_confirmation(
                     request_id=outcome.aggregate_id,
                     reason=reason.strip(),
-                    original_transaction_applied_at=original_applied_at,
+                    original_transaction_applied_at=original_transaction.applied_at,
                     display_timezone=self._display_timezone,
                 )
                 text = _with_agent_reply(message.text, outcome.payload)
@@ -146,12 +145,12 @@ class TelegramOutboxDeliveryWorker:
             elif outcome.outcome_type is ProcessingOutcomeType.CALLBACK_NOTICE and (
                 reversal_transaction_id := _payload_transaction_id(outcome.payload)
             ):
-                reversal_applied_at = await self._repository.get_transaction_applied_at(
+                reversal_transaction = await self._repository.get_applied_transaction(
                     organization_id=outcome.organization_id,
                     transaction_id=reversal_transaction_id,
                 )
                 text = render_reversal_applied(
-                    applied_at=reversal_applied_at,
+                    applied_at=reversal_transaction.applied_at,
                     display_timezone=self._display_timezone,
                 )
                 keyboard = None

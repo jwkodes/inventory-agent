@@ -11,6 +11,7 @@ from inventory_agent.processing.models import (
     OutboxDeliveryStatus,
     ProcessingOutcomeType,
 )
+from inventory_agent.processing.repository import AppliedTransactionRecord
 from inventory_agent.telegram.confirmation import ProposalConfirmationView
 
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000005")
@@ -32,10 +33,12 @@ class FakeRepository:
         *,
         failure_completion: OutboxCompletionStatus = OutboxCompletionStatus.PENDING,
         catalog_status: str = "awaiting_confirmation",
+        transaction_type: str = "receive",
     ) -> None:
         self.outcome = outcome
         self.failure_completion = failure_completion
         self.catalog_status = catalog_status
+        self.transaction_type = transaction_type
         self.finishes: list[tuple[UUID, bool, str | None, int]] = []
         self.requested_proposals: list[UUID] = []
         self.requested_transactions: list[tuple[UUID, UUID]] = []
@@ -95,23 +98,31 @@ class FakeRepository:
             ),
         )
 
-    async def get_transaction_applied_at(
+    async def get_applied_transaction(
         self,
         *,
         organization_id: UUID,
         transaction_id: UUID,
-    ) -> datetime:
+    ) -> AppliedTransactionRecord:
         self.requested_transactions.append((organization_id, transaction_id))
-        return APPLIED_AT
+        return AppliedTransactionRecord(
+            transaction_id=transaction_id,
+            transaction_type=self.transaction_type,
+            applied_at=APPLIED_AT,
+        )
 
-    async def get_reversal_original_transaction_applied_at(
+    async def get_reversal_original_transaction(
         self,
         *,
         organization_id: UUID,
         request_id: UUID,
-    ) -> datetime:
+    ) -> AppliedTransactionRecord:
         self.requested_reversals.append((organization_id, request_id))
-        return APPLIED_AT
+        return AppliedTransactionRecord(
+            transaction_id=TRANSACTION_ID,
+            transaction_type="issue",
+            applied_at=APPLIED_AT,
+        )
 
 
 class FakeSender:
@@ -172,7 +183,8 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert result.telegram_message_id == 77
     assert repository.requested_proposals == [PROPOSAL_ID]
     assert sender.messages[0][1].startswith("⚠️ **Action needed**")
-    assert "Review stock receipt" in sender.messages[0][1]
+    assert "Review stock addition" in sender.messages[0][1]
+    assert "➕ ADD 3" in sender.messages[0][1]
     assert "💬 **Agent note**\nI found the exact catalog item." in sender.messages[0][1]
     assert sender.messages[0][2] is not None
     assert repository.finishes == [(OUTBOX_ID, True, None, 30)]
@@ -224,7 +236,7 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages[0][1].startswith("✅ **Inventory updated**")
+    assert sender.messages[0][1].startswith("✅ **Stock added**")
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is not None
@@ -307,7 +319,8 @@ async def test_delivers_successful_reversal_with_timestamp_and_state_boundary() 
                 "message": "legacy fallback",
                 "transaction_id": str(TRANSACTION_ID),
             },
-        )
+        ),
+        transaction_type="reversal",
     )
     sender = FakeSender()
 
