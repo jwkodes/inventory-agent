@@ -318,6 +318,57 @@ images continue through the existing structured extraction and matching pipeline
 button confirmations, cancellations, catalog creation, transaction application, and
 reversal application continue through their existing deterministic handlers.
 
+### 9. Use the development dashboard
+
+The FastAPI process includes a read-only development console at
+`http://127.0.0.1:8000/dev`. It is disabled by default, never available when
+`APP_ENV=production`, and every page and API request requires HTTP Basic authentication.
+The browser receives dashboard data but never receives the Supabase secret key.
+
+Generate a dedicated local password:
+
+```bash
+openssl rand -hex 32
+```
+
+Add the dashboard settings to `.env`:
+
+```dotenv
+DEV_DASHBOARD_ENABLED=true
+DEV_DASHBOARD_USERNAME=inventory-dev
+DEV_DASHBOARD_TOKEN=PASTE_THE_GENERATED_VALUE_HERE
+```
+
+Restart the API after changing `.env`, then open:
+
+```text
+http://127.0.0.1:8000/dev
+```
+
+Use `inventory-dev` as the username and the generated token as the password. When the API
+is exposed through ngrok, `/dev` is exposed too, so keep the generated token private and
+do not put it in screenshots, source control, or shell history shared with others. The
+dashboard remains read-only even for an authenticated user.
+
+The dashboard has three views:
+
+- **Flow inspector** lists Telegram source events and reconstructs the durable path through
+  raw input, source artifacts, current conversation context, model/tool messages, proposal
+  and matching evidence, catalog clarification, outbound delivery, and applied transaction.
+  Expandable JSON preserves the exact stored records for debugging.
+- **Inventory** shows every SKU, item and variant attributes, tracking mode, current
+  location balances, unit conversions, and the recent immutable transaction ledger.
+- **Models & prompts** shows the active model configuration, complete current system
+  instructions, prompt versions, and tool definitions for the main agent, structured
+  extraction, invoice extraction, catalog detail extraction, candidate judgment, and
+  semantic retrieval.
+
+For the most recent main-agent turn, the persisted conversation snapshot is the exact
+model context ending at that turn. Older source events and deterministic callback events
+show the latest conversation snapshot for the same Telegram chat as supporting context;
+the selected event's raw input, proposal, matching evidence, outbox, and transaction
+records remain event-specific.
+
 The agent can:
 
 - read catalog variants and on-hand balances, using exact identifiers or the configured
@@ -433,6 +484,9 @@ Configuration is read from environment variables and `.env` by
 |---|---|---|
 | `APP_ENV` | Runtime environment | `development` |
 | `LOG_LEVEL` | Application log level | `INFO` |
+| `DEV_DASHBOARD_ENABLED` | Enable the authenticated, read-only `/dev` dashboard outside production | `false` |
+| `DEV_DASHBOARD_USERNAME` | HTTP Basic username for the development dashboard | `inventory-dev` |
+| `DEV_DASHBOARD_TOKEN` | Dedicated password for the development dashboard | none |
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |
 | `OPENAI_MODEL` | Extraction and intent model | `gpt-5.6-luna` |
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |
