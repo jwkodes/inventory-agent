@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
     TelegramCallbackDispatcher,
@@ -92,8 +93,14 @@ class RecordingReversals:
 
 
 class RecordingCatalog:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        status: str = "awaiting_confirmation",
+    ) -> None:
         self.events = events
+        self.status = status
 
     async def begin(self, *, line_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
         self.events.append("begin_catalog")
@@ -105,6 +112,22 @@ class RecordingCatalog:
 
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         raise AssertionError("dispatcher does not capture catalog details")
+
+    async def get_view(self, *, request_id: UUID) -> CatalogItemCreationView:
+        self.events.append("get_catalog_view")
+        return CatalogItemCreationView(
+            request_id=request_id,
+            status=self.status,
+            suggested_name="AMOX-505",
+            suggested_sku="AMOX-505",
+            suggested_base_unit="unit",
+            suggested_tracking_mode="simple",
+            name="AMOX-505",
+            sku="AMOX-505",
+            base_unit="unit",
+            tracking_mode="simple",
+            attributes={"pack size": "10 units per box"},
+        )
 
     async def save_details(self, **kwargs: object) -> UUID:
         raise AssertionError("dispatcher does not capture catalog details")
@@ -245,10 +268,13 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         )
         assert outcome.status is CallbackOutcomeStatus.COMPLETED
         assert outcome.result_id == expected_result
+        if action is CallbackAction.ADD_NEW_ITEM:
+            assert outcome.catalog_status == "awaiting_confirmation"
 
     assert events == [
         "ack",
         "begin_catalog",
+        "get_catalog_view",
         "ack",
         "show_existing",
         "ack",

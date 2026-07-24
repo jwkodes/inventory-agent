@@ -35,6 +35,7 @@ class CallbackOutcome:
     action: CallbackAction | None
     result_id: UUID | None
     message: str
+    catalog_status: str | None = None
 
 
 class TelegramCallbackDispatcher:
@@ -61,6 +62,7 @@ class TelegramCallbackDispatcher:
     ) -> CallbackOutcome:
         """Acknowledge first, then execute exactly one decoded database action."""
 
+        catalog_status: str | None = None
         try:
             command = decode_callback(callback_data)
         except ValueError:
@@ -106,6 +108,7 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                     chat_id=chat_id,
                 )
+                catalog_status = (await self._catalog.get_view(request_id=result_id)).status
                 message = "Catalog item details required"
             elif command.action is CallbackAction.SHOW_EXISTING_ITEMS:
                 result_id = await self._catalog.show_existing(
@@ -159,6 +162,7 @@ class TelegramCallbackDispatcher:
             command.action,
             result_id,
             message,
+            catalog_status,
         )
 
     async def _try_answer(

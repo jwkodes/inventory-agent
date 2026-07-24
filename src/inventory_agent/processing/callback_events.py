@@ -99,6 +99,7 @@ class TelegramCallbackEventProcessor:
                     organization_id=context.organization_id,
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
+                    catalog_status=outcome.catalog_status,
                 )
             if not await self._events.finish_event(event_id=context.event_id, success=True):
                 raise RuntimeError("Claimed callback event could not be completed")
@@ -126,6 +127,7 @@ class TelegramCallbackEventProcessor:
         organization_id: UUID,
         chat_id: int,
         message_id: int,
+        catalog_status: str | None,
     ) -> None:
         if action is None or result_id is None:
             raise ValueError("Completed callback is missing its action result")
@@ -139,7 +141,12 @@ class TelegramCallbackEventProcessor:
             aggregate_id = result_id
             payload = {}
         elif action is CallbackAction.ADD_NEW_ITEM:
-            outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+            if catalog_status == "awaiting_confirmation":
+                outcome_type = ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION
+            elif catalog_status in (None, "awaiting_details"):
+                outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+            else:
+                raise ValueError("Catalog item request is not awaiting user action")
             aggregate_id = result_id
             payload = {}
         elif action is CallbackAction.CONFIRM_NEW_ITEM:

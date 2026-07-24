@@ -249,21 +249,29 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
 
 
 @pytest.mark.parametrize(
-    ("action", "result_id", "outcome_type"),
+    ("action", "result_id", "catalog_status", "outcome_type"),
     [
         (
             CallbackAction.ADD_NEW_ITEM,
             PROPOSAL_ID,
+            "awaiting_details",
             "catalog_item_details_required",
         ),
-        (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, "proposal_ready"),
-        (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, "proposal_ready"),
-        (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, "callback_notice"),
+        (
+            CallbackAction.ADD_NEW_ITEM,
+            PROPOSAL_ID,
+            "awaiting_confirmation",
+            "catalog_item_confirmation",
+        ),
+        (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, None, "callback_notice"),
     ],
 )
 async def test_catalog_actions_send_new_outbox_messages(
     action: CallbackAction,
     result_id: UUID,
+    catalog_status: str | None,
     outcome_type: str,
 ) -> None:
     outbox = RecordingOutbox()
@@ -275,6 +283,7 @@ async def test_catalog_actions_send_new_outbox_messages(
                 action,
                 result_id,
                 "Catalog action completed",
+                catalog_status,
             )
         ),
         message_editor=RecordingEditor(),

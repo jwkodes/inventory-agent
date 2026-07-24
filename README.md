@@ -291,6 +291,15 @@ seconds when all four queues are idle. Use `--poll-seconds N` to choose an inter
 greater than zero through 60 seconds. Without `--watch`, it runs one complete cycle, which
 is useful while debugging.
 
+`--watch` means continuous queue polling; it is not a source-code hot reloader. Stop the
+existing worker with `Ctrl+C` and start it again after changing code or `.env`. During
+local development, keep exactly one worker running so an older process cannot handle an
+event with stale code. To check before starting another terminal:
+
+```bash
+ps aux | grep '[i]nventory_agent.processing.worker'
+```
+
 To route Telegram text through the LLM-led agent, first apply the latest migrations, then
 set the feature flag in `.env`:
 
