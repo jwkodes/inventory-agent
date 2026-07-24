@@ -357,9 +357,16 @@ not be used as current stock or transaction state. Encrypted/private reasoning o
 retained in the immutable turn audit but removed from later model inputs and summaries at
 the end of each turn.
 
+The four application values above are defaults. The development dashboard can store a
+complete override for one company in `organizations.settings.inventory_agent.context`.
+The worker loads that override before each compaction check, so a saved override applies
+on the next agent message without restarting the worker. Resetting the override makes the
+company inherit `.env` again. Every save and reset is recorded in
+`organization_setting_changes`; secrets and model credentials are never company settings.
+
 ### 9. Use the development dashboard
 
-The FastAPI process includes a read-only development console at
+The FastAPI process includes a development console at
 `http://127.0.0.1:8000/dev`. It is disabled by default, never available when
 `APP_ENV=production`, and every page and API request requires HTTP Basic authentication.
 The browser receives dashboard data but never receives the Supabase secret key.
@@ -374,9 +381,15 @@ Add the dashboard settings to `.env`:
 
 ```dotenv
 DEV_DASHBOARD_ENABLED=true
+DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true
 DEV_DASHBOARD_USERNAME=inventory-dev
 DEV_DASHBOARD_TOKEN=PASTE_THE_GENERATED_VALUE_HERE
 ```
+
+Leave `DEV_DASHBOARD_CONFIG_WRITES_ENABLED=false` if the console should be entirely
+read-only. When enabled, it only permits the four validated, non-secret context settings
+shown on the Configuration page. It does not permit arbitrary environment-variable,
+database, secret, model, process, or shell changes.
 
 Restart the API after changing `.env`, then open:
 
@@ -387,9 +400,10 @@ http://127.0.0.1:8000/dev
 Use `inventory-dev` as the username and the generated token as the password. When the API
 is exposed through ngrok, `/dev` is exposed too, so keep the generated token private and
 do not put it in screenshots, source control, or shell history shared with others. The
-dashboard remains read-only even for an authenticated user.
+dashboard settings page identifies which values are editable and whether a restart is
+required.
 
-The dashboard has three views:
+The dashboard has five views:
 
 - **Flow inspector** lists Telegram source events and reconstructs the durable path through
   raw input, source artifacts, current conversation context, model/tool messages, proposal
@@ -397,6 +411,12 @@ The dashboard has three views:
   Expandable JSON preserves the exact stored records for debugging.
 - **Inventory** shows every SKU, item and variant attributes, tracking mode, current
   location balances, unit conversions, and the recent immutable transaction ledger.
+- **Conversations** lists company-scoped Telegram users and chats, then shows the rolling
+  compacted summary, complete current stored history, active immutable turns, compacted
+  immutable turns, and approximate active token usage separately.
+- **Configuration** shows the effective company context limits, whether each value comes
+  from `.env` or a company override, other non-secret runtime parameters, and the settings
+  audit trail. Saving or resetting an override applies on the next agent message.
 - **Models & prompts** shows the active model configuration, complete current system
   instructions, prompt versions, and tool definitions for the main agent, structured
   extraction, invoice extraction, catalog detail extraction, candidate judgment, and
@@ -523,7 +543,8 @@ Configuration is read from environment variables and `.env` by
 |---|---|---|
 | `APP_ENV` | Runtime environment | `development` |
 | `LOG_LEVEL` | Application log level | `INFO` |
-| `DEV_DASHBOARD_ENABLED` | Enable the authenticated, read-only `/dev` dashboard outside production | `false` |
+| `DEV_DASHBOARD_ENABLED` | Enable the authenticated `/dev` dashboard outside production | `false` |
+| `DEV_DASHBOARD_CONFIG_WRITES_ENABLED` | Permit audited company context-setting overrides from the dashboard | `false` |
 | `DEV_DASHBOARD_USERNAME` | HTTP Basic username for the development dashboard | `inventory-dev` |
 | `DEV_DASHBOARD_TOKEN` | Dedicated password for the development dashboard | none |
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |

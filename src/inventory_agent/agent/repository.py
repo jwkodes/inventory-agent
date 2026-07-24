@@ -99,6 +99,13 @@ class AgentConversationRepository(Protocol):
     ) -> UUID:
         """Remove selected turns from active context while retaining their audit rows."""
 
+    async def load_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object] | None:
+        """Load the organization's complete context-setting override when configured."""
+
 
 class AgentReadRepository(Protocol):
     async def get_variant_balances(
@@ -228,6 +235,21 @@ class SupabaseAgentRepository:
         if not isinstance(result, str):
             raise ValueError("Supabase returned an invalid compacted conversation ID")
         return UUID(result)
+
+    async def load_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object] | None:
+        result = await self._call(
+            "load_organization_agent_context_settings",
+            {"p_organization_id": str(organization_id)},
+        )
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned invalid organization context settings")
+        return result
 
     async def get_variant_balances(
         self,

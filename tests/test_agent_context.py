@@ -7,6 +7,7 @@ from uuid import UUID
 from inventory_agent.agent.context import (
     AgentContextManager,
     ContextRetentionPolicy,
+    ContextRetentionSettings,
     durable_history_items,
 )
 from inventory_agent.agent.repository import AgentConversation, AgentConversationTurn
@@ -20,6 +21,7 @@ NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
 @dataclass
 class FakeConversationRepository:
     compacted: list[dict[str, object]] = field(default_factory=list)
+    context_settings: dict[str, object] | None = None
 
     async def load(self, **kwargs: object) -> AgentConversation:
         raise AssertionError("not expected")
@@ -30,6 +32,14 @@ class FakeConversationRepository:
     async def compact(self, **kwargs: object) -> UUID:
         self.compacted.append(kwargs)
         return CONVERSATION_ID
+
+    async def load_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object] | None:
+        assert organization_id == ORGANIZATION_ID
+        return self.context_settings
 
 
 @dataclass
@@ -84,10 +94,12 @@ async def test_discard_policy_removes_old_turns_only_from_active_context() -> No
     repository = FakeConversationRepository()
     manager = AgentContextManager(
         conversations=repository,
-        policy=ContextRetentionPolicy.DISCARD,
-        retention_days=7,
-        max_tokens=30_000,
-        max_items=300,
+        defaults=ContextRetentionSettings(
+            policy=ContextRetentionPolicy.DISCARD,
+            retention_days=7,
+            max_tokens=30_000,
+            max_items=300,
+        ),
     )
 
     compacted = await manager.compact_if_needed(conversation([old, recent]), now=NOW)
@@ -111,10 +123,12 @@ async def test_summary_policy_compacts_oldest_turns_when_token_budget_is_reached
     summarizer = FakeSummarizer(result="The user previously discussed requests 1 and 2.")
     manager = AgentContextManager(
         conversations=repository,
-        policy=ContextRetentionPolicy.SUMMARIZE,
-        retention_days=7,
-        max_tokens=30,
-        max_items=300,
+        defaults=ContextRetentionSettings(
+            policy=ContextRetentionPolicy.SUMMARIZE,
+            retention_days=7,
+            max_tokens=30,
+            max_items=300,
+        ),
         summarizer=summarizer,
     )
     source = conversation(turns).model_copy(update={"summary": "Earlier summary."})
@@ -133,16 +147,45 @@ async def test_item_limit_protects_the_database_history_ceiling() -> None:
     repository = FakeConversationRepository()
     manager = AgentContextManager(
         conversations=repository,
-        policy=ContextRetentionPolicy.DISCARD,
-        retention_days=7,
-        max_tokens=30_000,
-        max_items=4,
+        defaults=ContextRetentionSettings(
+            policy=ContextRetentionPolicy.DISCARD,
+            retention_days=7,
+            max_tokens=30_000,
+            max_items=4,
+        ),
     )
 
     compacted = await manager.compact_if_needed(conversation(turns), now=NOW)
 
     assert repository.compacted[0]["turn_ids"] == [turns[0].turn_id, turns[1].turn_id]
     assert compacted.active_turns == turns[2:]
+
+
+async def test_organization_override_replaces_application_context_defaults() -> None:
+    turns = [turn(number, age_days=0, estimated_tokens=10) for number in range(1, 4)]
+    repository = FakeConversationRepository(
+        context_settings={
+            "policy": "discard",
+            "retention_days": 7,
+            "max_tokens": 10,
+            "max_items": 300,
+        }
+    )
+    manager = AgentContextManager(
+        conversations=repository,
+        defaults=ContextRetentionSettings(
+            policy=ContextRetentionPolicy.DISCARD,
+            retention_days=30,
+            max_tokens=30_000,
+            max_items=300,
+        ),
+        settings_provider=repository,
+    )
+
+    compacted = await manager.compact_if_needed(conversation(turns), now=NOW)
+
+    assert repository.compacted[0]["turn_ids"] == [turns[0].turn_id, turns[1].turn_id]
+    assert compacted.active_turns == [turns[2]]
 
 
 def test_private_reasoning_is_excluded_from_future_active_context() -> None:

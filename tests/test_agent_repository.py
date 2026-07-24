@@ -40,6 +40,16 @@ async def test_load_and_save_agent_conversation_contract() -> None:
                     "model_name": None,
                 },
             )
+        if request.url.path.endswith("/load_organization_agent_context_settings"):
+            return httpx.Response(
+                200,
+                json={
+                    "policy": "summarize",
+                    "retention_days": 7,
+                    "max_tokens": 30000,
+                    "max_items": 300,
+                },
+            )
         return httpx.Response(200, json=str(CONVERSATION_ID))
 
     repository = SupabaseAgentRepository(
@@ -79,6 +89,7 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         policy="discard",
         summary=None,
     )
+    context_settings = await repository.load_context_settings(organization_id=ORGANIZATION_ID)
 
     assert saved == CONVERSATION_ID
     assert compacted == CONVERSATION_ID
@@ -93,6 +104,13 @@ async def test_load_and_save_agent_conversation_contract() -> None:
     compact_body = requests[2].read().decode()
     assert '"p_policy":"discard"' in compact_body
     assert str(EVENT_ID) in compact_body
+    assert requests[3].url.path.endswith("/load_organization_agent_context_settings")
+    assert context_settings == {
+        "policy": "summarize",
+        "retention_days": 7,
+        "max_tokens": 30000,
+        "max_items": 300,
+    }
 
 
 async def test_agent_balance_and_transaction_read_contracts() -> None:

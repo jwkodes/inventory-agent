@@ -213,6 +213,34 @@
       display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 15px;
       padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
     }
+    .settings-layout { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(0, 1.2fr); gap: 15px; }
+    .settings-body { padding: 18px; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+    label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; }
+    label input, label select {
+      width: 100%; min-width: 0; padding: 0 11px;
+      border: 1px solid var(--line); background: #121416; border-radius: 8px;
+      color: var(--ink); height: 40px;
+    }
+    .actions { display: flex; align-items: center; gap: 8px; margin-top: 17px; }
+    .primary { background: var(--lime); color: #101214; border-color: var(--lime); font-weight: 700; }
+    .primary:hover { background: #d7ff8d; border-color: #d7ff8d; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .hint { color: var(--faint); font-size: 10px; line-height: 1.55; }
+    .setting-row {
+      display: grid; grid-template-columns: minmax(160px, 1fr) minmax(110px, .6fr) auto;
+      gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); align-items: center;
+      font-size: 11px;
+    }
+    .audit-list, .conversation-list { max-height: calc(100vh - 280px); overflow: auto; }
+    .conversation-layout { display: grid; grid-template-columns: minmax(280px, 32%) minmax(0, 1fr); gap: 15px; }
+    .conversation-detail { max-height: calc(100vh - 220px); overflow: auto; padding: 17px; }
+    .section-title { margin: 20px 0 9px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .summary-box {
+      padding: 13px; border: 1px solid rgba(109,214,208,.2);
+      border-radius: 9px; background: rgba(109,214,208,.045); color: #d8e9e6;
+      font-size: 11px; line-height: 1.55; white-space: pre-wrap;
+    }
     .loading::after {
       content: ""; display: inline-block; width: 11px; height: 11px; margin-left: 9px;
       border: 2px solid var(--line); border-top-color: var(--lime); border-radius: 50%;
@@ -236,6 +264,8 @@
       .event-list { max-height: 310px; }
       .metric-grid { grid-template-columns: repeat(2, 1fr); }
       .prompt-grid { grid-template-columns: 1fr; }
+      .settings-layout, .conversation-layout { grid-template-columns: 1fr; }
+      .field-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -249,9 +279,11 @@
       <nav>
         <button class="nav-button active" data-view="flow"><span class="nav-icon">⌁</span>Flow inspector</button>
         <button class="nav-button" data-view="inventory"><span class="nav-icon">▦</span>Inventory</button>
+        <button class="nav-button" data-view="conversations"><span class="nav-icon">◫</span>Conversations</button>
+        <button class="nav-button" data-view="config"><span class="nav-icon">⚙</span>Configuration</button>
         <button class="nav-button" data-view="prompts"><span class="nav-icon">⌘</span>Models & prompts</button>
       </nav>
-      <div class="aside-foot"><span class="live-dot"></span>Read-only local console<br>Secrets remain server-side</div>
+      <div class="aside-foot"><span class="live-dot"></span>Local development console<br>Secrets remain server-side</div>
     </aside>
     <main>
       <div class="topbar">
@@ -293,10 +325,59 @@
         <div class="config-strip" id="configuration"></div>
         <div class="prompt-grid" id="prompt-grid"><div class="empty loading">Loading model contracts</div></div>
       </section>
+
+      <section class="view" id="conversations-view">
+        <div class="metric-grid" id="conversation-metrics"></div>
+        <div class="conversation-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Company users & chats</h3><span class="count" id="conversation-count">—</span></div>
+            <div class="conversation-list" id="conversation-list"><div class="empty loading">Loading conversations</div></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Stored model context</h3><span class="count">active + compacted</span></div>
+            <div class="conversation-detail" id="conversation-detail"><div class="empty">Select a user conversation.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="config-view">
+        <div class="settings-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Conversation context</h3><span class="count" id="config-source">—</span></div>
+            <form class="settings-body" id="context-form">
+              <div class="field-grid">
+                <label>Retention policy
+                  <select id="context-policy"><option value="summarize">Summarize</option><option value="discard">Discard</option></select>
+                </label>
+                <label>Retention days<input id="context-days" type="number" min="1" required></label>
+                <label>Approximate token limit<input id="context-tokens" type="number" min="1" required></label>
+                <label>History item limit<input id="context-items" type="number" min="1" max="350" required></label>
+              </div>
+              <p class="hint" id="config-hint"></p>
+              <div class="actions">
+                <button class="icon-button primary" id="save-context" type="submit">Save company override</button>
+                <button class="icon-button" id="reset-context" type="button">Use app defaults</button>
+              </div>
+            </form>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Other runtime parameters</h3><span class="count">view only · restart to change</span></div>
+            <div class="settings-body" id="runtime-settings"></div>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Configuration audit</h3><span class="count">latest 30</span></div>
+          <div class="audit-list" id="config-audit"></div>
+        </div>
+      </section>
     </main>
   </div>
   <script>
-    const state = { view: "flow", organizationId: null, events: [], selectedEventId: null, inventory: null, prompts: null };
+    const state = {
+      view: "flow", organizationId: null, events: [], selectedEventId: null,
+      inventory: null, prompts: null, configuration: null, conversations: [],
+      selectedConversationId: null,
+    };
     const $ = (selector) => document.querySelector(selector);
     const $$ = (selector) => [...document.querySelectorAll(selector)];
     const esc = (value) => String(value ?? "")
@@ -313,9 +394,14 @@
       return entries.length ? `<div class="chips">${entries.map(([k,v]) => `<span class="chip">${esc(k)} · ${esc(v)}</span>`).join("")}</div>` : `<span style="color:var(--faint)">—</span>`;
     };
 
-    async function api(path) {
+    async function api(path, options = {}) {
       const url = new URL(path, window.location.origin);
-      const response = await fetch(url, {credentials: "same-origin"});
+      const request = {credentials: "same-origin", ...options};
+      if (request.body && typeof request.body !== "string") {
+        request.headers = {...request.headers, "Content-Type": "application/json"};
+        request.body = JSON.stringify(request.body);
+      }
+      const response = await fetch(url, request);
       if (!response.ok) {
         let detail = `${response.status} ${response.statusText}`;
         try { detail = (await response.json()).detail || detail; } catch (_) {}
@@ -332,11 +418,21 @@
       state.view = view;
       $$(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
       $$(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
-      const titles = {flow:"Flow inspector", inventory:"Inventory", prompts:"Models & prompts"};
-      const brows = {flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger", prompts:"Contracts · configuration · grounding"};
+      const titles = {
+        flow:"Flow inspector", inventory:"Inventory", conversations:"Conversations",
+        config:"Configuration", prompts:"Models & prompts",
+      };
+      const brows = {
+        flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger",
+        conversations:"Company · user · durable context",
+        config:"Effective values · safe overrides · audit",
+        prompts:"Contracts · configuration · grounding",
+      };
       $("#page-title").textContent = titles[view];
       $("#eyebrow").textContent = brows[view];
       if (view === "inventory" && !state.inventory) loadInventory();
+      if (view === "conversations" && !state.conversations.length) loadConversations();
+      if (view === "config" && !state.configuration) loadConfiguration();
       if (view === "prompts" && !state.prompts) loadPrompts();
     }
 
@@ -347,9 +443,16 @@
         select.innerHTML = data.organizations.map(org => `<option value="${esc(org.id)}">${esc(org.name)} · ${esc(org.inventory_profile)}</option>`).join("");
         if (!data.organizations.length) throw new Error("No organizations are available.");
         state.organizationId = data.organizations[0].id;
-        await loadEvents();
-        if (state.view === "inventory") await loadInventory();
+        await loadCurrentView();
       } catch (error) { showError(error); }
+    }
+
+    async function loadCurrentView() {
+      if (state.view === "flow") await loadEvents();
+      if (state.view === "inventory") await loadInventory();
+      if (state.view === "conversations") await loadConversations();
+      if (state.view === "config") await loadConfiguration();
+      if (state.view === "prompts") await loadPrompts();
     }
 
     async function loadEvents(selectFirst = true) {
@@ -545,21 +648,153 @@
         ${prompt.tools?.length ? raw("Tool definitions", prompt.tools) : ""}</article>`).join("");
     }
 
+    async function loadConfiguration() {
+      if (!state.organizationId) return;
+      try {
+        state.configuration = await api(`/dev/api/configuration?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    function renderConfiguration() {
+      const data = state.configuration;
+      const context = data.context;
+      $("#context-policy").value = context.effective.policy;
+      $("#context-days").value = context.effective.retention_days;
+      $("#context-tokens").value = context.effective.max_tokens;
+      $("#context-items").value = context.effective.max_items;
+      $("#config-source").textContent = context.source;
+      $("#config-hint").textContent = data.writes_enabled
+        ? `${context.source}. Saved values apply on the next agent message; no restart is needed.`
+        : "Viewing is enabled, but writes require DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true.";
+      $("#save-context").disabled = !data.writes_enabled;
+      $("#reset-context").disabled = !data.writes_enabled || !context.override;
+      $("#runtime-settings").innerHTML = data.runtime.map(row => `
+        <div class="setting-row"><span>${esc(row.key.replaceAll("_", " "))}</span>
+        <span class="sku">${esc(row.value)}</span><span class="badge">restart</span></div>`).join("");
+      $("#config-audit").innerHTML = data.changes.length ? data.changes.map(change => `
+        <div class="event" style="cursor:default">
+          <div class="event-top"><span class="badge">${esc(change.setting_key)}</span><span class="event-time">${time(change.created_at)}</span></div>
+          <div class="event-summary">${esc(change.changed_by)} · ${change.new_value ? "override saved" : "override cleared"}</div>
+          ${raw("Before and after", {before: change.old_value, after: change.new_value})}
+        </div>`).join("") : `<div class="empty">No dashboard setting changes yet.</div>`;
+    }
+
+    async function saveContext(event) {
+      event.preventDefault();
+      try {
+        await api(`/dev/api/configuration/context?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method: "PUT",
+          body: {
+            policy: $("#context-policy").value,
+            retention_days: Number($("#context-days").value),
+            max_tokens: Number($("#context-tokens").value),
+            max_items: Number($("#context-items").value),
+          },
+        });
+        state.configuration = null;
+        await loadConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    async function resetContext() {
+      try {
+        await api(`/dev/api/configuration/context?organization_id=${encodeURIComponent(state.organizationId)}`, {method: "DELETE"});
+        state.configuration = null;
+        await loadConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    async function loadConversations() {
+      if (!state.organizationId) return;
+      try {
+        const data = await api(`/dev/api/conversations?organization_id=${encodeURIComponent(state.organizationId)}`);
+        state.conversations = data.conversations;
+        renderConversations();
+        if (state.conversations.length) {
+          const selected = state.conversations.some(row => row.id === state.selectedConversationId)
+            ? state.selectedConversationId : state.conversations[0].id;
+          await selectConversation(selected);
+        } else {
+          $("#conversation-detail").innerHTML = `<div class="empty">No agent conversations for this company.</div>`;
+        }
+      } catch (error) { showError(error); }
+    }
+
+    function renderConversations() {
+      const activeTurns = state.conversations.reduce((total, row) => total + row.active_turns, 0);
+      const compactedTurns = state.conversations.reduce((total, row) => total + row.compacted_turns, 0);
+      const tokens = state.conversations.reduce((total, row) => total + row.active_estimated_tokens, 0);
+      $("#conversation-metrics").innerHTML = [
+        ["Conversations", state.conversations.length], ["Active turns", activeTurns],
+        ["Compacted turns", compactedTurns], ["Active token estimate", number(tokens)],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+      $("#conversation-count").textContent = `${state.conversations.length} chats`;
+      $("#conversation-list").innerHTML = state.conversations.length ? state.conversations.map(row => `
+        <button class="event conversation-event ${state.selectedConversationId === row.id ? "active" : ""}" data-conversation-id="${esc(row.id)}">
+          <div class="event-top"><span class="badge">${esc(row.user?.role || "unknown")}</span><span class="event-time">${time(row.updated_at)}</span></div>
+          <div class="event-summary">${esc(row.user?.display_name || "Unknown user")}</div>
+          <div class="event-meta">chat ${esc(row.chat_id)} · ${row.history_items} items · ${row.active_estimated_tokens} tokens · ${row.compacted_turns} compacted</div>
+        </button>`).join("") : `<div class="empty">No conversations yet.</div>`;
+      $$(".conversation-event").forEach(button => button.addEventListener("click", () => selectConversation(button.dataset.conversationId)));
+    }
+
+    async function selectConversation(conversationId) {
+      state.selectedConversationId = conversationId;
+      renderConversations();
+      $("#conversation-detail").innerHTML = `<div class="empty loading">Loading durable context</div>`;
+      try {
+        const data = await api(`/dev/api/conversations/${conversationId}?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderConversationDetail(data);
+      } catch (error) {
+        $("#conversation-detail").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+      }
+    }
+
+    function renderConversationDetail(data) {
+      const conversation = data.conversation;
+      const history = Array.isArray(conversation.history) ? conversation.history : [];
+      const user = data.user || {};
+      $("#conversation-detail").innerHTML = `
+        <div class="trace-intro"><div><h3>${esc(user.display_name || "Unknown user")}</h3>
+        <p>Telegram ${esc(user.telegram_user_id || "—")} · chat ${esc(conversation.chat_id)} · ${esc(user.role || "—")}</p></div>
+        <span class="badge">${esc(conversation.model_name || "no model")}</span></div>
+        <div class="kv"><dt>Conversation</dt><dd>${esc(conversation.id)}</dd>
+        <dt>Updated</dt><dd>${time(conversation.updated_at)}</dd>
+        <dt>Active history</dt><dd>${history.length} stored items</dd>
+        <dt>Active turns</dt><dd>${data.active_turns.length}</dd>
+        <dt>Compacted turns</dt><dd>${data.compacted_turns.length}</dd></div>
+        <h4 class="section-title">Rolling compacted summary</h4>
+        ${conversation.summary ? `<div class="summary-box">${esc(conversation.summary)}</div>` : `<p class="hint">No rolling summary has been created.</p>`}
+        <h4 class="section-title">Current stored history</h4>
+        <pre>${esc(pretty(history))}</pre>
+        <h4 class="section-title">Active immutable turns</h4>
+        ${data.active_turns.length ? data.active_turns.map(turn => raw(`${time(turn.created_at)} · ${turn.estimated_tokens} estimated tokens`, turn)).join("") : `<p class="hint">No active turn rows.</p>`}
+        <h4 class="section-title">Compacted immutable turns</h4>
+        ${data.compacted_turns.length ? data.compacted_turns.map(turn => raw(`${time(turn.created_at)} · ${esc(turn.compaction_policy)}`, turn)).join("") : `<p class="hint">No compacted turn rows.</p>`}`;
+    }
+
     $$(".nav-button").forEach(button => button.addEventListener("click", () => {
       window.location.hash = button.dataset.view;
       setView(button.dataset.view);
     }));
     $("#organization").addEventListener("change", async event => {
-      state.organizationId = event.target.value; state.inventory = null; state.selectedEventId = null;
-      await loadEvents(); if (state.view === "inventory") await loadInventory();
+      state.organizationId = event.target.value;
+      state.inventory = null; state.configuration = null; state.conversations = [];
+      state.selectedEventId = null; state.selectedConversationId = null;
+      await loadCurrentView();
     });
+    $("#context-form").addEventListener("submit", saveContext);
+    $("#reset-context").addEventListener("click", resetContext);
     $("#refresh").addEventListener("click", async () => {
       if (state.view === "flow") await loadEvents(false);
       if (state.view === "inventory") await loadInventory();
+      if (state.view === "conversations") await loadConversations();
+      if (state.view === "config") { state.configuration = null; await loadConfiguration(); }
       if (state.view === "prompts") { state.prompts = null; await loadPrompts(); }
     });
     const requestedView = window.location.hash.slice(1);
-    if (["flow", "inventory", "prompts"].includes(requestedView)) setView(requestedView);
+    if (["flow", "inventory", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
     boot();
   </script>
 </body>

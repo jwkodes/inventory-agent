@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from inventory_agent.agent.context import (
     AgentContextManager,
     ContextRetentionPolicy,
+    ContextRetentionSettings,
     ModelConversationSummarizer,
 )
 from inventory_agent.agent.production_tools import GroundedAgentCatalogReader
@@ -281,15 +282,14 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 catalog_interpreter=catalog_interpreter,
                 context_manager=AgentContextManager(
                     conversations=agent_repository,
-                    policy=ContextRetentionPolicy(settings.inventory_agent_context_policy),
-                    retention_days=settings.inventory_agent_context_retention_days,
-                    max_tokens=settings.inventory_agent_context_max_tokens,
-                    max_items=settings.inventory_agent_context_max_items,
-                    summarizer=(
-                        ModelConversationSummarizer(model=agent_model)
-                        if settings.inventory_agent_context_policy == "summarize"
-                        else None
+                    defaults=ContextRetentionSettings(
+                        policy=ContextRetentionPolicy(settings.inventory_agent_context_policy),
+                        retention_days=settings.inventory_agent_context_retention_days,
+                        max_tokens=settings.inventory_agent_context_max_tokens,
+                        max_items=settings.inventory_agent_context_max_items,
                     ),
+                    settings_provider=agent_repository,
+                    summarizer=ModelConversationSummarizer(model=agent_model),
                 ),
             )
         else:

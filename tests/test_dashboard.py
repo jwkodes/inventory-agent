@@ -14,9 +14,12 @@ from inventory_agent.main import create_app
 
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
+CONVERSATION_ID = UUID("65000000-0000-0000-0000-000000000001")
 
 
 class FakeDashboardRepository:
+    context_settings: dict[str, object] | None = None
+
     async def list_organizations(self) -> list[dict[str, object]]:
         return [{"id": str(ORGANIZATION_ID), "name": "Demo SME", "inventory_profile": "general"}]
 
@@ -38,12 +41,53 @@ class FakeDashboardRepository:
         assert organization_id == ORGANIZATION_ID
         return {"metrics": {"active_skus": 1}, "items": []}
 
+    async def get_context_settings(self, *, organization_id: UUID) -> dict[str, object] | None:
+        assert organization_id == ORGANIZATION_ID
+        return self.context_settings
 
-def dashboard_settings(*, enabled: bool) -> Settings:
+    async def set_context_settings(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        self.context_settings = {
+            key: kwargs[key] for key in ("policy", "retention_days", "max_tokens", "max_items")
+        }
+        return self.context_settings
+
+    async def clear_context_settings(self, **kwargs: object) -> dict[str, object] | None:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        previous = self.context_settings
+        self.context_settings = None
+        return previous
+
+    async def list_setting_changes(
+        self, *, organization_id: UUID, limit: int = 30
+    ) -> list[dict[str, object]]:
+        assert organization_id == ORGANIZATION_ID
+        assert limit == 30
+        return []
+
+    async def list_conversations(self, *, organization_id: UUID) -> list[dict[str, object]]:
+        assert organization_id == ORGANIZATION_ID
+        return [{"id": str(CONVERSATION_ID), "chat_id": 123, "history_items": 4}]
+
+    async def get_conversation(
+        self, *, organization_id: UUID, conversation_id: UUID
+    ) -> dict[str, object] | None:
+        assert organization_id == ORGANIZATION_ID
+        assert conversation_id == CONVERSATION_ID
+        return {
+            "conversation": {"id": str(CONVERSATION_ID), "history": []},
+            "user": {"display_name": "Demo Manager"},
+            "active_turns": [],
+            "compacted_turns": [],
+        }
+
+
+def dashboard_settings(*, enabled: bool, writes: bool = False) -> Settings:
     return Settings(
         _env_file=None,
         app_env="development",
         dev_dashboard_enabled=enabled,
+        dev_dashboard_config_writes_enabled=writes,
         dev_dashboard_username="inventory-dev",
         dev_dashboard_token=SecretStr("test-dashboard-token"),
     )
@@ -77,6 +121,8 @@ async def test_dashboard_requires_basic_auth_and_serves_self_contained_ui() -> N
     assert response.status_code == 200
     assert "Inventory Agent" in response.text
     assert "Flow inspector" in response.text
+    assert "Conversations" in response.text
+    assert "Configuration" in response.text
     assert "/dev/api/events" in response.text
 
 
@@ -111,6 +157,74 @@ async def test_dashboard_read_apis_are_authenticated_and_organization_scoped() -
         "semantic_retrieval",
     }
     assert "secret" not in prompts.text.casefold()
+
+
+async def test_dashboard_configuration_and_conversation_apis() -> None:
+    repository = FakeDashboardRepository()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: dashboard_settings(enabled=True, writes=True)
+    app.dependency_overrides[get_dashboard_repository] = lambda: repository
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        configuration = await client.get(
+            "/dev/api/configuration",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+        saved = await client.put(
+            "/dev/api/configuration/context",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={
+                "policy": "discard",
+                "retention_days": 5,
+                "max_tokens": 12000,
+                "max_items": 250,
+            },
+            headers=basic_header(),
+        )
+        conversations = await client.get(
+            "/dev/api/conversations",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+        detail = await client.get(
+            f"/dev/api/conversations/{CONVERSATION_ID}",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+        reset = await client.delete(
+            "/dev/api/configuration/context",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+
+    assert configuration.json()["context"]["source"] == "application default"
+    assert configuration.json()["writes_enabled"] is True
+    assert saved.json()["context"]["max_tokens"] == 12000
+    assert conversations.json()["conversations"][0]["chat_id"] == 123
+    assert detail.json()["user"]["display_name"] == "Demo Manager"
+    assert reset.json()["cleared"] is True
+
+
+async def test_dashboard_configuration_writes_require_separate_opt_in() -> None:
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: dashboard_settings(enabled=True)
+    app.dependency_overrides[get_dashboard_repository] = lambda: FakeDashboardRepository()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.put(
+            "/dev/api/configuration/context",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={
+                "policy": "summarize",
+                "retention_days": 7,
+                "max_tokens": 30000,
+                "max_items": 300,
+            },
+            headers=basic_header(),
+        )
+
+    assert response.status_code == 403
 
 
 async def test_dashboard_repository_builds_event_summaries_and_inventory_rows() -> None:

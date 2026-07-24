@@ -1,4 +1,4 @@
-"""Server-side read models for the development dashboard."""
+"""Server-side diagnostic and safe-configuration models for the development dashboard."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from inventory_agent.telegram.callbacks import decode_callback
 
 
 class DashboardRepository:
-    """Read organization-scoped diagnostic data through Supabase PostgREST."""
+    """Read organization-scoped diagnostics and call allowlisted settings RPCs."""
 
     def __init__(
         self,
@@ -335,6 +335,187 @@ class DashboardRepository:
             "transaction_lines": transaction_lines,
         }
 
+    async def get_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object] | None:
+        result = await self._rpc(
+            "load_organization_agent_context_settings",
+            {"p_organization_id": str(organization_id)},
+        )
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned invalid organization context settings")
+        return result
+
+    async def set_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+        policy: str,
+        retention_days: int,
+        max_tokens: int,
+        max_items: int,
+        changed_by: str,
+    ) -> dict[str, object]:
+        result = await self._rpc(
+            "set_organization_agent_context_settings",
+            {
+                "p_organization_id": str(organization_id),
+                "p_policy": policy,
+                "p_retention_days": retention_days,
+                "p_max_tokens": max_tokens,
+                "p_max_items": max_items,
+                "p_changed_by": changed_by,
+            },
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned invalid saved context settings")
+        return result
+
+    async def clear_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+        changed_by: str,
+    ) -> dict[str, object] | None:
+        result = await self._rpc(
+            "clear_organization_agent_context_settings",
+            {
+                "p_organization_id": str(organization_id),
+                "p_changed_by": changed_by,
+            },
+        )
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned invalid cleared context settings")
+        return result
+
+    async def list_setting_changes(
+        self,
+        *,
+        organization_id: UUID,
+        limit: int = 30,
+    ) -> list[dict[str, object]]:
+        return await self._get(
+            "organization_setting_changes",
+            {
+                "select": "id,setting_key,old_value,new_value,changed_by,created_at",
+                "organization_id": f"eq.{organization_id}",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        )
+
+    async def list_conversations(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> list[dict[str, object]]:
+        conversations = await self._get(
+            "inventory_agent_conversations",
+            {
+                "select": (
+                    "id,organization_id,organization_user_id,chat_id,history,summary,"
+                    "model_name,created_at,updated_at,context_compacted_at"
+                ),
+                "organization_id": f"eq.{organization_id}",
+                "order": "updated_at.desc",
+            },
+        )
+        if not conversations:
+            return []
+        user_ids = [str(row["organization_user_id"]) for row in conversations]
+        users = await self._get(
+            "organization_users",
+            {
+                "select": "id,telegram_user_id,display_name,role,active",
+                "organization_id": f"eq.{organization_id}",
+                "id": f"in.({','.join(user_ids)})",
+            },
+        )
+        users_by_id = {str(row["id"]): row for row in users}
+        conversation_ids = [str(row["id"]) for row in conversations]
+        turns = await self._get(
+            "inventory_agent_turns",
+            {
+                "select": "id,conversation_id,estimated_tokens,created_at,compacted_at",
+                "conversation_id": f"in.({','.join(conversation_ids)})",
+                "order": "created_at.desc",
+                "limit": "1000",
+            },
+        )
+        turns_by_conversation: dict[str, list[dict[str, object]]] = {}
+        for turn in turns:
+            turns_by_conversation.setdefault(str(turn["conversation_id"]), []).append(turn)
+
+        result: list[dict[str, object]] = []
+        for conversation in conversations:
+            conversation_turns = turns_by_conversation.get(str(conversation["id"]), [])
+            active_turns = [turn for turn in conversation_turns if turn["compacted_at"] is None]
+            result.append(
+                {
+                    **conversation,
+                    "history_items": len(_dict_list(conversation.get("history"))),
+                    "active_turns": len(active_turns),
+                    "compacted_turns": len(conversation_turns) - len(active_turns),
+                    "active_estimated_tokens": sum(
+                        int(_as_float(turn.get("estimated_tokens"))) for turn in active_turns
+                    ),
+                    "user": users_by_id.get(str(conversation["organization_user_id"])),
+                }
+            )
+        return result
+
+    async def get_conversation(
+        self,
+        *,
+        organization_id: UUID,
+        conversation_id: UUID,
+    ) -> dict[str, object] | None:
+        rows = await self._get(
+            "inventory_agent_conversations",
+            {
+                "select": "*",
+                "id": f"eq.{conversation_id}",
+                "organization_id": f"eq.{organization_id}",
+                "limit": "1",
+            },
+        )
+        if not rows:
+            return None
+        conversation = rows[0]
+        users = await self._get(
+            "organization_users",
+            {
+                "select": "id,telegram_user_id,display_name,role,active,created_at",
+                "id": f"eq.{conversation['organization_user_id']}",
+                "organization_id": f"eq.{organization_id}",
+                "limit": "1",
+            },
+        )
+        turns = await self._get(
+            "inventory_agent_turns",
+            {
+                "select": (
+                    "id,source_event_id,history,estimated_tokens,input_tokens,output_tokens,"
+                    "total_tokens,created_at,compacted_at,compaction_policy"
+                ),
+                "conversation_id": f"eq.{conversation_id}",
+                "order": "created_at.desc",
+                "limit": "1000",
+            },
+        )
+        return {
+            "conversation": conversation,
+            "user": users[0] if users else None,
+            "active_turns": [turn for turn in turns if turn["compacted_at"] is None],
+            "compacted_turns": [turn for turn in turns if turn["compacted_at"] is not None],
+        }
+
     async def _get_for_ids(
         self,
         table: str,
@@ -368,6 +549,17 @@ class DashboardRepository:
         if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
             raise ValueError(f"Supabase returned invalid dashboard rows for {table}")
         return result
+
+    async def _rpc(self, function_name: str, body: dict[str, object]) -> object:
+        async with httpx.AsyncClient(
+            base_url=self._rest_url,
+            headers=self._headers,
+            timeout=self._timeout_seconds,
+            transport=self._transport,
+        ) as client:
+            response = await client.post(f"/rpc/{function_name}", json=body)
+        response.raise_for_status()
+        return response.json()
 
 
 def _nested(value: object, *path: str) -> object | None:

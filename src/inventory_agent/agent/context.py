@@ -6,6 +6,9 @@ import json
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from inventory_agent.agent.repository import (
     AgentConversation,
@@ -29,6 +32,26 @@ tools. Do not invent facts. Return only a concise plain-text summary, at most 1,
 class ContextRetentionPolicy(StrEnum):
     DISCARD = "discard"
     SUMMARIZE = "summarize"
+
+
+class ContextRetentionSettings(BaseModel):
+    """Validated effective context limits for one organization."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    policy: ContextRetentionPolicy
+    retention_days: int = Field(ge=1)
+    max_tokens: int = Field(ge=1)
+    max_items: int = Field(ge=1, le=350)
+
+
+class ContextSettingsProvider(Protocol):
+    async def load_context_settings(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object] | None:
+        """Return a complete organization override, or none for application defaults."""
 
 
 class ConversationSummarizer(Protocol):
@@ -83,25 +106,15 @@ class AgentContextManager:
         self,
         *,
         conversations: AgentConversationRepository,
-        policy: ContextRetentionPolicy,
-        retention_days: int,
-        max_tokens: int,
-        max_items: int,
+        defaults: ContextRetentionSettings,
+        settings_provider: ContextSettingsProvider | None = None,
         summarizer: ConversationSummarizer | None = None,
     ) -> None:
-        if retention_days < 1:
-            raise ValueError("retention_days must be positive")
-        if max_tokens < 1:
-            raise ValueError("max_tokens must be positive")
-        if max_items < 1:
-            raise ValueError("max_items must be positive")
-        if policy is ContextRetentionPolicy.SUMMARIZE and summarizer is None:
+        if defaults.policy is ContextRetentionPolicy.SUMMARIZE and summarizer is None:
             raise ValueError("summarize policy requires a conversation summarizer")
         self._conversations = conversations
-        self._policy = policy
-        self._retention_days = retention_days
-        self._max_tokens = max_tokens
-        self._max_items = max_items
+        self._defaults = defaults
+        self._settings_provider = settings_provider
         self._summarizer = summarizer
 
     async def compact_if_needed(
@@ -114,8 +127,9 @@ class AgentContextManager:
 
         if not conversation.active_turns:
             return conversation
+        settings = await self._settings(conversation.organization_id)
         current_time = now or datetime.now(UTC)
-        cutoff = current_time - timedelta(days=self._retention_days)
+        cutoff = current_time - timedelta(days=settings.retention_days)
         ordered = sorted(
             conversation.active_turns,
             key=lambda turn: (turn.created_at, str(turn.turn_id)),
@@ -129,8 +143,8 @@ class AgentContextManager:
         for turn in reversed(within_age):
             active_item_count = len(durable_history_items(turn.history))
             would_exceed = (
-                running_tokens + turn.estimated_tokens > self._max_tokens
-                or running_items + active_item_count > self._max_items
+                running_tokens + turn.estimated_tokens > settings.max_tokens
+                or running_items + active_item_count > settings.max_items
             )
             if kept_newest and would_exceed:
                 compact_ids.add(turn.turn_id)
@@ -145,7 +159,7 @@ class AgentContextManager:
         compacted = [turn for turn in ordered if turn.turn_id in compact_ids]
         retained = [turn for turn in ordered if turn.turn_id not in compact_ids]
         summary: str | None = None
-        if self._policy is ContextRetentionPolicy.SUMMARIZE:
+        if settings.policy is ContextRetentionPolicy.SUMMARIZE:
             if self._summarizer is None:  # pragma: no cover - constructor invariant
                 raise RuntimeError("Conversation summarizer is unavailable")
             summary = await self._summarizer.summarize(
@@ -157,7 +171,7 @@ class AgentContextManager:
             conversation_id=conversation.conversation_id,
             organization_user_id=conversation.organization_user_id,
             turn_ids=[turn.turn_id for turn in compacted],
-            policy=self._policy.value,
+            policy=settings.policy.value,
             summary=summary,
         )
         return conversation.model_copy(
@@ -168,6 +182,18 @@ class AgentContextManager:
                 "allowed_variant_ids": [],
                 "allowed_transaction_ids": [],
             }
+        )
+
+    async def _settings(self, organization_id: UUID) -> ContextRetentionSettings:
+        if self._settings_provider is None:
+            return self._defaults
+        override = await self._settings_provider.load_context_settings(
+            organization_id=organization_id
+        )
+        return (
+            ContextRetentionSettings.model_validate(override)
+            if override is not None
+            else self._defaults
         )
 
 

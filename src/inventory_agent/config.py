@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "staging", "production"] = "development"
     log_level: str = "INFO"
     dev_dashboard_enabled: bool = False
+    dev_dashboard_config_writes_enabled: bool = False
     dev_dashboard_username: str = "inventory-dev"
     dev_dashboard_token: SecretStr | None = None
 
