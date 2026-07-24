@@ -319,6 +319,19 @@ registration command. Ordinary restarts of the assigned ngrok domain do not requ
 webhook re-registration. Never paste a real bot token, ngrok authtoken, or webhook secret
 into source files, terminal screenshots, issues, or chat.
 
+Changing `TELEGRAM_BOT_TOKEN` requires both sides of the integration to be reloaded:
+
+1. Update the token in `.env`.
+2. Run `uv run python -m inventory_agent.telegram.setup_webhook` to register the webhook
+   with the new bot.
+3. Run `./scripts/stop-dev.sh` followed by `./scripts/start-dev.sh` so the supervisor and
+   its worker inherit the new token.
+
+The dashboard's application restart only recreates the supervisor's API and worker child
+processes. It deliberately leaves the supervisor running, so it cannot reload values that
+changed in `.env`; without the full restart, incoming messages can reach the new bot's
+webhook while replies are still sent with the old bot token.
+
 After restarting the computer:
 
 1. Open a terminal in the repository.
