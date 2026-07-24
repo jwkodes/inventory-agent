@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(30);
+select plan(32);
 
 select has_table('public', 'organizations', 'organizations table exists');
 select has_table('public', 'item_variants', 'item variants table exists');
@@ -123,6 +123,40 @@ select is(
   ),
   1::bigint,
   'one inventory transaction is created'
+);
+
+select is(
+  (
+    select count(*)
+    from public.read_inventory_agent_transactions(
+      '10000000-0000-0000-0000-000000000001',
+      (
+        select transaction.id::text
+        from public.inventory_transactions as transaction
+        where transaction.proposal_id = '40000000-0000-0000-0000-000000000001'
+      ),
+      20
+    )
+  ),
+  1::bigint,
+  'a full transaction UUID returns only its exact transaction'
+);
+
+select is(
+  (
+    select concat(result.transaction_type, ':', result.status)
+    from public.read_inventory_agent_transactions(
+      '10000000-0000-0000-0000-000000000001',
+      (
+        select transaction.id::text
+        from public.inventory_transactions as transaction
+        where transaction.proposal_id = '40000000-0000-0000-0000-000000000001'
+      ),
+      20
+    ) as result
+  ),
+  'receive:applied',
+  'agent transaction reads expose the stored type and status'
 );
 select is(
   (

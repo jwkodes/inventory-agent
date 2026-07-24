@@ -119,13 +119,15 @@ def demo_transactions() -> list[TransactionRecord]:
     return [
         TransactionRecord(
             transaction_id="txn-receipt-100",
-            transaction_type="receipt",
+            transaction_type="receive",
+            status="applied",
             occurred_at="2026-07-23T09:00:00+08:00",
             summary="Received 3 Industrial Widget ABC-123",
         ),
         TransactionRecord(
             transaction_id="txn-issue-099",
             transaction_type="issue",
+            status="applied",
             occurred_at="2026-07-22T17:00:00+08:00",
             summary="Issued 1 Nintendo Switch 2 Controller",
         ),

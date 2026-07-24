@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v8"
+    assert PROMPT_VERSION == "inventory-agent-spike-v9"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -38,3 +38,6 @@ def test_transaction_corrections_require_broad_reads_and_complete_reversal() -> 
     assert "additional deduction on top" in INSTRUCTIONS
     assert "automatically present its separate" in normalized
     assert "must not need to send another message" in normalized
+    assert "full transaction UUID" in normalized
+    assert "`transaction_type`, `status`, and `reversed`" in normalized
+    assert 'as "active"' in normalized

@@ -129,9 +129,11 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "name": "read_transactions",
         "description": (
             "Search recent immutable inventory transactions before proposing a reversal. "
-            "Returns authoritative transaction IDs. A filtered search also includes recent "
-            "transactions as fallback evidence so natural wording cannot hide an existing "
-            "transaction."
+            "A full transaction UUID performs an exact lookup. Returns authoritative "
+            "transaction IDs together with the stored transaction_type, stored status, "
+            "timestamp, summary, and derived reversed flag. A natural-language filtered "
+            "search also includes recent transactions as fallback evidence so wording "
+            "cannot hide an existing transaction."
         ),
         "strict": True,
         "parameters": {

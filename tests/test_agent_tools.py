@@ -177,7 +177,8 @@ async def test_reversal_requires_transaction_from_prior_read() -> None:
         transactions=[
             TransactionRecord(
                 transaction_id="txn-1",
-                transaction_type="receipt",
+                transaction_type="receive",
+                status="applied",
                 occurred_at="2026-07-23T09:00:00+08:00",
                 summary="Received shirts",
             )

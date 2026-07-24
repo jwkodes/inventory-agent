@@ -28,6 +28,17 @@ select has_function(
   'organization context settings reset exists'
 );
 
+-- Isolate the test from a developer's dashboard override. The enclosing transaction
+-- rolls this update back, so running the suite does not change the saved local setting.
+update public.organizations
+set settings = jsonb_set(
+  settings,
+  '{inventory_agent}',
+  coalesce(settings -> 'inventory_agent', '{}'::jsonb) - 'context',
+  true
+)
+where id = '10000000-0000-0000-0000-000000000001';
+
 select is(
   public.load_organization_agent_context_settings(
     '10000000-0000-0000-0000-000000000001'

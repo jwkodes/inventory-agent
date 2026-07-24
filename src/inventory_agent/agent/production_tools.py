@@ -369,6 +369,7 @@ class ProductionInventoryAgentTools:
         self,
         arguments: TransactionReadArguments,
     ) -> dict[str, object]:
+        exact_id_lookup = _transaction_id_query(arguments.query)
         targeted = await self._reads.read_transactions(
             organization_id=self._context.organization_id,
             query=arguments.query,
@@ -376,7 +377,7 @@ class ProductionInventoryAgentTools:
         )
         transactions = targeted
         included_recent_fallback = False
-        if arguments.query is not None and arguments.query.strip():
+        if arguments.query is not None and arguments.query.strip() and exact_id_lookup is None:
             recent = await self._reads.read_transactions(
                 organization_id=self._context.organization_id,
                 query=None,
@@ -395,6 +396,7 @@ class ProductionInventoryAgentTools:
             "ok": True,
             "count": len(transactions),
             "targeted_count": len(targeted),
+            "exact_id_lookup": exact_id_lookup is not None,
             "included_recent_fallback": included_recent_fallback,
             "transactions": [transaction.model_dump(mode="json") for transaction in transactions],
         }
@@ -474,6 +476,15 @@ def _candidate_has_attributes(
         }.items()
     }
     return all(available.get(key) == value for key, value in requested.items())
+
+
+def _transaction_id_query(query: str | None) -> UUID | None:
+    if query is None:
+        return None
+    try:
+        return UUID(query.strip())
+    except ValueError:
+        return None
 
 
 def _catalog_variant(candidate: InventoryCandidate, on_hand: Decimal) -> CatalogVariant:

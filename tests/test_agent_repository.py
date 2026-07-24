@@ -138,7 +138,8 @@ async def test_agent_balance_and_transaction_read_contracts() -> None:
             json=[
                 {
                     "transaction_id": "40000000-0000-0000-0000-000000000001",
-                    "transaction_type": "receipt",
+                    "transaction_type": "receive",
+                    "status": "applied",
                     "occurred_at": "2026-07-23 09:00:00+08",
                     "summary": "Receipt: 3 each Widget [ABC-123]",
                     "reversed": False,
@@ -164,4 +165,5 @@ async def test_agent_balance_and_transaction_read_contracts() -> None:
     )
 
     assert balances == {VARIANT_ID: Decimal("12.5")}
-    assert transactions[0].transaction_type == "receipt"
+    assert transactions[0].transaction_type == "receive"
+    assert transactions[0].status == "applied"

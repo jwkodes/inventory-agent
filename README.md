@@ -537,7 +537,11 @@ Filtered transaction reads use ranked token matching rather than one literal phr
 also include recent transactions as fallback evidence, so wording such as “red T-shirt
 sale” can still retrieve a stored `issue` transaction whose summary uses different terms.
 The agent may not conclude that a transaction is absent until it has inspected the recent
-unfiltered ledger.
+unfiltered ledger. A full transaction UUID takes a separate exact-match path and does not
+append unrelated recent fallback rows. Every returned transaction explicitly includes
+the database's `transaction_type` and `status`, plus its timestamp, summary, and derived
+`reversed` flag. Agent replies must preserve those lifecycle terms rather than inventing
+labels such as “active.”
 
 Every mutation remains pending until the user presses the Telegram confirmation button
 or sends the exact standalone text command `Confirm` while that proposal is the active

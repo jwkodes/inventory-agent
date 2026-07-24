@@ -127,6 +127,7 @@ class FallbackTransactionReads(FakeReads):
         self.transaction = TransactionRecord(
             transaction_id="60000000-0000-0000-0000-000000000001",
             transaction_type="issue",
+            status="applied",
             occurred_at="2026-07-24T11:33:35+00:00",
             summary=(
                 "Issue: 100 each Classic T-Shirt [SHIRT-BLUE-S], "
@@ -157,10 +158,30 @@ class CorrectionTransactionReads(FakeReads):
             TransactionRecord(
                 transaction_id=str(TRANSACTION_ID),
                 transaction_type="receive",
+                status="applied",
                 occurred_at="2026-07-24T12:17:01+00:00",
                 summary="Receive: 100 each Industrial Widget [ABC-123]",
             )
         ]
+
+
+class ExactTransactionReads(CorrectionTransactionReads):
+    def __init__(self) -> None:
+        self.queries: list[str | None] = []
+
+    async def read_transactions(
+        self,
+        *,
+        organization_id: UUID,
+        query: str | None,
+        limit: int,
+    ) -> list[TransactionRecord]:
+        self.queries.append(query)
+        return await super().read_transactions(
+            organization_id=organization_id,
+            query=query,
+            limit=limit,
+        )
 
 
 class FakeProposals:
@@ -458,6 +479,38 @@ async def test_filtered_transaction_read_includes_recent_fallback_evidence() -> 
     assert result["count"] == 1
     assert result["transactions"][0]["transaction_id"] == ("60000000-0000-0000-0000-000000000001")
     assert tools.allowed_transaction_ids == {UUID("60000000-0000-0000-0000-000000000001")}
+
+
+async def test_full_transaction_id_is_exact_without_recent_fallback() -> None:
+    reads = ExactTransactionReads()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-exact-transaction",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=reads,
+        proposals=FakeProposals(),
+        reversals=FakeReversals(),
+    )
+
+    result = json.loads(
+        await tools.execute(
+            call_id="read-exact-transaction",
+            name="read_transactions",
+            arguments={"query": str(TRANSACTION_ID), "limit": 20},
+        )
+    )
+
+    assert reads.queries == [str(TRANSACTION_ID)]
+    assert result["exact_id_lookup"] is True
+    assert result["included_recent_fallback"] is False
+    assert result["transactions"][0]["transaction_type"] == "receive"
+    assert result["transactions"][0]["status"] == "applied"
 
 
 async def test_correction_reversal_persists_grounded_replacement_for_automatic_follow_up() -> None:

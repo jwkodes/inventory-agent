@@ -85,6 +85,7 @@ class TransactionRecord(BaseModel):
 
     transaction_id: str
     transaction_type: str
+    status: str
     occurred_at: str
     summary: str
     reversed: bool = False
