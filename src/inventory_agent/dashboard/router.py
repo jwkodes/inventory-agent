@@ -176,6 +176,7 @@ async def configuration(
         },
         "writes_enabled": settings.dev_dashboard_config_writes_enabled,
         "changes": await data.list_setting_changes(organization_id=organization_id),
+        "models": _model_configuration(settings),
         "runtime": _runtime_configuration(settings),
     }
 
@@ -344,11 +345,7 @@ async def prompts(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, object]:
     return {
-        "prompts": prompt_catalog(
-            agent_model=settings.inventory_agent_model,
-            extraction_model=settings.openai_model,
-            embedding_model=settings.openai_embedding_model,
-        ),
+        "prompts": _current_prompt_catalog(settings),
         "configuration": {
             "agent_enabled": settings.inventory_agent_enabled,
             "agent_reasoning_effort": settings.inventory_agent_reasoning_effort,
@@ -407,6 +404,36 @@ def _runtime_configuration(settings: Settings) -> list[dict[str, object]]:
             "restart_required": True,
         }
         for key, value in values.items()
+    ]
+
+
+def _current_prompt_catalog(settings: Settings) -> list[dict[str, object]]:
+    return prompt_catalog(
+        agent_model=settings.inventory_agent_model,
+        agent_reasoning_effort=settings.inventory_agent_reasoning_effort,
+        extraction_model=settings.openai_model,
+        extraction_reasoning_effort=settings.openai_reasoning_effort,
+        embedding_model=settings.openai_embedding_model,
+        agent_enabled=settings.inventory_agent_enabled,
+        context_policy=settings.inventory_agent_context_policy,
+        candidate_judging_enabled=settings.inventory_candidate_judging_enabled,
+        matching_strategy=settings.inventory_matching_strategy,
+    )
+
+
+def _model_configuration(settings: Settings) -> list[dict[str, object]]:
+    fields = (
+        "layer",
+        "label",
+        "model",
+        "reasoning_effort",
+        "runtime_status",
+        "when_called",
+        "action",
+    )
+    return [
+        {field: component[field] for field in fields}
+        for component in _current_prompt_catalog(settings)
     ]
 
 

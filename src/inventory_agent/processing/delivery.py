@@ -127,7 +127,7 @@ class TelegramOutboxDeliveryWorker:
                 payload_message = outcome.payload.get("message")
                 if not isinstance(payload_message, str) or not payload_message.strip():
                     raise ValueError("Text outcome is missing its message")
-                text = payload_message
+                text = _style_plain_outcome(outcome.outcome_type, payload_message)
                 keyboard = None
 
             telegram_message_id = await self._sender.send_message(
@@ -179,4 +179,17 @@ def _with_agent_reply(rendered_text: str, payload: dict[str, object]) -> str:
     agent_reply = payload.get("agent_reply")
     if not isinstance(agent_reply, str) or not agent_reply.strip():
         return rendered_text
-    return f"{agent_reply.strip()}\n\n{rendered_text}"
+    return f"{rendered_text}\n\n💬 **Agent note**\n{agent_reply.strip()}"
+
+
+def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> str:
+    """Add a deterministic status heading to legacy plain outcomes."""
+
+    stripped = message.strip()
+    if stripped.startswith(("✅", "⏳", "🚫", "❓", "⚠️", "🔎", "📝", "🤖")):
+        return stripped
+    if outcome_type is ProcessingOutcomeType.CLARIFICATION_REQUIRED:
+        return f"❓ **More information needed**\n{stripped}"
+    if outcome_type is ProcessingOutcomeType.UNSUPPORTED_COMMAND:
+        return f"🤖 **Inventory assistant**\n{stripped}"
+    return stripped

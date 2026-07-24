@@ -550,6 +550,7 @@ async def test_pending_catalog_request_asks_only_for_missing_information() -> No
     assert proposals.drafts == []
     assert outbox.drafts[0].payload == {
         "message": (
+            "❓ **More information needed**\n"
             "I still need SKU or internal product code. "
             "Reply naturally with the missing information."
         )

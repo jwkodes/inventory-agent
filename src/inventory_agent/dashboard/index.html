@@ -297,7 +297,7 @@
       <nav>
         <button class="nav-button active" data-view="flow"><span class="nav-icon">⌁</span>Flow inspector</button>
         <button class="nav-button" data-view="inventory"><span class="nav-icon">▦</span>Inventory</button>
-        <button class="nav-button" data-view="system"><span class="nav-icon">◉</span>System</button>
+        <button class="nav-button" data-view="system"><span class="nav-icon">◉</span>App health</button>
         <button class="nav-button" data-view="conversations"><span class="nav-icon">◫</span>Conversations</button>
         <button class="nav-button" data-view="config"><span class="nav-icon">⚙</span>Configuration</button>
         <button class="nav-button" data-view="prompts"><span class="nav-icon">⌘</span>Models & prompts</button>
@@ -343,14 +343,24 @@
       <section class="view" id="system-view">
         <div class="health-grid" id="health-grid"><div class="empty loading">Checking components</div></div>
         <div class="pane" style="margin-bottom:15px">
-          <div class="pane-head"><h3>System controls</h3><span class="count">localhost only · fixed commands</span></div>
+          <div class="pane-head"><h3>Application controls</h3><span class="count">localhost only · fixed commands</span></div>
           <div class="settings-body">
             <div class="service-actions">
-              <button class="icon-button primary system-command" data-action="start" data-service="all">Launch system</button>
-              <button class="icon-button system-command" data-action="restart" data-service="all">Restart system</button>
-              <button class="icon-button system-command" data-action="restart" data-service="api">Restart API</button>
-              <button class="icon-button system-command" data-action="restart" data-service="worker">Restart worker</button>
-              <button class="icon-button system-command" data-action="stop" data-service="worker">Stop worker</button>
+              <button class="icon-button primary system-command" data-action="start" data-service="all"
+                title="Start the Telegram receiver/dashboard and the inventory message processor if either is stopped."
+                aria-label="Start the complete application">Start app</button>
+              <button class="icon-button system-command" data-action="restart" data-service="all"
+                title="Restart both application processes. Supabase, ngrok and the supervisor stay running."
+                aria-label="Restart the complete application">Restart app</button>
+              <button class="icon-button system-command" data-action="restart" data-service="api"
+                title="Restart only the web process that receives Telegram updates and serves this dashboard."
+                aria-label="Restart the Telegram receiver and dashboard">Restart receiver</button>
+              <button class="icon-button system-command" data-action="restart" data-service="worker"
+                title="Restart only the process that calls models, handles inventory work and sends Telegram replies."
+                aria-label="Restart the inventory message processor">Restart processor</button>
+              <button class="icon-button system-command" data-action="stop" data-service="worker"
+                title="Pause new message processing while leaving Telegram ingestion and the dashboard available."
+                aria-label="Pause the inventory message processor">Pause processing</button>
             </div>
             <p class="hint" id="system-hint">Loading supervisor status…</p>
           </div>
@@ -400,6 +410,15 @@
           <div class="pane">
             <div class="pane-head"><h3>Other runtime parameters</h3><span class="count">view only · restart to change</span></div>
             <div class="settings-body" id="runtime-settings"></div>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Model assignments and invocation</h3><span class="count">current runtime · view only</span></div>
+          <div class="table-pane" style="border:0;border-radius:0">
+            <table>
+              <thead><tr><th>Component</th><th>Status</th><th>Model</th><th>Effort</th><th>When called</th><th>Action</th></tr></thead>
+              <tbody id="model-assignments"></tbody>
+            </table>
           </div>
         </div>
         <div class="pane" style="margin-top:15px">
@@ -456,12 +475,12 @@
       $$(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
       $$(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
       const titles = {
-        flow:"Flow inspector", inventory:"Inventory", system:"System", conversations:"Conversations",
+        flow:"Flow inspector", inventory:"Inventory", system:"App health & controls", conversations:"Conversations",
         config:"Configuration", prompts:"Models & prompts",
       };
       const brows = {
         flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger",
-        system:"Health · processes · recent logs",
+        system:"Health · receiver · message processor",
         conversations:"Company · user · durable context",
         config:"Effective values · safe overrides · audit",
         prompts:"Contracts · configuration · grounding",
@@ -683,7 +702,8 @@
       $("#configuration").innerHTML = Object.entries(state.prompts.configuration).map(([key,value]) => `<span class="chip">${esc(key.replaceAll("_"," "))} · ${esc(value)}</span>`).join("");
       $("#prompt-grid").innerHTML = state.prompts.prompts.map(prompt => `
         <article class="prompt-card"><h3>${esc(prompt.label)}</h3>
-        <div class="prompt-meta"><span class="badge">${esc(prompt.model)}</span>${prompt.prompt_version ? `<span class="badge">${esc(prompt.prompt_version)}</span>` : ""}${prompt.tools?.length ? `<span class="badge">${prompt.tools.length} tools</span>` : ""}</div>
+        <div class="prompt-meta"><span class="badge">${esc(prompt.runtime_status)}</span><span class="badge">${esc(prompt.model)}</span><span class="badge">effort · ${esc(prompt.reasoning_effort)}</span>${prompt.prompt_version ? `<span class="badge">${esc(prompt.prompt_version)}</span>` : ""}${prompt.tools?.length ? `<span class="badge">${prompt.tools.length} tools</span>` : ""}</div>
+        <div class="summary-box"><strong>When called</strong><br>${esc(prompt.when_called)}<br><br><strong>Action</strong><br>${esc(prompt.action)}</div>
         <div class="prompt-copy">${esc(prompt.instructions)}</div>
         ${prompt.tools?.length ? raw("Tool definitions", prompt.tools) : ""}</article>`).join("");
     }
@@ -701,9 +721,20 @@
     function renderSystem() {
       const data = state.system;
       const localDashboard = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+      const componentLabels = {
+        api: "Telegram receiver & dashboard",
+        worker: "Inventory message processor",
+        supervisor: "Local process controller",
+        supabase: "Inventory database",
+        "telegram tunnel": "Telegram public connection",
+      };
+      const serviceLabels = {
+        api: "Telegram receiver & dashboard",
+        worker: "Inventory message processor",
+      };
       $("#health-grid").innerHTML = data.components.map(component => `
         <article class="health-card ${component.healthy ? "healthy" : "error"}">
-          <div class="health-head"><span class="health-dot"></span><strong>${esc(component.name)}</strong></div>
+          <div class="health-head"><span class="health-dot"></span><strong>${esc(componentLabels[component.name] || component.name)}</strong></div>
           <div class="health-detail">${esc(component.detail)}</div>
         </article>`).join("");
       $("#system-hint").textContent = data.controls_enabled && localDashboard
@@ -714,7 +745,7 @@
       $$(".system-command").forEach(button => button.disabled = !data.controls_enabled || !localDashboard);
       $("#service-grid").innerHTML = Object.entries(data.services || {}).map(([name, service]) => `
         <article class="pane">
-          <div class="pane-head"><h3>${esc(name)} process</h3>${badge(service.running ? "running" : "stopped")}</div>
+          <div class="pane-head"><h3>${esc(serviceLabels[name] || name)}</h3>${badge(service.running ? "running" : "stopped")}</div>
           <div class="settings-body">
             <div class="kv"><dt>PID</dt><dd>${esc(service.pid || "—")}</dd>
             <dt>Started</dt><dd>${time(service.started_at)}</dd>
@@ -730,7 +761,7 @@
       const action = button.dataset.action;
       const service = button.dataset.service;
       $$(".system-command").forEach(item => item.disabled = true);
-      $("#system-hint").textContent = `${action} ${service} accepted; waiting for health checks…`;
+      $("#system-hint").textContent = `${button.textContent.trim()} accepted; waiting for health checks…`;
       try {
         await api(`/dev/api/system/${action}`, {method: "POST", body: {service}});
       } catch (error) {
@@ -765,6 +796,15 @@
       $("#runtime-settings").innerHTML = data.runtime.map(row => `
         <div class="setting-row"><span>${esc(row.key.replaceAll("_", " "))}</span>
         <span class="sku">${esc(row.value)}</span><span class="badge">restart</span></div>`).join("");
+      $("#model-assignments").innerHTML = data.models.map(component => `
+        <tr>
+          <td><strong>${esc(component.label)}</strong><div class="event-meta">${esc(component.layer)}</div></td>
+          <td>${badge(component.runtime_status)}</td>
+          <td class="sku">${esc(component.model)}</td>
+          <td>${esc(component.reasoning_effort)}</td>
+          <td>${esc(component.when_called)}</td>
+          <td>${esc(component.action)}</td>
+        </tr>`).join("");
       $("#config-audit").innerHTML = data.changes.length ? data.changes.map(change => `
         <div class="event" style="cursor:default">
           <div class="event-top"><span class="badge">${esc(change.setting_key)}</span><span class="event-time">${time(change.created_at)}</span></div>

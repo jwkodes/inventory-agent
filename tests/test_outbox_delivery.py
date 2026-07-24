@@ -148,8 +148,9 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert result.status is OutboxDeliveryStatus.SENT
     assert result.telegram_message_id == 77
     assert repository.requested_proposals == [PROPOSAL_ID]
-    assert sender.messages[0][1].startswith("I found the exact catalog item.")
+    assert sender.messages[0][1].startswith("⚠️ **Action needed**")
     assert "Review stock receipt" in sender.messages[0][1]
+    assert "💬 **Agent note**\nI found the exact catalog item." in sender.messages[0][1]
     assert sender.messages[0][2] is not None
     assert repository.finishes == [(OUTBOX_ID, True, None, 30)]
 
@@ -169,7 +170,7 @@ async def test_delivers_plain_clarification_message() -> None:
     ).deliver_one(OUTBOX_ID)
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages == [(-100123, "Which item?", None)]
+    assert sender.messages == [(-100123, "❓ **More information needed**\nWhich item?", None)]
 
 
 async def test_delivers_callback_notice_as_a_new_message() -> None:
@@ -200,7 +201,7 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages[0][1] == "Inventory updated."
+    assert sender.messages[0][1].startswith("✅ **Inventory updated**")
     assert sender.messages[0][2] is not None
 
 
@@ -265,7 +266,8 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages[0][1].startswith("I found the transaction to reverse.")
+    assert sender.messages[0][1].startswith("⏳ **Pending reversal confirmation**")
+    assert "💬 **Agent note**\nI found the transaction to reverse." in sender.messages[0][1]
     assert "Wrong delivery was entered" in sender.messages[0][1]
     assert sender.messages[0][2] is not None
 

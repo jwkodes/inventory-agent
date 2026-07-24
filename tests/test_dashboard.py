@@ -93,6 +93,7 @@ def dashboard_settings(*, enabled: bool, writes: bool = False) -> Settings:
         dev_dashboard_config_writes_enabled=writes,
         dev_dashboard_username="inventory-dev",
         dev_dashboard_token=SecretStr("test-dashboard-token"),
+        inventory_agent_enabled=True,
     )
 
 
@@ -145,6 +146,10 @@ async def test_dashboard_requires_basic_auth_and_serves_self_contained_ui() -> N
     assert "Flow inspector" in response.text
     assert "Conversations" in response.text
     assert "Configuration" in response.text
+    assert "App health" in response.text
+    assert "Restart receiver" in response.text
+    assert "Restart only the web process that receives Telegram updates" in response.text
+    assert "Model assignments and invocation" in response.text
     assert "/dev/api/events" in response.text
 
 
@@ -222,6 +227,12 @@ async def test_dashboard_configuration_and_conversation_apis() -> None:
 
     assert configuration.json()["context"]["source"] == "application default"
     assert configuration.json()["writes_enabled"] is True
+    models = {row["layer"]: row for row in configuration.json()["models"]}
+    assert models["inventory_agent"]["model"] == "gpt-5.6-sol"
+    assert models["inventory_agent"]["reasoning_effort"] == "low"
+    assert models["inventory_agent"]["runtime_status"] == "active"
+    assert models["command_extraction"]["runtime_status"] == "standby"
+    assert models["semantic_retrieval"]["reasoning_effort"] == "not applicable"
     assert saved.json()["context"]["max_tokens"] == 12000
     assert conversations.json()["conversations"][0]["chat_id"] == 123
     assert detail.json()["user"]["display_name"] == "Demo Manager"

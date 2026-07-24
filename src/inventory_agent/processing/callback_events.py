@@ -156,7 +156,12 @@ class TelegramCallbackEventProcessor:
         elif action is CallbackAction.CANCEL_NEW_ITEM:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "Catalog item creation cancelled."}
+            payload = {
+                "message": (
+                    "🚫 **Catalog item creation cancelled**\n"
+                    "No catalog or inventory changes were applied."
+                )
+            }
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id
@@ -164,7 +169,7 @@ class TelegramCallbackEventProcessor:
         elif action is CallbackAction.CANCEL_PROPOSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "Proposal cancelled."}
+            payload = {"message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."}
         elif action is CallbackAction.REVERSE_TRANSACTION:
             outcome_type = ProcessingOutcomeType.REVERSAL_REASON_REQUIRED
             aggregate_id = result_id
@@ -172,11 +177,16 @@ class TelegramCallbackEventProcessor:
         elif action is CallbackAction.CONFIRM_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "Transaction reversed."}
+            payload = {
+                "message": (
+                    "✅ **Transaction reversed**\n"
+                    "The opposite inventory transaction was applied successfully."
+                )
+            }
         elif action is CallbackAction.CANCEL_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "Reversal cancelled."}
+            payload = {"message": "🚫 **Reversal cancelled**\nNo inventory changes were applied."}
         else:
             raise ValueError("Completed callback action is not supported")
 

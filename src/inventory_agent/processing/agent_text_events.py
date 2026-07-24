@@ -272,6 +272,7 @@ class TelegramAgentTextEventProcessor:
                     chat_id=context.chat_id,
                     payload={
                         "message": (
+                            "❓ **More information needed**\n"
                             f"I still need {_natural_list(missing)}. "
                             "Reply naturally with the missing information."
                         )

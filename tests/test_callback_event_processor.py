@@ -171,7 +171,9 @@ async def test_cancelled_proposal_sends_a_new_notice() -> None:
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
     assert outbox.drafts[0].aggregate_id is None
-    assert outbox.drafts[0].payload == {"message": "Proposal cancelled."}
+    assert outbox.drafts[0].payload == {
+        "message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."
+    }
 
 
 async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
@@ -223,7 +225,12 @@ async def test_confirmed_reversal_removes_buttons() -> None:
 
     assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
-    assert outbox.drafts[0].payload == {"message": "Transaction reversed."}
+    assert outbox.drafts[0].payload == {
+        "message": (
+            "✅ **Transaction reversed**\n"
+            "The opposite inventory transaction was applied successfully."
+        )
+    }
 
 
 async def test_cancelled_reversal_sends_a_new_notice() -> None:
@@ -245,7 +252,9 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
     await processor.process_next()
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
-    assert outbox.drafts[0].payload == {"message": "Reversal cancelled."}
+    assert outbox.drafts[0].payload == {
+        "message": "🚫 **Reversal cancelled**\nNo inventory changes were applied."
+    }
 
 
 @pytest.mark.parametrize(

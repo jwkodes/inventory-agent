@@ -353,7 +353,12 @@ async def test_delivery_crosses_python_and_local_supabase_boundaries() -> None:
 
             assert result.status is OutboxDeliveryStatus.SENT
             assert result.telegram_message_id == 991
-            assert sender.messages == [(100000001, "Which item should I use?")]
+            assert sender.messages == [
+                (
+                    100000001,
+                    "❓ **More information needed**\nWhich item should I use?",
+                )
+            ]
 
             stored = await client.get(
                 "/processing_outbox",
@@ -1111,7 +1116,12 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
                 sender=telegram,
             ).deliver_one(UUID(outbox_row["id"]))
             assert delivery.status is OutboxDeliveryStatus.SENT
-            assert telegram.messages == [(100000001, "Proposal cancelled.")]
+            assert telegram.messages == [
+                (
+                    100000001,
+                    "🚫 **Proposal cancelled**\nNo inventory changes were applied.",
+                )
+            ]
 
             proposal = await client.get(
                 "/transaction_proposals",

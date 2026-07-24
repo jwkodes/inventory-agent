@@ -72,14 +72,14 @@ def render_proposal_confirmation(
             if line.match_decision == "clarification_required" and line.clarification_question:
                 if not clarification_prompt_shown:
                     text_lines.append(
-                        f"I need one detail: {line.clarification_question.strip()} "
+                        f"❓ **One detail needed:** {line.clarification_question.strip()} "
                         "Reply naturally in a new message."
                     )
                     clarification_prompt_shown = True
             elif line.match_decision == "not_found" and not line.show_candidates:
                 subject = f"line {index}" if has_multiple_lines else "this item"
                 text_lines.append(
-                    f"No confident catalog match was found for {subject}. "
+                    f"🔎 **No confident match:** No catalog match was found for {subject}. "
                     "Add it as a new item or choose an existing item."
                 )
                 keyboard.append(
@@ -134,6 +134,8 @@ def render_proposal_confirmation(
                     )
 
     if not unresolved:
+        text_lines.insert(0, "⏳ **Pending confirmation**")
+        text_lines.append("No inventory has changed yet.")
         keyboard.append(
             [
                 InlineButton(
@@ -151,7 +153,10 @@ def render_proposal_confirmation(
             ]
         )
     else:
-        text_lines.append("Resolve every unmatched line before confirming.")
+        text_lines.insert(0, "⚠️ **Action needed**")
+        text_lines.append(
+            "Resolve every unmatched line before confirming. No inventory has changed."
+        )
         keyboard.append(
             [
                 InlineButton(
@@ -196,6 +201,7 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
     )
     return ConfirmationMessage(
         text=(
+            "📝 **New item details needed**\n"
             "No existing item was matched. "
             f"{understood}"
             "To create it, tell me:\n"
@@ -229,12 +235,14 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
         raise ValueError("Catalog item tracking mode is missing")
     return ConfirmationMessage(
         text=(
+            "⏳ **Pending catalog change**\n"
             "Create this catalog item?\n"
             f"Name: {view.name}\n"
             f"SKU: {view.sku}\n"
             f"Base unit: {view.base_unit}\n"
             f"Tracking: {tracking_mode.value}\n"
-            f"Attributes: {view.attributes}"
+            f"Attributes: {view.attributes}\n"
+            "The item has not been created yet."
         ),
         inline_keyboard=[
             [
@@ -259,7 +267,7 @@ def render_applied_transaction(transaction_id: UUID) -> ConfirmationMessage:
     """Offer a complete reversal after a proposal has been applied."""
 
     return ConfirmationMessage(
-        text="Inventory updated.",
+        text="✅ **Inventory updated**\nThe transaction was applied successfully.",
         inline_keyboard=[
             [
                 InlineButton(
@@ -278,6 +286,7 @@ def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
 
     return ConfirmationMessage(
         text=(
+            "❓ **Reversal reason needed**\n"
             "Reply with the reason for reversing this transaction. "
             "The inventory will not change until you confirm."
         ),
@@ -299,9 +308,11 @@ def render_reversal_confirmation(*, request_id: UUID, reason: str) -> Confirmati
 
     return ConfirmationMessage(
         text=(
+            "⏳ **Pending reversal confirmation**\n"
             "Review complete transaction reversal:\n"
             f"Reason: {reason}\n"
-            "This will create an opposite inventory transaction."
+            "Confirming will create an opposite inventory transaction. "
+            "No inventory has changed yet."
         ),
         inline_keyboard=[
             [
