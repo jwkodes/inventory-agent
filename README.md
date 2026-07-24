@@ -845,6 +845,12 @@ treated as success because Telegram may answer that the markup is already unchan
 Callback failures retry after 30 seconds and become `failed` after the third unsuccessful
 attempt, matching text-event handling.
 
+Every successful stock addition, deduction, adjustment, or reversal message displays its
+full copyable transaction UUID together with the localized transaction timestamp. A
+pending reversal review repeats the original transaction UUID and timestamp. Users can
+therefore identify an earlier transaction by ID when asking the agent to reverse or
+correct it, while still being free to describe the transaction naturally.
+
 When the LLM-led agent is enabled, completed proposal, catalog-item, and reversal
 confirmations or cancellations also append a deterministic `system` item to that user's
 durable conversation. Exact typed proposal controls do the same without a model call. The
@@ -1034,3 +1040,11 @@ lot-function tests. It is development data only and must never be loaded into pr
    tracking
 9. Semantic and candidate-judge calibration on representative SME datasets
 10. Voice-note transcription
+11. Structured transaction retrieval for reliable reversal targeting:
+    - support exact `transaction_id` lookup rather than relying on recent fallback rows;
+    - support `occurred_after` and `occurred_before` timestamp filters with explicit
+      timezone conversion;
+    - retain type, item/SKU, and description filters for natural-language searches;
+    - handle exact displayed times using a narrow time window and ask the user to choose
+      when multiple transactions match; and
+    - test transactions older than the current 20-record recent-history window.

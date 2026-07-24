@@ -291,6 +291,7 @@ def render_applied_transaction(
         text=(
             f"{heading}\n"
             f"{result}\n"
+            f"🧾 Transaction ID: `{transaction_id}`\n"
             f"🕒 Transaction time: {_format_timestamp(applied_at, display_timezone)}"
         ),
         inline_keyboard=[
@@ -341,6 +342,7 @@ def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
 def render_reversal_confirmation(
     *,
     request_id: UUID,
+    original_transaction_id: UUID,
     reason: str,
     original_transaction_applied_at: datetime,
     display_timezone: ZoneInfo,
@@ -351,6 +353,7 @@ def render_reversal_confirmation(
         text=(
             "⏳ **Pending reversal confirmation**\n"
             "Review complete transaction reversal:\n"
+            f"🧾 Original transaction ID: `{original_transaction_id}`\n"
             "🕒 Original transaction time: "
             f"{_format_timestamp(original_transaction_applied_at, display_timezone)}\n"
             f"Reason: {reason}\n"
@@ -378,6 +381,7 @@ def render_reversal_confirmation(
 
 def render_reversal_applied(
     *,
+    transaction_id: UUID,
     applied_at: datetime,
     display_timezone: ZoneInfo,
 ) -> str:
@@ -387,6 +391,7 @@ def render_reversal_applied(
         "✅ **Transaction reversed**\n"
         "The opposite inventory transaction was applied successfully, restoring the "
         "original stock.\n"
+        f"🧾 Reversal transaction ID: `{transaction_id}`\n"
         f"🕒 Reversal time: {_format_timestamp(applied_at, display_timezone)}\n"
         "A corrected replacement is a separate transaction and will still require "
         "confirmation."

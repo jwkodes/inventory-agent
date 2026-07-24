@@ -14,6 +14,7 @@ from inventory_agent.telegram.confirmation import (
     render_catalog_item_confirmation,
     render_catalog_item_details_prompt,
     render_proposal_confirmation,
+    render_reversal_applied,
     render_reversal_confirmation,
     render_reversal_reason_prompt,
 )
@@ -272,6 +273,7 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
     assert reverse.target_id == TRANSACTION_ID
     assert applied.text.startswith("✅ **Stock deducted**")
     assert "deduction transaction was applied" in applied.text
+    assert f"Transaction ID: `{TRANSACTION_ID}`" in applied.text
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in applied.text
 
     reason_prompt = render_reversal_reason_prompt(REVERSAL_REQUEST_ID)
@@ -280,6 +282,7 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
 
     confirmation = render_reversal_confirmation(
         request_id=REVERSAL_REQUEST_ID,
+        original_transaction_id=TRANSACTION_ID,
         reason="Duplicate delivery",
         original_transaction_applied_at=APPLIED_AT,
         display_timezone=DISPLAY_TIMEZONE,
@@ -289,5 +292,13 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
     ]
     assert actions == [CallbackAction.CONFIRM_REVERSAL, CallbackAction.CANCEL_REVERSAL]
     assert "Duplicate delivery" in confirmation.text
+    assert f"Original transaction ID: `{TRANSACTION_ID}`" in confirmation.text
     assert "Original transaction time: 24 Jul 2026, 07:42:19 PM" in confirmation.text
     assert confirmation.text.startswith("⏳ **Pending reversal confirmation**")
+
+    reversed_transaction = render_reversal_applied(
+        transaction_id=TRANSACTION_ID,
+        applied_at=APPLIED_AT,
+        display_timezone=DISPLAY_TIMEZONE,
+    )
+    assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in reversed_transaction

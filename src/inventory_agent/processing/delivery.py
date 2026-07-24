@@ -78,6 +78,7 @@ class TelegramOutboxDeliveryWorker:
                         transaction_id=reversal_transaction_id,
                     )
                     reversal_notice = render_reversal_applied(
+                        transaction_id=reversal_transaction.transaction_id,
                         applied_at=reversal_transaction.applied_at,
                         display_timezone=self._display_timezone,
                     )
@@ -146,6 +147,7 @@ class TelegramOutboxDeliveryWorker:
                 )
                 message = render_reversal_confirmation(
                     request_id=outcome.aggregate_id,
+                    original_transaction_id=original_transaction.transaction_id,
                     reason=reason.strip(),
                     original_transaction_applied_at=original_transaction.applied_at,
                     display_timezone=self._display_timezone,
@@ -163,6 +165,7 @@ class TelegramOutboxDeliveryWorker:
                     transaction_id=reversal_transaction_id,
                 )
                 text = render_reversal_applied(
+                    transaction_id=reversal_transaction.transaction_id,
                     applied_at=reversal_transaction.applied_at,
                     display_timezone=self._display_timezone,
                 )

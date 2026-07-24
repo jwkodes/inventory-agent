@@ -208,6 +208,7 @@ async def test_reversal_success_and_linked_replacement_are_delivered_together() 
     assert result.status is OutboxDeliveryStatus.SENT
     text = sender.messages[0][1]
     assert text.startswith("✅ **Transaction reversed**")
+    assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in text
     assert "Review stock addition:" in text
     assert "No inventory has changed" in text
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
@@ -261,6 +262,7 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages[0][1].startswith("✅ **Stock added**")
+    assert f"Transaction ID: `{TRANSACTION_ID}`" in sender.messages[0][1]
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is not None
@@ -328,6 +330,7 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages[0][1].startswith("⏳ **Pending reversal confirmation**")
+    assert f"Original transaction ID: `{TRANSACTION_ID}`" in sender.messages[0][1]
     assert "💬 **Agent note**\nI found the transaction to reverse." in sender.messages[0][1]
     assert "Wrong delivery was entered" in sender.messages[0][1]
     assert "Original transaction time: 24 Jul 2026, 07:42:19 PM" in sender.messages[0][1]
@@ -355,6 +358,7 @@ async def test_delivers_successful_reversal_with_timestamp_and_state_boundary() 
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages[0][1].startswith("✅ **Transaction reversed**")
+    assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in sender.messages[0][1]
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
     assert "corrected replacement is a separate transaction" in sender.messages[0][1]
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
