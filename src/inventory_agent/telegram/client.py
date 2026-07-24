@@ -8,12 +8,21 @@ import httpx
 
 TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 _BOLD_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", flags=re.DOTALL)
+_ITALIC_ASTERISK_MARKDOWN = re.compile(
+    r"(?<!\*)\*(?!\*)(?=\S)(.+?)(?<=\S)(?<!\*)\*(?!\*)",
+    flags=re.DOTALL,
+)
+_ITALIC_UNDERSCORE_MARKDOWN = re.compile(
+    r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])",
+    flags=re.DOTALL,
+)
 _FENCED_CODE_BLOCK = re.compile(
     r"```[ \t]*(?:[A-Za-z0-9_+.-]+)?[ \t]*\r?\n"
     r"(?P<code>.*?)"
     r"(?:\r?\n)?```",
     flags=re.DOTALL,
 )
+_TABLE_DELIMITER_CELL = re.compile(r"^:?-{3,}:?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,5 +224,106 @@ def _render_telegram_html(text: str) -> str:
 
 
 def _render_plain_telegram_html(text: str) -> str:
+    """Render inline Markdown and turn unsupported GFM tables into aligned text."""
+
+    lines = text.splitlines(keepends=True)
+    rendered: list[str] = []
+    plain_lines: list[str] = []
+    index = 0
+    while index < len(lines):
+        header = _split_markdown_table_row(lines[index].rstrip("\r\n"))
+        alignments = (
+            _table_alignments(lines[index + 1].rstrip("\r\n"), len(header))
+            if header is not None and index + 1 < len(lines)
+            else None
+        )
+        if header is None or alignments is None:
+            plain_lines.append(lines[index])
+            index += 1
+            continue
+
+        if plain_lines:
+            rendered.append(_render_inline_telegram_html("".join(plain_lines)))
+            plain_lines.clear()
+
+        table_rows = [header]
+        row_index = index + 2
+        while row_index < len(lines):
+            row = _split_markdown_table_row(lines[row_index].rstrip("\r\n"))
+            if row is None or len(row) != len(header):
+                break
+            table_rows.append(row)
+            row_index += 1
+
+        rendered.append(
+            f"<pre>{escape(_format_plain_text_table(table_rows, alignments), quote=False)}</pre>"
+        )
+        if lines[row_index - 1].endswith(("\n", "\r")):
+            rendered.append("\n")
+        index = row_index
+
+    if plain_lines:
+        rendered.append(_render_inline_telegram_html("".join(plain_lines)))
+    return "".join(rendered)
+
+
+def _render_inline_telegram_html(text: str) -> str:
     escaped = escape(text, quote=False)
-    return _BOLD_MARKDOWN.sub(r"<b>\1</b>", escaped)
+    rendered = _BOLD_MARKDOWN.sub(r"<b>\1</b>", escaped)
+    rendered = _ITALIC_ASTERISK_MARKDOWN.sub(r"<i>\1</i>", rendered)
+    return _ITALIC_UNDERSCORE_MARKDOWN.sub(r"<i>\1</i>", rendered)
+
+
+def _split_markdown_table_row(line: str) -> tuple[str, ...] | None:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return None
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = tuple(cell.strip() for cell in stripped.split("|"))
+    return cells if len(cells) >= 2 else None
+
+
+def _table_alignments(line: str, column_count: int) -> tuple[str, ...] | None:
+    cells = _split_markdown_table_row(line)
+    if cells is None or len(cells) != column_count:
+        return None
+    if any(_TABLE_DELIMITER_CELL.fullmatch(cell) is None for cell in cells):
+        return None
+    return tuple(
+        "center"
+        if cell.startswith(":") and cell.endswith(":")
+        else "right"
+        if cell.endswith(":")
+        else "left"
+        for cell in cells
+    )
+
+
+def _format_plain_text_table(
+    rows: list[tuple[str, ...]],
+    alignments: tuple[str, ...],
+) -> str:
+    widths = [max(len(row[column]) for row in rows) for column in range(len(alignments))]
+
+    def format_row(row: tuple[str, ...], *, header: bool = False) -> str:
+        cells: list[str] = []
+        for value, width, alignment in zip(row, widths, alignments, strict=True):
+            if header or alignment == "left":
+                cells.append(value.ljust(width))
+            elif alignment == "right":
+                cells.append(value.rjust(width))
+            else:
+                cells.append(value.center(width))
+        return " | ".join(cells).rstrip()
+
+    separator = "-+-".join("-" * width for width in widths)
+    return "\n".join(
+        [
+            format_row(rows[0], header=True),
+            separator,
+            *(format_row(row) for row in rows[1:]),
+        ]
+    )
