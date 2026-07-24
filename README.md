@@ -1065,3 +1065,17 @@ lot-function tests. It is development data only and must never be loaded into pr
     - handle exact displayed times using a narrow time window and ask the user to choose
       when multiple transactions match; and
     - test transactions older than the current 20-record recent-history window.
+12. Separate company SKUs from external catalog identifiers during item creation:
+    - extend the agent and catalog-creation contracts to accept typed identifiers instead
+      of mapping every supplied part number into `item_variants.sku`;
+    - store manufacturer part numbers, supplier part numbers, and barcodes in
+      `item_identifiers` under their actual identifier types;
+    - scope supplier part numbers to their supplier and manufacturer part numbers to their
+      manufacturer so coincidentally identical codes do not collide;
+    - preserve a company-controlled SKU for each variant while allowing organization
+      policy to require, derive, or automatically generate it when only an external
+      identifier is provided;
+    - let workers provide whichever real-world code appears on the product, delivery order,
+      or invoice without needing to understand the identifier taxonomy; and
+    - migrate or review catalog records whose current SKU was originally supplied as an
+      external part number, with exact-matching and tenant-isolation tests.
