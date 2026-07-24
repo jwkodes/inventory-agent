@@ -161,7 +161,36 @@ DEV_SUPERVISOR_TOKEN=${DEV_DASHBOARD_TOKEN}
 ```
 
 Keep `DEV_SUPERVISOR_TOKEN` below `DEV_DASHBOARD_TOKEN` so dotenv can expand it. A
-separately generated supervisor token can be used instead. Then launch the system:
+separately generated supervisor token can be used instead.
+
+For normal local development, launch the complete stack from the repository root:
+
+```bash
+./scripts/start-dev.sh
+```
+
+The start script:
+
+- starts Docker Desktop on macOS if Docker is not already ready;
+- starts the project’s local Supabase stack;
+- launches the API and worker through the loopback supervisor;
+- launches ngrok for port 8000, or reuses an existing port-8000 tunnel;
+- waits for the services to become healthy and prints their URLs; and
+- writes process logs and ownership PID files under the gitignored `.runtime/` directory.
+
+It is safe to run the command again: healthy existing services are reused rather than
+duplicated. To stop the development stack:
+
+```bash
+./scripts/stop-dev.sh
+```
+
+The stop script shuts down only ngrok/supervisor processes recorded as owned by this
+project, verifies each recorded command before signalling its PID, and then stops local
+Supabase. It does not close Docker Desktop, delete local database volumes, or terminate
+an ngrok/supervisor process that was started independently.
+
+To run the supervisor directly instead of using the convenience script:
 
 ```bash
 uv run python -m inventory_agent.dev_supervisor
@@ -213,8 +242,8 @@ ngrok config check
 ```
 
 The authtoken is written to ngrok's user-level configuration outside this repository.
-Never put it in `.env` or commit it. Then keep the following processes open in separate
-terminals.
+Never put it in `.env` or commit it. `./scripts/start-dev.sh` starts or reuses the ngrok
+tunnel automatically. The following separate terminals are only the manual alternative.
 
 Terminal 1 — API and worker supervisor:
 
@@ -289,9 +318,11 @@ into source files, terminal screenshots, issues, or chat.
 
 After restarting the computer:
 
-1. Start Docker Desktop and run `supabase start`.
-2. Restart the API/worker supervisor in terminal 1.
-3. Restart `ngrok http 8000` in terminal 2.
+1. Open a terminal in the repository.
+2. Run `./scripts/start-dev.sh`.
+
+When finished, run `./scripts/stop-dev.sh`. Local database contents remain in the
+project’s Docker volume and are restored by the next start.
 
 If you do not want an ngrok account, a Cloudflare Quick Tunnel remains a temporary
 fallback:
@@ -303,16 +334,15 @@ cloudflared tunnel --url http://127.0.0.1:8000
 Its random hostname changes after restarts, so update `TELEGRAM_WEBHOOK_URL` and rerun the
 webhook setup command each time.
 
-Press `Ctrl+C` in the API or tunnel terminal to stop that process. Closing Codex or a
-terminal session may also stop processes launched from it.
+In manual mode, press `Ctrl+C` in the supervisor or tunnel terminal to stop that process.
 
 ### 8. Run the background worker
 
 The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
 `SUPABASE_SECRET_KEY` in `.env`. The defaults use semantic matching, so the same OpenAI
 key is used for command extraction, conversational catalog-detail extraction, and
-embeddings. The recommended supervisor command in step 6 already runs it. When using the
-manual API command instead, run the worker in a separate terminal:
+embeddings. The recommended `./scripts/start-dev.sh` command in step 6 already runs it.
+When using the manual API command instead, run the worker in a separate terminal:
 
 ```bash
 uv run python -m inventory_agent.processing.worker --watch

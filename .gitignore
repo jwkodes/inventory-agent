@@ -13,6 +13,7 @@ build/
 dist/
 htmlcov/
 .coverage
+.runtime/
 
 # Supabase CLI runtime state; config, migrations, schemas, and seed data are committed.
 supabase/.branches/
