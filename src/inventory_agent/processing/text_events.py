@@ -177,65 +177,66 @@ class TelegramTextEventProcessor:
                     user_text=context.message_text,
                     view=catalog_view,
                 )
-                details, missing = complete_catalog_item_details(
-                    extracted=catalog_extraction.details,
-                    view=catalog_view,
-                )
-                if details is None:
-                    await self._catalog.save_draft(
+                if catalog_extraction.details.applies_to_pending_request:
+                    details, missing = complete_catalog_item_details(
+                        extracted=catalog_extraction.details,
+                        view=catalog_view,
+                    )
+                    if details is None:
+                        await self._catalog.save_draft(
+                            request_id=catalog_request_id,
+                            event_id=context.event_id,
+                            actor_id=context.organization_user_id,
+                            details=catalog_extraction.details,
+                        )
+                        outbox_id = await self._outbox.enqueue(
+                            ProcessingOutcomeDraft(
+                                organization_id=context.organization_id,
+                                source_event_id=context.event_id,
+                                outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                                chat_id=context.chat_id,
+                                payload={
+                                    "message": (
+                                        "I still need "
+                                        f"{_natural_list(missing)}. "
+                                        "Reply naturally with the missing information."
+                                    )
+                                },
+                            )
+                        )
+                        await self._require_finish(context.event_id)
+                        return TextEventProcessingResult(
+                            event_id=context.event_id,
+                            status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                            chat_id=context.chat_id,
+                            catalog_request_id=catalog_request_id,
+                            outbox_id=outbox_id,
+                        )
+
+                    await self._catalog.save_details(
                         request_id=catalog_request_id,
                         event_id=context.event_id,
                         actor_id=context.organization_user_id,
-                        details=catalog_extraction.details,
+                        details=details,
                     )
                     outbox_id = await self._outbox.enqueue(
                         ProcessingOutcomeDraft(
                             organization_id=context.organization_id,
                             source_event_id=context.event_id,
-                            outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                            outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+                            aggregate_id=catalog_request_id,
                             chat_id=context.chat_id,
-                            payload={
-                                "message": (
-                                    "I still need "
-                                    f"{_natural_list(missing)}. "
-                                    "Reply naturally with the missing information."
-                                )
-                            },
+                            payload={},
                         )
                     )
                     await self._require_finish(context.event_id)
                     return TextEventProcessingResult(
                         event_id=context.event_id,
-                        status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                        status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
                         chat_id=context.chat_id,
                         catalog_request_id=catalog_request_id,
                         outbox_id=outbox_id,
                     )
-
-                await self._catalog.save_details(
-                    request_id=catalog_request_id,
-                    event_id=context.event_id,
-                    actor_id=context.organization_user_id,
-                    details=details,
-                )
-                outbox_id = await self._outbox.enqueue(
-                    ProcessingOutcomeDraft(
-                        organization_id=context.organization_id,
-                        source_event_id=context.event_id,
-                        outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
-                        aggregate_id=catalog_request_id,
-                        chat_id=context.chat_id,
-                        payload={},
-                    )
-                )
-                await self._require_finish(context.event_id)
-                return TextEventProcessingResult(
-                    event_id=context.event_id,
-                    status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
-                    chat_id=context.chat_id,
-                    catalog_request_id=catalog_request_id,
-                    outbox_id=outbox_id,
-                )
 
             command_extraction = await self._interpreter.interpret(context.message_text)
             result = await self._commands.handle(

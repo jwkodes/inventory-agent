@@ -211,6 +211,8 @@ class TelegramAgentTextEventProcessor:
             user_text=context.message_text,
             view=view,
         )
+        if not extraction.details.applies_to_pending_request:
+            return None
         details, missing = complete_catalog_item_details(
             extracted=extraction.details,
             view=view,

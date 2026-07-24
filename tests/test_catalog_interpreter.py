@@ -30,6 +30,7 @@ class FakeOpenAI:
 
 async def test_catalog_interpreter_accepts_natural_language_and_context() -> None:
     parsed = ExtractedCatalogItemDetails(
+        applies_to_pending_request=True,
         name="Switch 2 controller",
         sku="SW2-CONTROLLER",
         base_unit="each",

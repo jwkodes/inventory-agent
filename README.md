@@ -458,8 +458,11 @@ attributes—but does not require the user to fill in JSON or a fixed text form.
 extracts those facts from natural language, combines them with safe suggestions already
 derived from the transaction, persists partial answers across clarification turns, and
 asks only for fields that remain missing. A final Telegram confirmation is required before
-the catalog item is created. The current prototype creates simple-tracked items only; lot
-and serial creation require an additional tracking-details flow.
+the catalog item is created. The catalog interpreter also classifies whether a message
+actually answers that pending item request; a separate receipt, deduction, query, or other
+inventory command bypasses the stale request and reaches normal processing. The current
+prototype creates simple-tracked items only; lot and serial creation require an additional
+tracking-details flow.
 
 ## Invoice image processing
 

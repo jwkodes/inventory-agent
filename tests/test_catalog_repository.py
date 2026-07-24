@@ -63,6 +63,7 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
             event_id=EVENT_ID,
             actor_id=ACTOR_ID,
             details=ExtractedCatalogItemDetails(
+                applies_to_pending_request=True,
                 name="Purple Widget",
                 sku=None,
                 base_unit="each",

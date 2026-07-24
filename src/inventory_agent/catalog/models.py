@@ -37,6 +37,7 @@ class ExtractedCatalogItemDetails(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    applies_to_pending_request: bool
     name: str | None
     sku: str | None
     base_unit: str | None

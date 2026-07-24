@@ -5,6 +5,11 @@ from uuid import UUID
 
 from inventory_agent.agent.repository import AgentConversation
 from inventory_agent.agent.runtime import ModelTurn
+from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
+from inventory_agent.catalog.models import (
+    CatalogItemCreationView,
+    ExtractedCatalogItemDetails,
+)
 from inventory_agent.processing.agent_text_events import TelegramAgentTextEventProcessor
 from inventory_agent.processing.models import (
     ProcessingOutcomeDraft,
@@ -19,23 +24,25 @@ ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 LOCATION_ID = UUID("12000000-0000-0000-0000-000000000001")
 CONVERSATION_ID = UUID("65000000-0000-0000-0000-000000000001")
 OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000001")
+CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
 
 
 class FakeEvents:
-    def __init__(self) -> None:
+    def __init__(self, message_text: str = "tell me a joke") -> None:
         self.finished: list[tuple[UUID, bool]] = []
+        self.context = context(message_text)
 
     async def claim_next_callback_event(self) -> None:
         return None
 
     async def claim_next_text_event(self) -> TelegramTextEventContext | None:
-        return context()
+        return self.context
 
     async def claim_next_image_event(self) -> None:
         return None
 
     async def claim_text_event(self, event_id: UUID) -> TelegramTextEventContext | None:
-        return context()
+        return self.context
 
     async def finish_event(
         self,
@@ -135,8 +142,56 @@ class FakeReversals:
 
 
 class FakeCatalog:
+    def __init__(self, request_id: UUID | None = None) -> None:
+        self.request_id = request_id
+        self.saved = False
+
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
-        return None
+        return self.request_id
+
+    async def get_view(self, *, request_id: UUID) -> CatalogItemCreationView:
+        return CatalogItemCreationView(
+            request_id=request_id,
+            status="awaiting_details",
+            suggested_name="Gigablox Network Switch",
+            suggested_sku="BB-08-01",
+            suggested_base_unit="each",
+            suggested_tracking_mode="simple",
+        )
+
+    async def save_draft(self, **kwargs: object) -> UUID:
+        self.saved = True
+        return CATALOG_REQUEST_ID
+
+    async def save_details(self, **kwargs: object) -> UUID:
+        self.saved = True
+        return CATALOG_REQUEST_ID
+
+
+class NewInventoryRequestCatalogInterpreter:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def interpret(
+        self,
+        *,
+        user_text: str,
+        view: CatalogItemCreationView,
+    ) -> CatalogDetailsExtractionResult:
+        self.calls += 1
+        assert user_text == "I received 3 AMOX-500"
+        return CatalogDetailsExtractionResult(
+            details=ExtractedCatalogItemDetails(
+                applies_to_pending_request=False,
+                name=None,
+                sku=None,
+                base_unit=None,
+                tracking_mode=None,
+                attributes=[],
+            ),
+            response_id="catalog-routing-response",
+            model="gpt-test",
+        )
 
 
 class UnusedCatalogReader:
@@ -162,7 +217,7 @@ class UnusedCatalogInterpreter:
         raise AssertionError("not expected")
 
 
-def context() -> TelegramTextEventContext:
+def context(message_text: str = "tell me a joke") -> TelegramTextEventContext:
     return TelegramTextEventContext(
         event_id=EVENT_ID,
         organization_id=ORGANIZATION_ID,
@@ -171,7 +226,7 @@ def context() -> TelegramTextEventContext:
         external_event_id="telegram-1",
         chat_id=123,
         telegram_user_id=456,
-        message_text="tell me a joke",
+        message_text=message_text,
     )
 
 
@@ -192,6 +247,8 @@ def processor(
     conversations: FakeConversations,
     outbox: FakeOutbox,
     events: FakeEvents,
+    catalog: FakeCatalog | None = None,
+    catalog_interpreter: object | None = None,
 ) -> TelegramAgentTextEventProcessor:
     return TelegramAgentTextEventProcessor(
         events=events,  # type: ignore[arg-type]
@@ -202,8 +259,8 @@ def processor(
         proposals=UnusedProposals(),  # type: ignore[arg-type]
         outbox=outbox,
         reversals=FakeReversals(),
-        catalog=FakeCatalog(),  # type: ignore[arg-type]
-        catalog_interpreter=UnusedCatalogInterpreter(),  # type: ignore[arg-type]
+        catalog=catalog or FakeCatalog(),  # type: ignore[arg-type]
+        catalog_interpreter=catalog_interpreter or UnusedCatalogInterpreter(),  # type: ignore[arg-type]
     )
 
 
@@ -246,3 +303,28 @@ async def test_retried_saved_turn_reuses_reply_without_another_model_call() -> N
     assert model.calls == 0
     assert conversations.saved == []
     assert outbox.drafts[0].payload == {"message": "Previously saved reply."}
+
+
+async def test_new_inventory_request_bypasses_stale_catalog_details_flow() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation())
+    outbox = FakeOutbox()
+    events = FakeEvents("I received 3 AMOX-500")
+    catalog = FakeCatalog(CATALOG_REQUEST_ID)
+    catalog_interpreter = NewInventoryRequestCatalogInterpreter()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=events,
+        catalog=catalog,
+        catalog_interpreter=catalog_interpreter,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert catalog_interpreter.calls == 1
+    assert catalog.saved is False
+    assert model.calls == 1
+    assert conversations.saved[0]["source_event_id"] == EVENT_ID
