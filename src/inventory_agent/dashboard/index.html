@@ -241,6 +241,22 @@
       border-radius: 9px; background: rgba(109,214,208,.045); color: #d8e9e6;
       font-size: 11px; line-height: 1.55; white-space: pre-wrap;
     }
+    .health-grid {
+      display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 11px; margin-bottom: 15px;
+    }
+    .health-card {
+      padding: 15px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .health-card.healthy { border-color: rgba(201,242,123,.28); }
+    .health-card.error { border-color: rgba(255,130,125,.32); }
+    .health-head { display: flex; align-items: center; gap: 8px; font-size: 12px; text-transform: capitalize; }
+    .health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px rgba(255,130,125,.07); }
+    .healthy .health-dot { background: var(--lime); box-shadow: 0 0 0 4px rgba(201,242,123,.07); }
+    .health-detail { min-height: 34px; margin-top: 10px; color: var(--faint); font-size: 10px; line-height: 1.55; }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+    .service-actions { display: flex; gap: 7px; flex-wrap: wrap; }
     .loading::after {
       content: ""; display: inline-block; width: 11px; height: 11px; margin-left: 9px;
       border: 2px solid var(--line); border-top-color: var(--lime); border-radius: 50%;
@@ -266,6 +282,8 @@
       .prompt-grid { grid-template-columns: 1fr; }
       .settings-layout, .conversation-layout { grid-template-columns: 1fr; }
       .field-grid { grid-template-columns: 1fr; }
+      .health-grid { grid-template-columns: repeat(2, 1fr); }
+      .service-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -279,6 +297,7 @@
       <nav>
         <button class="nav-button active" data-view="flow"><span class="nav-icon">⌁</span>Flow inspector</button>
         <button class="nav-button" data-view="inventory"><span class="nav-icon">▦</span>Inventory</button>
+        <button class="nav-button" data-view="system"><span class="nav-icon">◉</span>System</button>
         <button class="nav-button" data-view="conversations"><span class="nav-icon">◫</span>Conversations</button>
         <button class="nav-button" data-view="config"><span class="nav-icon">⚙</span>Configuration</button>
         <button class="nav-button" data-view="prompts"><span class="nav-icon">⌘</span>Models & prompts</button>
@@ -319,6 +338,24 @@
           <div class="pane-head"><h3>Recent immutable transactions</h3><span class="count">latest 50</span></div>
           <div id="transactions"></div>
         </div>
+      </section>
+
+      <section class="view" id="system-view">
+        <div class="health-grid" id="health-grid"><div class="empty loading">Checking components</div></div>
+        <div class="pane" style="margin-bottom:15px">
+          <div class="pane-head"><h3>System controls</h3><span class="count">localhost only · fixed commands</span></div>
+          <div class="settings-body">
+            <div class="service-actions">
+              <button class="icon-button primary system-command" data-action="start" data-service="all">Launch system</button>
+              <button class="icon-button system-command" data-action="restart" data-service="all">Restart system</button>
+              <button class="icon-button system-command" data-action="restart" data-service="api">Restart API</button>
+              <button class="icon-button system-command" data-action="restart" data-service="worker">Restart worker</button>
+              <button class="icon-button system-command" data-action="stop" data-service="worker">Stop worker</button>
+            </div>
+            <p class="hint" id="system-hint">Loading supervisor status…</p>
+          </div>
+        </div>
+        <div class="service-grid" id="service-grid"></div>
       </section>
 
       <section class="view" id="prompts-view">
@@ -376,7 +413,7 @@
     const state = {
       view: "flow", organizationId: null, events: [], selectedEventId: null,
       inventory: null, prompts: null, configuration: null, conversations: [],
-      selectedConversationId: null,
+      selectedConversationId: null, system: null,
     };
     const $ = (selector) => document.querySelector(selector);
     const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -419,11 +456,12 @@
       $$(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
       $$(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
       const titles = {
-        flow:"Flow inspector", inventory:"Inventory", conversations:"Conversations",
+        flow:"Flow inspector", inventory:"Inventory", system:"System", conversations:"Conversations",
         config:"Configuration", prompts:"Models & prompts",
       };
       const brows = {
         flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger",
+        system:"Health · processes · recent logs",
         conversations:"Company · user · durable context",
         config:"Effective values · safe overrides · audit",
         prompts:"Contracts · configuration · grounding",
@@ -431,6 +469,7 @@
       $("#page-title").textContent = titles[view];
       $("#eyebrow").textContent = brows[view];
       if (view === "inventory" && !state.inventory) loadInventory();
+      if (view === "system" && !state.system) loadSystem();
       if (view === "conversations" && !state.conversations.length) loadConversations();
       if (view === "config" && !state.configuration) loadConfiguration();
       if (view === "prompts" && !state.prompts) loadPrompts();
@@ -450,6 +489,7 @@
     async function loadCurrentView() {
       if (state.view === "flow") await loadEvents();
       if (state.view === "inventory") await loadInventory();
+      if (state.view === "system") await loadSystem();
       if (state.view === "conversations") await loadConversations();
       if (state.view === "config") await loadConfiguration();
       if (state.view === "prompts") await loadPrompts();
@@ -648,6 +688,59 @@
         ${prompt.tools?.length ? raw("Tool definitions", prompt.tools) : ""}</article>`).join("");
     }
 
+    async function loadSystem() {
+      try {
+        state.system = await api("/dev/api/system");
+        renderSystem();
+      } catch (error) {
+        state.system = null;
+        showError(error);
+      }
+    }
+
+    function renderSystem() {
+      const data = state.system;
+      const localDashboard = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+      $("#health-grid").innerHTML = data.components.map(component => `
+        <article class="health-card ${component.healthy ? "healthy" : "error"}">
+          <div class="health-head"><span class="health-dot"></span><strong>${esc(component.name)}</strong></div>
+          <div class="health-detail">${esc(component.detail)}</div>
+        </article>`).join("");
+      $("#system-hint").textContent = data.controls_enabled && localDashboard
+        ? "Green means the process is running or the live check responded successfully. Red includes the failure detail below."
+        : localDashboard
+          ? "Process controls are disabled. Configure and launch the local development supervisor."
+          : "Health is visible, but process controls work only when this page is opened through localhost.";
+      $$(".system-command").forEach(button => button.disabled = !data.controls_enabled || !localDashboard);
+      $("#service-grid").innerHTML = Object.entries(data.services || {}).map(([name, service]) => `
+        <article class="pane">
+          <div class="pane-head"><h3>${esc(name)} process</h3>${badge(service.running ? "running" : "stopped")}</div>
+          <div class="settings-body">
+            <div class="kv"><dt>PID</dt><dd>${esc(service.pid || "—")}</dd>
+            <dt>Started</dt><dd>${time(service.started_at)}</dd>
+            <dt>Restarts</dt><dd>${esc(service.restart_count)}</dd>
+            <dt>Last exit</dt><dd>${esc(service.last_exit_code ?? "—")}</dd></div>
+            <h4 class="section-title">Recent logs</h4>
+            <pre>${esc((service.logs || []).join("\n") || "No process logs yet.")}</pre>
+          </div>
+        </article>`).join("");
+    }
+
+    async function runSystemCommand(button) {
+      const action = button.dataset.action;
+      const service = button.dataset.service;
+      $$(".system-command").forEach(item => item.disabled = true);
+      $("#system-hint").textContent = `${action} ${service} accepted; waiting for health checks…`;
+      try {
+        await api(`/dev/api/system/${action}`, {method: "POST", body: {service}});
+      } catch (error) {
+        if (!(action === "restart" && ["api", "all"].includes(service))) showError(error);
+      }
+      await new Promise(resolve => setTimeout(resolve, 2200));
+      state.system = null;
+      await loadSystem();
+    }
+
     async function loadConfiguration() {
       if (!state.organizationId) return;
       try {
@@ -786,15 +879,17 @@
     });
     $("#context-form").addEventListener("submit", saveContext);
     $("#reset-context").addEventListener("click", resetContext);
+    $$(".system-command").forEach(button => button.addEventListener("click", () => runSystemCommand(button)));
     $("#refresh").addEventListener("click", async () => {
       if (state.view === "flow") await loadEvents(false);
       if (state.view === "inventory") await loadInventory();
+      if (state.view === "system") { state.system = null; await loadSystem(); }
       if (state.view === "conversations") await loadConversations();
       if (state.view === "config") { state.configuration = null; await loadConfiguration(); }
       if (state.view === "prompts") { state.prompts = null; await loadPrompts(); }
     });
     const requestedView = window.location.hash.slice(1);
-    if (["flow", "inventory", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
+    if (["flow", "inventory", "system", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
     boot();
   </script>
 </body>

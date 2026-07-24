@@ -7,7 +7,8 @@ from importlib.resources import files
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from inventory_agent.config import Settings, get_settings
 from inventory_agent.dashboard.prompts import prompt_catalog
 from inventory_agent.dashboard.repository import DashboardRepository
+from inventory_agent.dashboard.supervisor import SupervisorClient
 
 router = APIRouter(prefix="/dev", include_in_schema=False)
 _basic = HTTPBasic(auto_error=False)
@@ -75,6 +77,28 @@ class ContextSettingsUpdate(BaseModel):
     retention_days: int = Field(ge=1)
     max_tokens: int = Field(ge=1)
     max_items: int = Field(ge=1, le=350)
+
+
+class ProcessCommand(BaseModel):
+    """Allowlisted development-process control command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: Literal["api", "worker", "all"]
+
+
+def get_supervisor_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> SupervisorClient | None:
+    token = _read_secret(settings.dev_supervisor_token) or _read_secret(
+        settings.dev_dashboard_token
+    )
+    if not settings.dev_supervisor_enabled or token is None:
+        return None
+    return SupervisorClient(base_url=settings.dev_supervisor_url, token=token)
+
+
+SupervisorData = Annotated[SupervisorClient | None, Depends(get_supervisor_client)]
 
 
 @router.get("", response_class=HTMLResponse)
@@ -220,6 +244,100 @@ async def conversation(
     return result
 
 
+@router.get("/api/system")
+async def system_status(
+    _: DashboardAccess,
+    repository: DashboardData,
+    supervisor: SupervisorData,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    components: list[dict[str, object]] = []
+    supervisor_status: dict[str, object] | None = None
+    supervisor_error: str | None = None
+    if supervisor is None:
+        supervisor_error = "Development supervisor is disabled or missing its token"
+    else:
+        try:
+            supervisor_status = await supervisor.status()
+        except (httpx.HTTPError, ValueError) as exc:
+            supervisor_error = str(exc)
+    components.append(
+        _component(
+            "supervisor",
+            supervisor_status is not None,
+            "Loopback control service is responding"
+            if supervisor_status is not None
+            else supervisor_error or "Supervisor unavailable",
+        )
+    )
+
+    services = supervisor_status.get("services") if isinstance(supervisor_status, dict) else None
+    service_rows = services if isinstance(services, dict) else {}
+    api_service = service_rows.get("api")
+    worker_service = service_rows.get("worker")
+    api_managed = isinstance(api_service, dict) and api_service.get("running") is True
+    components.append(
+        _component(
+            "api",
+            True,
+            "Dashboard API is responding"
+            + (" and supervisor-managed" if api_managed else " (not supervisor-managed)"),
+        )
+    )
+    components.append(
+        _component(
+            "worker",
+            isinstance(worker_service, dict) and worker_service.get("running") is True,
+            "Background worker process is running"
+            if isinstance(worker_service, dict) and worker_service.get("running") is True
+            else "Background worker is not running under the supervisor",
+        )
+    )
+
+    try:
+        organizations = await _require_repository(repository).list_organizations()
+        components.append(
+            _component(
+                "supabase",
+                True,
+                f"Database API responded; {len(organizations)} organization(s) visible",
+            )
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        components.append(_component("supabase", False, str(exc)))
+
+    tunnel_ok, tunnel_detail = await _telegram_tunnel_health(settings)
+    components.append(_component("telegram tunnel", tunnel_ok, tunnel_detail))
+    return {
+        "controls_enabled": supervisor is not None,
+        "components": components,
+        "services": service_rows,
+    }
+
+
+@router.post("/api/system/{action}", status_code=status.HTTP_202_ACCEPTED)
+async def system_command(
+    action: Literal["start", "restart", "stop"],
+    body: ProcessCommand,
+    request: Request,
+    _: DashboardAccess,
+    supervisor: SupervisorData,
+) -> dict[str, object]:
+    _require_loopback_dashboard(request)
+    if supervisor is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Development supervisor is disabled or unavailable",
+        )
+    try:
+        return await supervisor.command(action=action, service=body.service)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Development supervisor request failed: {exc}",
+        ) from exc
+
+
 @router.get("/api/prompts")
 async def prompts(
     _: DashboardAccess,
@@ -290,6 +408,40 @@ def _runtime_configuration(settings: Settings) -> list[dict[str, object]]:
         }
         for key, value in values.items()
     ]
+
+
+def _component(name: str, healthy: bool, detail: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "healthy": healthy,
+        "status": "healthy" if healthy else "error",
+        "detail": detail,
+    }
+
+
+async def _telegram_tunnel_health(settings: Settings) -> tuple[bool, str]:
+    webhook_url = settings.telegram_webhook_url
+    if not webhook_url:
+        return False, "TELEGRAM_WEBHOOK_URL is not configured"
+    try:
+        url = httpx.URL(webhook_url).copy_with(path="/health", query=None)
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+            response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            return True, f"Public tunnel reached {url.host}"
+        return False, "Public tunnel returned an unexpected health response"
+    except (httpx.HTTPError, ValueError) as exc:
+        return False, f"Public tunnel health check failed: {exc}"
+
+
+def _require_loopback_dashboard(request: Request) -> None:
+    if request.url.hostname not in {"127.0.0.1", "localhost"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Process controls are available only through the local dashboard URL",
+        )
 
 
 def _read_secret(value: object) -> str | None:

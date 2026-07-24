@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     dev_dashboard_enabled: bool = False
     dev_dashboard_config_writes_enabled: bool = False
+    dev_supervisor_enabled: bool = False
+    dev_supervisor_url: str = "http://127.0.0.1:8765"
+    dev_supervisor_token: SecretStr | None = None
+    dev_supervisor_port: int = Field(default=8765, ge=1024, le=65535)
     dev_dashboard_username: str = "inventory-dev"
     dev_dashboard_token: SecretStr | None = None
 

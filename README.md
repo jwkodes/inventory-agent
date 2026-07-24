@@ -139,6 +139,40 @@ started, then run the command again.
 
 ### 6. Run the API
 
+The recommended local command starts a loopback-only supervisor, which starts both the
+API and background worker and enables their dashboard controls. Generate one local
+development password:
+
+```bash
+openssl rand -hex 32
+```
+
+Put it in `.env` and enable the local services:
+
+```dotenv
+DEV_DASHBOARD_ENABLED=true
+DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true
+DEV_DASHBOARD_USERNAME=inventory-dev
+DEV_DASHBOARD_TOKEN=PASTE_THE_GENERATED_VALUE_HERE
+DEV_SUPERVISOR_ENABLED=true
+DEV_SUPERVISOR_URL=http://127.0.0.1:8765
+DEV_SUPERVISOR_PORT=8765
+DEV_SUPERVISOR_TOKEN=${DEV_DASHBOARD_TOKEN}
+```
+
+Keep `DEV_SUPERVISOR_TOKEN` below `DEV_DASHBOARD_TOKEN` so dotenv can expand it. A
+separately generated supervisor token can be used instead. Then launch the system:
+
+```bash
+uv run python -m inventory_agent.dev_supervisor
+```
+
+The supervisor binds to `127.0.0.1:8765`, accepts only authenticated start, stop, restart,
+and status operations for the fixed API and worker commands, and automatically stops its
+children when it exits. It cannot run arbitrary shell commands.
+
+To run only the API without process controls, use the manual alternative:
+
 ```bash
 uv run uvicorn inventory_agent.main:app --reload
 ```
@@ -182,10 +216,10 @@ The authtoken is written to ngrok's user-level configuration outside this reposi
 Never put it in `.env` or commit it. Then keep the following processes open in separate
 terminals.
 
-Terminal 1 — API:
+Terminal 1 — API and worker supervisor:
 
 ```bash
-uv run uvicorn inventory_agent.main:app --reload
+uv run python -m inventory_agent.dev_supervisor
 ```
 
 Terminal 2 — stable public tunnel:
@@ -256,9 +290,8 @@ into source files, terminal screenshots, issues, or chat.
 After restarting the computer:
 
 1. Start Docker Desktop and run `supabase start`.
-2. Restart the API in terminal 1.
+2. Restart the API/worker supervisor in terminal 1.
 3. Restart `ngrok http 8000` in terminal 2.
-4. Start the background worker described below.
 
 If you do not want an ngrok account, a Cloudflare Quick Tunnel remains a temporary
 fallback:
@@ -278,7 +311,8 @@ terminal session may also stop processes launched from it.
 The worker needs `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, and
 `SUPABASE_SECRET_KEY` in `.env`. The defaults use semantic matching, so the same OpenAI
 key is used for command extraction, conversational catalog-detail extraction, and
-embeddings. Run it in a separate terminal:
+embeddings. The recommended supervisor command in step 6 already runs it. When using the
+manual API command instead, run the worker in a separate terminal:
 
 ```bash
 uv run python -m inventory_agent.processing.worker --watch
@@ -384,6 +418,10 @@ DEV_DASHBOARD_ENABLED=true
 DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true
 DEV_DASHBOARD_USERNAME=inventory-dev
 DEV_DASHBOARD_TOKEN=PASTE_THE_GENERATED_VALUE_HERE
+DEV_SUPERVISOR_ENABLED=true
+DEV_SUPERVISOR_URL=http://127.0.0.1:8765
+DEV_SUPERVISOR_PORT=8765
+DEV_SUPERVISOR_TOKEN=${DEV_DASHBOARD_TOKEN}
 ```
 
 Leave `DEV_DASHBOARD_CONFIG_WRITES_ENABLED=false` if the console should be entirely
@@ -403,7 +441,7 @@ do not put it in screenshots, source control, or shell history shared with other
 dashboard settings page identifies which values are editable and whether a restart is
 required.
 
-The dashboard has five views:
+The dashboard has six views:
 
 - **Flow inspector** lists Telegram source events and reconstructs the durable path through
   raw input, source artifacts, current conversation context, model/tool messages, proposal
@@ -411,6 +449,12 @@ The dashboard has five views:
   Expandable JSON preserves the exact stored records for debugging.
 - **Inventory** shows every SKU, item and variant attributes, tracking mode, current
   location balances, unit conversions, and the recent immutable transaction ledger.
+- **System** gives each live component its own health card. Green means the supervisor,
+  API, worker, Supabase API, or public Telegram tunnel passed its current process/response
+  check; red means the check failed and shows the reason. API and worker panels include
+  PID, restart count, last exit code, and recent logs. From the localhost URL only, the
+  fixed controls can launch or restart both processes and restart or stop the individual
+  API/worker process. The supervisor itself remains outside the API process it manages.
 - **Conversations** lists company-scoped Telegram users and chats, then shows the rolling
   compacted summary, complete current stored history, active immutable turns, compacted
   immutable turns, and approximate active token usage separately.
@@ -547,6 +591,10 @@ Configuration is read from environment variables and `.env` by
 | `DEV_DASHBOARD_CONFIG_WRITES_ENABLED` | Permit audited company context-setting overrides from the dashboard | `false` |
 | `DEV_DASHBOARD_USERNAME` | HTTP Basic username for the development dashboard | `inventory-dev` |
 | `DEV_DASHBOARD_TOKEN` | Dedicated password for the development dashboard | none |
+| `DEV_SUPERVISOR_ENABLED` | Enable the loopback-only API/worker process supervisor and dashboard controls | `false` |
+| `DEV_SUPERVISOR_URL` | Server-side URL used to reach the local supervisor | `http://127.0.0.1:8765` |
+| `DEV_SUPERVISOR_PORT` | Loopback port on which the supervisor listens | `8765` |
+| `DEV_SUPERVISOR_TOKEN` | Bearer token for API-to-supervisor calls; may reuse the local dashboard token | none |
 | `OPENAI_API_KEY` | OpenAI Platform API key | none |
 | `OPENAI_MODEL` | Extraction and intent model | `gpt-5.6-luna` |
 | `OPENAI_REASONING_EFFORT` | Reasoning level for routine extraction | `none` |

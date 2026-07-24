@@ -9,7 +9,10 @@ from pydantic import SecretStr
 
 from inventory_agent.config import Settings, get_settings
 from inventory_agent.dashboard.repository import DashboardRepository
-from inventory_agent.dashboard.router import get_dashboard_repository
+from inventory_agent.dashboard.router import (
+    get_dashboard_repository,
+    get_supervisor_client,
+)
 from inventory_agent.main import create_app
 
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
@@ -91,6 +94,25 @@ def dashboard_settings(*, enabled: bool, writes: bool = False) -> Settings:
         dev_dashboard_username="inventory-dev",
         dev_dashboard_token=SecretStr("test-dashboard-token"),
     )
+
+
+class FakeSupervisorClient:
+    commands: list[tuple[str, str]]
+
+    def __init__(self) -> None:
+        self.commands = []
+
+    async def status(self) -> dict[str, object]:
+        return {
+            "services": {
+                "api": {"running": True, "logs": []},
+                "worker": {"running": True, "logs": ["worker idle"]},
+            }
+        }
+
+    async def command(self, *, action: str, service: str) -> dict[str, object]:
+        self.commands.append((action, service))
+        return {"accepted": True, "action": action, "service": service}
 
 
 def basic_header() -> dict[str, str]:
@@ -225,6 +247,33 @@ async def test_dashboard_configuration_writes_require_separate_opt_in() -> None:
         )
 
     assert response.status_code == 403
+
+
+async def test_dashboard_reports_component_health_and_proxies_local_commands() -> None:
+    supervisor = FakeSupervisorClient()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: dashboard_settings(enabled=True)
+    app.dependency_overrides[get_dashboard_repository] = lambda: FakeDashboardRepository()
+    app.dependency_overrides[get_supervisor_client] = lambda: supervisor
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://127.0.0.1",
+    ) as client:
+        health = await client.get("/dev/api/system", headers=basic_header())
+        command = await client.post(
+            "/dev/api/system/restart",
+            json={"service": "worker"},
+            headers=basic_header(),
+        )
+
+    components = {row["name"]: row for row in health.json()["components"]}
+    assert components["api"]["healthy"] is True
+    assert components["worker"]["healthy"] is True
+    assert components["supabase"]["healthy"] is True
+    assert components["telegram tunnel"]["healthy"] is False
+    assert command.status_code == 202
+    assert supervisor.commands == [("restart", "worker")]
 
 
 async def test_dashboard_repository_builds_event_summaries_and_inventory_rows() -> None:
