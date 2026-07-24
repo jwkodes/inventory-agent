@@ -1045,7 +1045,14 @@ lot-function tests. It is development data only and must never be loaded into pr
 9. Semantic and candidate-judge calibration on representative SME datasets
 10. Voice-note transcription
 11. Structured transaction retrieval for reliable reversal targeting:
-    - support exact `transaction_id` lookup rather than relying on recent fallback rows;
+    - exact `transaction_id` lookup with stored `transaction_type`, `status`, timestamp,
+      summary, and derived reversal state — complete;
+    - expose `created_by` and `confirmed_by` organization-user attribution to the agent;
+    - filter transactions by creator, confirmer, type, status, and date range;
+    - add cursor-based pagination so the agent can traverse more than the current
+      20-record result limit;
+    - enforce role-based visibility, such as workers seeing their own transactions while
+      managers can inspect the company-wide ledger;
     - support `occurred_after` and `occurred_before` timestamp filters with explicit
       timezone conversion;
     - retain type, item/SKU, and description filters for natural-language searches;
