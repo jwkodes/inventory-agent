@@ -26,6 +26,8 @@ LOCATION_ID = UUID("12000000-0000-0000-0000-000000000001")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000001")
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
+TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
+REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
 
 
 class FakeCatalog:
@@ -143,6 +145,24 @@ class FallbackTransactionReads(FakeReads):
         return [] if query is not None else [self.transaction]
 
 
+class CorrectionTransactionReads(FakeReads):
+    async def read_transactions(
+        self,
+        *,
+        organization_id: UUID,
+        query: str | None,
+        limit: int,
+    ) -> list[TransactionRecord]:
+        return [
+            TransactionRecord(
+                transaction_id=str(TRANSACTION_ID),
+                transaction_type="receive",
+                occurred_at="2026-07-24T12:17:01+00:00",
+                summary="Receive: 100 each Industrial Widget [ABC-123]",
+            )
+        ]
+
+
 class FakeProposals:
     def __init__(self) -> None:
         self.drafts: list[ProposalDraft] = []
@@ -169,8 +189,54 @@ class FakeReversals:
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         raise AssertionError("not expected")
 
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        raise AssertionError("not expected")
+
+    async def get_completed_replacement(
+        self,
+        *,
+        request_id: UUID,
+        actor_id: UUID,
+    ) -> UUID | None:
+        raise AssertionError("not expected")
+
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         raise AssertionError("not expected")
+
+
+class LinkedCorrectionReversals(FakeReversals):
+    def __init__(self) -> None:
+        self.attachments: list[tuple[UUID, UUID, UUID]] = []
+
+    async def begin(self, *, transaction_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
+        assert transaction_id == TRANSACTION_ID
+        return REVERSAL_REQUEST_ID
+
+    async def capture_reason(
+        self,
+        *,
+        event_id: UUID,
+        actor_id: UUID,
+        chat_id: int,
+        reason: str,
+    ) -> UUID | None:
+        return REVERSAL_REQUEST_ID
+
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        self.attachments.append((request_id, proposal_id, actor_id))
+        return proposal_id
 
 
 def production_tools(proposals: FakeProposals) -> ProductionInventoryAgentTools:
@@ -392,3 +458,71 @@ async def test_filtered_transaction_read_includes_recent_fallback_evidence() -> 
     assert result["count"] == 1
     assert result["transactions"][0]["transaction_id"] == ("60000000-0000-0000-0000-000000000001")
     assert tools.allowed_transaction_ids == {UUID("60000000-0000-0000-0000-000000000001")}
+
+
+async def test_correction_reversal_persists_grounded_replacement_for_automatic_follow_up() -> None:
+    proposals = FakeProposals()
+    reversals = LinkedCorrectionReversals()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-correction-linked",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=CorrectionTransactionReads(),
+        proposals=proposals,
+        reversals=reversals,
+    )
+    await tools.execute(
+        call_id="read-transaction",
+        name="read_transactions",
+        arguments={"query": "widget receipt", "limit": 5},
+    )
+    await tools.execute(
+        call_id="read-widget",
+        name="read_inventory",
+        arguments={
+            "query": None,
+            "sku": "ABC-123",
+            "attributes": [],
+            "include_zero_stock": True,
+            "limit": 5,
+        },
+    )
+
+    result = json.loads(
+        await tools.execute(
+            call_id="correct-receipt",
+            name="propose_reversal",
+            arguments={
+                "transaction_id": str(TRANSACTION_ID),
+                "reason": "The correct receipt was 5 widgets",
+                "replacement": {
+                    "operation": "ADD",
+                    "lines": [
+                        {
+                            "variant_id": str(VARIANT_ID),
+                            "new_item": None,
+                            "quantity": 5,
+                            "unit": "each",
+                            "attributes": [],
+                        }
+                    ],
+                    "reason": "Corrected widget receipt",
+                },
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["replacement_will_follow_automatically"] is True
+    assert result["replacement_proposal_id"] == str(PROPOSAL_ID)
+    assert proposals.drafts[0].idempotency_key == (
+        "telegram:telegram-correction-linked:inventory-agent-correction-replacement"
+    )
+    assert proposals.drafts[0].lines[0].requested_quantity == Decimal("5")
+    assert reversals.attachments == [(REVERSAL_REQUEST_ID, PROPOSAL_ID, ACTOR_ID)]

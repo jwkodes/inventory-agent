@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v6"
+    assert PROMPT_VERSION == "inventory-agent-spike-v7"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -22,9 +22,12 @@ def test_telegram_tables_use_fenced_fixed_width_text() -> None:
 
 
 def test_transaction_corrections_require_broad_reads_and_complete_reversal() -> None:
+    normalized = " ".join(INSTRUCTIONS.split())
     assert "targeted_count=0" in INSTRUCTIONS
     assert "unfiltered" in INSTRUCTIONS
     assert "recent-transaction" in INSTRUCTIONS
     assert "complete transactions, not individual lines" in INSTRUCTIONS
     assert "corrected replacement transaction" in INSTRUCTIONS
     assert "additional deduction on top" in INSTRUCTIONS
+    assert "automatically present its separate" in normalized
+    assert "must not need to send another message" in normalized

@@ -306,6 +306,216 @@ async def active_telegram_user_id(client: httpx.AsyncClient) -> int:
     return telegram_user_id
 
 
+async def test_linked_correction_replacement_is_persisted_and_cancelled_safely() -> None:
+    settings, secret_key = local_supabase()
+    event_id = uuid4()
+    proposal_id = uuid4()
+    proposal_line_id = uuid4()
+    reversal_request_id: UUID | None = None
+    component_chat_id = -(1_000_000_000 + event_id.int % 1_000_000_000)
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        location_response = await client.get(
+            "/locations",
+            params={
+                "select": "id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "active": "eq.true",
+                "limit": "1",
+            },
+        )
+        location_response.raise_for_status()
+        location_id = location_response.json()[0]["id"]
+        variant_response = await client.get(
+            "/item_variants",
+            params={
+                "select": "id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "active": "eq.true",
+                "limit": "1",
+            },
+        )
+        variant_response.raise_for_status()
+        variant_id = variant_response.json()[0]["id"]
+        actor_response = await client.get(
+            "/organization_users",
+            params={"select": "telegram_user_id", "id": f"eq.{ACTOR_ID}"},
+        )
+        actor_response.raise_for_status()
+        telegram_user_id = actor_response.json()[0]["telegram_user_id"]
+
+        request_response = await client.get(
+            "/transaction_reversal_requests",
+            params={"select": "transaction_id"},
+        )
+        request_response.raise_for_status()
+        unavailable_transaction_ids = {row["transaction_id"] for row in request_response.json()}
+        reversal_response = await client.get(
+            "/inventory_transactions",
+            params={
+                "select": "reversal_of_transaction_id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "transaction_type": "eq.reversal",
+            },
+        )
+        reversal_response.raise_for_status()
+        unavailable_transaction_ids.update(
+            row["reversal_of_transaction_id"]
+            for row in reversal_response.json()
+            if row["reversal_of_transaction_id"] is not None
+        )
+        transaction_response = await client.get(
+            "/inventory_transactions",
+            params={
+                "select": "id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "transaction_type": "neq.reversal",
+                "order": "applied_at.desc",
+                "limit": "100",
+            },
+        )
+        transaction_response.raise_for_status()
+        transaction_id = next(
+            (
+                UUID(row["id"])
+                for row in transaction_response.json()
+                if row["id"] not in unavailable_transaction_ids
+            ),
+            None,
+        )
+        if transaction_id is None:
+            pytest.skip("local fixture has no unreversed transaction available")
+
+        try:
+            create_event = await client.post(
+                "/source_events",
+                headers={"Prefer": "return=minimal"},
+                json={
+                    "id": str(event_id),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "provider": "telegram",
+                    "external_event_id": f"component-linked-correction-{event_id}",
+                    "event_type": "message",
+                    "status": "processing",
+                    "payload": {
+                        "message": {
+                            "message_id": event_id.int % 1_000_000,
+                            "from": {"id": telegram_user_id},
+                            "chat": {"id": component_chat_id},
+                            "text": "component correction",
+                        }
+                    },
+                },
+            )
+            create_event.raise_for_status()
+
+            reversals = SupabaseReversalRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            reversal_request_id = await reversals.begin(
+                transaction_id=transaction_id,
+                actor_id=ACTOR_ID,
+                chat_id=component_chat_id,
+            )
+            assert (
+                await reversals.capture_reason(
+                    event_id=event_id,
+                    actor_id=ACTOR_ID,
+                    chat_id=component_chat_id,
+                    reason="component correction",
+                )
+                == reversal_request_id
+            )
+
+            for path, payload in [
+                (
+                    "/transaction_proposals",
+                    {
+                        "id": str(proposal_id),
+                        "organization_id": str(ORGANIZATION_ID),
+                        "location_id": location_id,
+                        "source_event_id": str(event_id),
+                        "created_by": str(ACTOR_ID),
+                        "intent": "receive_stock",
+                        "status": "pending_confirmation",
+                        "idempotency_key": f"component-linked-correction-{proposal_id}",
+                    },
+                ),
+                (
+                    "/proposal_lines",
+                    {
+                        "id": str(proposal_line_id),
+                        "organization_id": str(ORGANIZATION_ID),
+                        "proposal_id": str(proposal_id),
+                        "line_number": 1,
+                        "source_text": "corrected component receipt",
+                        "requested_quantity": 5,
+                        "requested_unit": "each",
+                        "item_variant_id": variant_id,
+                        "base_quantity_delta": 5,
+                        "base_unit": "each",
+                        "match_method": "exact_identifier",
+                    },
+                ),
+            ]:
+                response = await client.post(
+                    path,
+                    headers={"Prefer": "return=minimal"},
+                    json=payload,
+                )
+                response.raise_for_status()
+
+            assert (
+                await reversals.attach_replacement(
+                    request_id=reversal_request_id,
+                    proposal_id=proposal_id,
+                    actor_id=ACTOR_ID,
+                )
+                == proposal_id
+            )
+            linked = await client.get(
+                "/transaction_reversal_requests",
+                params={
+                    "select": "replacement_proposal_id",
+                    "id": f"eq.{reversal_request_id}",
+                },
+            )
+            linked.raise_for_status()
+            assert linked.json() == [{"replacement_proposal_id": str(proposal_id)}]
+
+            await reversals.cancel(
+                request_id=reversal_request_id,
+                actor_id=ACTOR_ID,
+            )
+            proposal = await client.get(
+                "/transaction_proposals",
+                params={"select": "status", "id": f"eq.{proposal_id}"},
+            )
+            proposal.raise_for_status()
+            assert proposal.json() == [{"status": "rejected"}]
+        finally:
+            if reversal_request_id is not None:
+                await client.delete(
+                    "/transaction_reversal_requests",
+                    params={"id": f"eq.{reversal_request_id}"},
+                )
+            await client.delete(
+                "/proposal_lines",
+                params={"id": f"eq.{proposal_line_id}"},
+            )
+            await client.delete(
+                "/transaction_proposals",
+                params={"id": f"eq.{proposal_id}"},
+            )
+            await client.delete(
+                "/source_events",
+                params={"id": f"eq.{event_id}"},
+            )
+
+
 async def test_delivery_crosses_python_and_local_supabase_boundaries() -> None:
     settings, secret_key = local_supabase()
 

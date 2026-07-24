@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 from enum import StrEnum
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -101,6 +101,15 @@ class ReversalProposalArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     transaction_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    replacement: "CorrectionReplacementArguments | None"
+
+
+class CorrectionReplacementArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["ADD", "DEDUCT"]
+    lines: list[StockProposalLine] = Field(min_length=1)
     reason: str = Field(min_length=1)
 
 

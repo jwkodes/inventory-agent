@@ -188,7 +188,11 @@ async def test_reversal_requires_transaction_from_prior_read() -> None:
         await tools.execute(
             call_id="reverse-1",
             name="propose_reversal",
-            arguments={"transaction_id": "txn-1", "reason": "Wrong count"},
+            arguments={
+                "transaction_id": "txn-1",
+                "reason": "Wrong count",
+                "replacement": None,
+            },
         )
     )
     await tools.execute(
@@ -200,7 +204,11 @@ async def test_reversal_requires_transaction_from_prior_read() -> None:
         await tools.execute(
             call_id="reverse-2",
             name="propose_reversal",
-            arguments={"transaction_id": "txn-1", "reason": "Wrong count"},
+            arguments={
+                "transaction_id": "txn-1",
+                "reason": "Wrong count",
+                "replacement": None,
+            },
         )
     )
 

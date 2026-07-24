@@ -190,6 +190,30 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert repository.finishes == [(OUTBOX_ID, True, None, 30)]
 
 
+async def test_reversal_success_and_linked_replacement_are_delivered_together() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.PROPOSAL_READY,
+            payload={"reversal_transaction_id": str(TRANSACTION_ID)},
+        ),
+        transaction_type="reversal",
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    text = sender.messages[0][1]
+    assert text.startswith("✅ **Transaction reversed**")
+    assert "Review stock addition:" in text
+    assert "No inventory has changed" in text
+    assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
+    assert sender.messages[0][2] is not None
+
+
 async def test_delivers_plain_clarification_message() -> None:
     repository = FakeRepository(
         outcome(

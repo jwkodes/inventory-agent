@@ -201,7 +201,10 @@ class ProductionInventoryAgentTools:
         if name == "read_transactions":
             return await self._read_transactions(TransactionReadArguments.model_validate(arguments))
         if name == "propose_reversal":
-            return await self._propose_reversal(ReversalProposalArguments.model_validate(arguments))
+            return await self._propose_reversal(
+                call_id=call_id,
+                arguments=ReversalProposalArguments.model_validate(arguments),
+            )
         return {"ok": False, "error": f"unknown tool: {name}"}
 
     async def _read_inventory(
@@ -231,11 +234,36 @@ class ProductionInventoryAgentTools:
     ) -> dict[str, object]:
         if self.stock_proposal_id is not None or self.reversal_request_id is not None:
             raise ValueError("only one mutation proposal is allowed per user message")
+        self.stock_proposal_id = await self._create_stock_proposal(
+            call_id=call_id,
+            intent=intent,
+            arguments=arguments,
+            idempotency_suffix="inventory-agent",
+        )
+        return {
+            "ok": True,
+            "proposal_id": str(self.stock_proposal_id),
+            "operation": "ADD" if intent is ProposalIntent.RECEIVE_STOCK else "DEDUCT",
+            "inventory_changed": False,
+            "confirmation_required": True,
+        }
+
+    async def _create_stock_proposal(
+        self,
+        *,
+        call_id: str,
+        intent: ProposalIntent,
+        arguments: StockProposalArguments,
+        idempotency_suffix: str,
+        existing_variants_only: bool = False,
+    ) -> UUID:
         lines: list[ProposalLineDraft] = []
         raw_lines: list[dict[str, object]] = []
         for index, line in enumerate(arguments.lines, start=1):
             if intent is ProposalIntent.ISSUE_STOCK and line.new_item is not None:
                 raise ValueError("deductions cannot create catalog items")
+            if existing_variants_only and line.new_item is not None:
+                raise ValueError("a correction replacement must use existing catalog variants")
             item_variant_id = UUID(line.variant_id) if line.variant_id is not None else None
             if item_variant_id is not None and item_variant_id not in self.allowed_variant_ids:
                 raise ValueError(
@@ -316,14 +344,16 @@ class ProductionInventoryAgentTools:
                     "attributes": attributes,
                 }
             )
-        self.stock_proposal_id = await self._proposals.create(
+        return await self._proposals.create(
             ProposalDraft(
                 organization_id=self._context.organization_id,
                 location_id=self._context.location_id,
                 source_event_id=self._context.source_event_id,
                 created_by=self._context.organization_user_id,
                 intent=intent,
-                idempotency_key=(f"telegram:{self._context.external_event_id}:inventory-agent"),
+                idempotency_key=(
+                    f"telegram:{self._context.external_event_id}:{idempotency_suffix}"
+                ),
                 raw_command={
                     "schema_version": "inventory-agent-v1",
                     "tool_call_id": call_id,
@@ -334,13 +364,6 @@ class ProductionInventoryAgentTools:
                 lines=lines,
             )
         )
-        return {
-            "ok": True,
-            "proposal_id": str(self.stock_proposal_id),
-            "operation": "ADD" if intent is ProposalIntent.RECEIVE_STOCK else "DEDUCT",
-            "inventory_changed": False,
-            "confirmation_required": True,
-        }
 
     async def _read_transactions(
         self,
@@ -378,6 +401,8 @@ class ProductionInventoryAgentTools:
 
     async def _propose_reversal(
         self,
+        *,
+        call_id: str,
         arguments: ReversalProposalArguments,
     ) -> dict[str, object]:
         if self.stock_proposal_id is not None or self.reversal_request_id is not None:
@@ -400,12 +425,38 @@ class ProductionInventoryAgentTools:
         )
         if captured is None or captured != request_id:
             raise ValueError("reversal reason could not be attached to the request")
+        replacement_proposal_id: UUID | None = None
+        if arguments.replacement is not None:
+            replacement_intent = (
+                ProposalIntent.RECEIVE_STOCK
+                if arguments.replacement.operation == "ADD"
+                else ProposalIntent.ISSUE_STOCK
+            )
+            replacement_proposal_id = await self._create_stock_proposal(
+                call_id=call_id,
+                intent=replacement_intent,
+                arguments=StockProposalArguments(
+                    lines=arguments.replacement.lines,
+                    reason=arguments.replacement.reason,
+                ),
+                idempotency_suffix="inventory-agent-correction-replacement",
+                existing_variants_only=True,
+            )
+            await self._reversals.attach_replacement(
+                request_id=request_id,
+                proposal_id=replacement_proposal_id,
+                actor_id=self._context.organization_user_id,
+            )
         self.reversal_request_id = request_id
         self.reversal_reason = arguments.reason
         return {
             "ok": True,
             "proposal_id": str(request_id),
             "operation": "REVERSE",
+            "replacement_proposal_id": (
+                str(replacement_proposal_id) if replacement_proposal_id else None
+            ),
+            "replacement_will_follow_automatically": replacement_proposal_id is not None,
             "inventory_changed": False,
             "confirmation_required": True,
         }

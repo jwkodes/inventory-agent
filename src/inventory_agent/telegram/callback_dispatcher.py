@@ -36,6 +36,7 @@ class CallbackOutcome:
     result_id: UUID | None
     message: str
     catalog_status: str | None = None
+    replacement_proposal_id: UUID | None = None
 
 
 class TelegramCallbackDispatcher:
@@ -63,6 +64,7 @@ class TelegramCallbackDispatcher:
         """Acknowledge first, then execute exactly one decoded database action."""
 
         catalog_status: str | None = None
+        replacement_proposal_id: UUID | None = None
         try:
             command = decode_callback(callback_data)
         except ValueError:
@@ -140,6 +142,10 @@ class TelegramCallbackDispatcher:
                     request_id=command.target_id,
                     actor_id=actor_id,
                 )
+                replacement_proposal_id = await self._reversals.get_completed_replacement(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
                 message = "Transaction reversed"
             elif command.action is CallbackAction.CANCEL_REVERSAL:
                 result_id = await self._reversals.cancel(
@@ -163,6 +169,7 @@ class TelegramCallbackDispatcher:
             result_id,
             message,
             catalog_status,
+            replacement_proposal_id,
         )
 
     async def _try_answer(

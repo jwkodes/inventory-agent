@@ -126,6 +126,7 @@ class TelegramCallbackEventProcessor:
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
                     catalog_status=outcome.catalog_status,
+                    replacement_proposal_id=outcome.replacement_proposal_id,
                 )
             if not await self._events.finish_event(event_id=context.event_id, success=True):
                 raise RuntimeError("Claimed callback event could not be completed")
@@ -155,6 +156,7 @@ class TelegramCallbackEventProcessor:
         chat_id: int,
         message_id: int,
         catalog_status: str | None,
+        replacement_proposal_id: UUID | None,
     ) -> None:
         if action is None or result_id is None:
             raise ValueError("Completed callback is missing its action result")
@@ -202,15 +204,20 @@ class TelegramCallbackEventProcessor:
             aggregate_id = result_id
             payload = {}
         elif action is CallbackAction.CONFIRM_REVERSAL:
-            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
-            aggregate_id = None
-            payload = {
-                "message": (
-                    "✅ **Transaction reversed**\n"
-                    "The opposite inventory transaction was applied successfully."
-                ),
-                "transaction_id": str(result_id),
-            }
+            if replacement_proposal_id is not None:
+                outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+                aggregate_id = replacement_proposal_id
+                payload = {"reversal_transaction_id": str(result_id)}
+            else:
+                outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+                aggregate_id = None
+                payload = {
+                    "message": (
+                        "✅ **Transaction reversed**\n"
+                        "The opposite inventory transaction was applied successfully."
+                    ),
+                    "transaction_id": str(result_id),
+                }
         elif action is CallbackAction.CANCEL_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None

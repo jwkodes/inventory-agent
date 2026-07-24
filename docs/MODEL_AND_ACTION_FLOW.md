@@ -36,6 +36,8 @@ flowchart TD
     CALLBACK -->|Cancel| CANCEL["Reject proposal<br/>No inventory write"]
     CALLBACK -->|Select match or add item| RESUME["Update pending workflow<br/>No model"]
     CALLBACK -->|Confirm reversal| REVERSE["Apply compensating transaction"]
+    REVERSE -->|Linked correction exists| REPLACEMENT["Send corrected replacement review automatically"]
+    REPLACEMENT --> CALLBACK
     CALLBACK -->|Completed lifecycle action| CONTEXT_EVENT[("Append authoritative system turn<br/>Agent context · no model")]
 
     WORKER -->|Text| PENDING{"Pending deterministic flow?"}

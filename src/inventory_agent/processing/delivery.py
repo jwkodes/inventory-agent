@@ -69,6 +69,19 @@ class TelegramOutboxDeliveryWorker:
                     lines=view.lines,
                 )
                 text = _with_agent_reply(message.text, outcome.payload)
+                if reversal_transaction_id := _payload_uuid(
+                    outcome.payload,
+                    "reversal_transaction_id",
+                ):
+                    reversal_transaction = await self._repository.get_applied_transaction(
+                        organization_id=outcome.organization_id,
+                        transaction_id=reversal_transaction_id,
+                    )
+                    reversal_notice = render_reversal_applied(
+                        applied_at=reversal_transaction.applied_at,
+                        display_timezone=self._display_timezone,
+                    )
+                    text = f"{reversal_notice}\n\n{text}"
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard
@@ -143,7 +156,7 @@ class TelegramOutboxDeliveryWorker:
                     for row in message.inline_keyboard
                 ]
             elif outcome.outcome_type is ProcessingOutcomeType.CALLBACK_NOTICE and (
-                reversal_transaction_id := _payload_transaction_id(outcome.payload)
+                reversal_transaction_id := _payload_uuid(outcome.payload, "transaction_id")
             ):
                 reversal_transaction = await self._repository.get_applied_transaction(
                     organization_id=outcome.organization_id,
@@ -226,10 +239,10 @@ def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> s
     return stripped
 
 
-def _payload_transaction_id(payload: dict[str, object]) -> UUID | None:
-    value = payload.get("transaction_id")
+def _payload_uuid(payload: dict[str, object], key: str) -> UUID | None:
+    value = payload.get(key)
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("Transaction callback notice has an invalid transaction ID")
+        raise ValueError(f"Telegram outcome has an invalid {key}")
     return UUID(value)

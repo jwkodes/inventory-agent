@@ -57,8 +57,9 @@ class RecordingActions:
 
 
 class RecordingReversals:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], replacement_proposal_id: UUID | None = None) -> None:
         self.events = events
+        self.replacement_proposal_id = replacement_proposal_id
 
     async def begin(
         self,
@@ -85,6 +86,25 @@ class RecordingReversals:
         assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
         self.events.append("confirm_reversal")
         return REVERSAL_TRANSACTION_ID
+
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        raise AssertionError("dispatcher does not attach replacement proposals")
+
+    async def get_completed_replacement(
+        self,
+        *,
+        request_id: UUID,
+        actor_id: UUID,
+    ) -> UUID | None:
+        assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
+        self.events.append("get_replacement")
+        return self.replacement_proposal_id
 
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
@@ -141,11 +161,16 @@ class RecordingCatalog:
         return CATALOG_REQUEST_ID
 
 
-def dispatcher(events: list[str], *, answerer_fails: bool = False) -> TelegramCallbackDispatcher:
+def dispatcher(
+    events: list[str],
+    *,
+    answerer_fails: bool = False,
+    replacement_proposal_id: UUID | None = None,
+) -> TelegramCallbackDispatcher:
     return TelegramCallbackDispatcher(
         answerer=RecordingAnswerer(events, fail=answerer_fails),
         repository=RecordingActions(events),
-        reversals=RecordingReversals(events),
+        reversals=RecordingReversals(events, replacement_proposal_id),
         catalog=RecordingCatalog(events),
     )
 
@@ -244,9 +269,28 @@ async def test_reversal_actions_route_through_durable_request_lifecycle() -> Non
         "begin_reversal",
         "ack",
         "confirm_reversal",
+        "get_replacement",
         "ack",
         "cancel_reversal",
     ]
+
+
+async def test_confirmed_reversal_returns_linked_replacement_proposal() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events, replacement_proposal_id=PROPOSAL_ID)
+
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="callback-linked-correction",
+        callback_data=encode_callback(
+            CallbackCommand(CallbackAction.CONFIRM_REVERSAL, REVERSAL_REQUEST_ID)
+        ),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.result_id == REVERSAL_TRANSACTION_ID
+    assert outcome.replacement_proposal_id == PROPOSAL_ID
+    assert events == ["ack", "confirm_reversal", "get_replacement"]
 
 
 async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> None:

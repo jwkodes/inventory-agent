@@ -273,6 +273,32 @@ async def test_confirmed_reversal_removes_buttons() -> None:
     }
 
 
+async def test_confirmed_correction_immediately_presents_linked_replacement() -> None:
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CONFIRM_REVERSAL,
+                TRANSACTION_ID,
+                "Transaction reversed",
+                replacement_proposal_id=PROPOSAL_ID,
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert editor.removed_keyboards == [(-100123, 77)]
+    assert outbox.drafts[0].outcome_type.value == "proposal_ready"
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
+    assert outbox.drafts[0].payload == {"reversal_transaction_id": str(TRANSACTION_ID)}
+
+
 async def test_cancelled_reversal_sends_a_new_notice() -> None:
     outbox = RecordingOutbox()
     processor = TelegramCallbackEventProcessor(

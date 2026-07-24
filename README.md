@@ -887,11 +887,18 @@ enqueueing are safe to replay after a worker crash.
 
 Reversal currently applies to the complete transaction rather than selected lines. To
 correct one line in a multi-line transaction, reverse the complete original transaction
-and then create and confirm one corrected replacement transaction. The agent is explicitly
+and then create and confirm one corrected replacement transaction. When the corrected
+quantities are already known, the agent retrieves their current variants and creates the
+replacement proposal during the initial correction request. The reversal request stores a
+validated link to that proposal. Confirming the reversal automatically sends the corrected
+replacement review and its Confirm/Cancel buttons in the same new Telegram message; no
+extra user text or second model call is required. A pure reversal has no linked
+replacement. Cancelling the reversal rejects any hidden linked replacement.
+
+The reversal and replacement remain two separately confirmed writes: confirming the
+reversal restores all stock from the original transaction, while cancelling the
+subsequent replacement leaves that restored stock unchanged. The agent is explicitly
 instructed not to add a second deduction on top of the incorrect applied transaction.
-These are two separately confirmed writes: confirming the reversal restores all stock
-from the original transaction, while cancelling the subsequent replacement leaves that
-restored stock unchanged.
 
 `ADJUST_STOCK` proposal creation is intentionally rejected for now. Before enabling it we
 must distinguish a signed delta ("add two") from a stocktake assignment ("set this to

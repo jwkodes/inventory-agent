@@ -149,7 +149,10 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "name": "propose_reversal",
         "description": (
             "Create a no-write compensating reversal proposal for a transaction returned by "
-            "read_transactions. This never deletes history or changes inventory."
+            "read_transactions. For a correction whose replacement quantities are already "
+            "known, include a grounded replacement so its separate confirmation appears "
+            "automatically after the reversal succeeds. This never deletes history or "
+            "changes inventory."
         ),
         "strict": True,
         "parameters": {
@@ -157,8 +160,27 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
             "properties": {
                 "transaction_id": {"type": "string", "minLength": 1},
                 "reason": {"type": "string", "minLength": 1},
+                "replacement": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "operation": {"type": "string", "enum": ["ADD", "DEDUCT"]},
+                                "lines": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": STOCK_LINE_SCHEMA,
+                                },
+                                "reason": {"type": "string", "minLength": 1},
+                            },
+                            "required": ["operation", "lines", "reason"],
+                            "additionalProperties": False,
+                        },
+                        {"type": "null"},
+                    ]
+                },
             },
-            "required": ["transaction_id", "reason"],
+            "required": ["transaction_id", "reason", "replacement"],
             "additionalProperties": False,
         },
     },
