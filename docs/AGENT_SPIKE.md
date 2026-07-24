@@ -58,8 +58,9 @@ metadata, so a later natural-language reply continues after a worker restart.
 
 - Mutation-named tools create `awaiting_confirmation` proposals only.
 - There is no confirmation, apply, or commit tool in the agent.
-- A proposed existing variant ID must have been returned by `read_inventory` in the
-  current durable conversation.
+- A proposed existing variant ID must be refreshed by `read_inventory` during the current
+  user message. Durable history can guide the query but cannot substitute for current
+  grounding evidence.
 - A proposed transaction reversal ID must have been returned by `read_transactions`
   earlier in the same session.
 - Deductions cannot create catalog items.

@@ -314,7 +314,8 @@ The agent can:
 - read catalog variants and on-hand balances, using exact identifiers or the configured
   semantic/fuzzy/hybrid retrieval strategy;
 - ask a natural follow-up question and continue from durable conversation history;
-- create an add or deduct proposal using only variants returned by an inventory read;
+- create an add or deduct proposal using only variants refreshed by an inventory read
+  during that user message;
 - propose a new catalog item through the existing review and catalog-creation flow;
 - read the transaction ledger and create a reversal request using only a returned
   transaction; and
@@ -625,7 +626,9 @@ With `INVENTORY_AGENT_ENABLED=true`, ordinary text then enters a durable Respons
 tool loop. The model can retrieve inventory or transactions and can create one pending
 proposal per message. PostgreSQL verifies organization membership, validates every
 retrieved ID again when the conversation is saved, and rejects a proposal containing an
-unread ID. The turn history, allowed IDs, final reply, proposal reference, provider
+unread ID. Application tools additionally require current-turn retrieval evidence before
+creating a resolved proposal, preventing stale conversation IDs from producing lines that
+cannot be confirmed. The turn history, allowed IDs, final reply, proposal reference, provider
 response ID, and model name are saved in `inventory_agent_conversations`. A retry of the
 same source event reuses the saved turn rather than paying for or creating another model
 response.

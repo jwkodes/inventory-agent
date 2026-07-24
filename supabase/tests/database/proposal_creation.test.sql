@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(16);
+select plan(17);
 
 select has_function(
   'public',
@@ -244,6 +244,34 @@ select is(
   ),
   'rejected',
   'cancelled proposal is retained as rejected'
+);
+
+select throws_like(
+  $$
+    select public.create_inventory_proposal(
+      '10000000-0000-0000-0000-000000000001',
+      '12000000-0000-0000-0000-000000000001',
+      '50000000-0000-0000-0000-000000000001',
+      '11000000-0000-0000-0000-000000000001',
+      'receive_stock',
+      'proposal-test-missing-match-method',
+      '{}'::jsonb,
+      null, null, 'inventory-agent-spike-v3', null,
+      '[{
+        "line_number": 1,
+        "source_text": "received one butter",
+        "requested_quantity": 1,
+        "requested_unit": "each",
+        "item_variant_id": "21000000-0000-0000-0000-000000000001",
+        "match_method": null,
+        "match_score": null,
+        "match_evidence": {"source":"test"},
+        "attributes": {}
+      }]'
+    )
+  $$,
+  '%proposal_lines_resolved_match_method_check%',
+  'resolved proposals without a grounding method are rejected during creation'
 );
 
 select throws_like(

@@ -249,6 +249,10 @@ class ProductionInventoryAgentTools:
                 if item_variant_id is not None
                 else None
             )
+            if item_variant_id is not None and candidate is None:
+                raise ValueError(
+                    "read_inventory must return this variant during the current user message"
+                )
             description = (
                 candidate.display_name
                 if candidate is not None

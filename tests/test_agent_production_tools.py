@@ -260,6 +260,48 @@ async def test_production_tool_rejects_unread_variant() -> None:
     assert proposals.drafts == []
 
 
+async def test_production_tool_requires_fresh_evidence_for_previously_allowed_variant() -> None:
+    proposals = FakeProposals()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-follow-up",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=FakeReads(),
+        proposals=proposals,
+        reversals=FakeReversals(),
+        allowed_variant_ids={VARIANT_ID},
+    )
+
+    result = json.loads(
+        await tools.execute(
+            call_id="add-from-old-history",
+            name="propose_add_inventory",
+            arguments={
+                "lines": [
+                    {
+                        "variant_id": str(VARIANT_ID),
+                        "new_item": None,
+                        "quantity": 3,
+                        "unit": "each",
+                        "attributes": [],
+                    }
+                ],
+                "reason": "Delivery follow-up",
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert "current user message" in result["error"]
+    assert proposals.drafts == []
+
+
 async def test_production_tool_rejects_non_simple_new_item() -> None:
     proposals = FakeProposals()
     tools = production_tools(proposals)
