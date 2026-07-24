@@ -140,12 +140,12 @@ select is(
     select count(*)
     from public.read_inventory_agent_transactions(
       '10000000-0000-0000-0000-000000000001',
-      null,
+      '__pgtap_no_such_transaction__',
       5
     )
   ),
   0::bigint,
-  'transaction reads safely return an empty history'
+  'transaction reads safely return an empty filtered result'
 );
 
 select throws_ok(

@@ -67,17 +67,10 @@ class FakeDispatcher:
 class RecordingEditor:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.edits: list[tuple[int, int, str, list[list[dict[str, str]]] | None]] = []
+        self.removed_keyboards: list[tuple[int, int]] = []
 
-    async def edit_message_text(
-        self,
-        *,
-        chat_id: int,
-        message_id: int,
-        text: str,
-        inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
-        self.edits.append((chat_id, message_id, text, inline_keyboard))
+    async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
+        self.removed_keyboards.append((chat_id, message_id))
         if self.error is not None:
             raise self.error
 
@@ -126,7 +119,7 @@ async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() 
     result = await processor.process_next()
 
     assert result is not None
-    assert editor.edits == [(-100123, 77, "Item selected. See the new confirmation message.", None)]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "proposal_ready"
     assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
     assert events.finishes == [(EVENT_ID, True, None)]
@@ -152,9 +145,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [
-        (-100123, 77, "Proposal confirmed. See the new inventory update.", None)
-    ]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "transaction_applied"
     assert outbox.drafts[0].aggregate_id == TRANSACTION_ID
     assert events.finishes == [(EVENT_ID, True, None)]
@@ -203,14 +194,7 @@ async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [
-        (
-            -100123,
-            77,
-            "Reversal requested. I sent a separate message asking for the reason.",
-            None,
-        )
-    ]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert len(outbox.drafts) == 1
     draft = outbox.drafts[0]
     assert draft.source_event_id == EVENT_ID
@@ -237,7 +221,7 @@ async def test_confirmed_reversal_removes_buttons() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [(-100123, 77, "Reversal confirmed. See the new status message.", None)]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
     assert outbox.drafts[0].payload == {"message": "Transaction reversed."}
 
@@ -321,7 +305,7 @@ async def test_invalid_callback_is_completed_without_editing_message() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == []
+    assert editor.removed_keyboards == []
     assert events.finishes == [(EVENT_ID, True, None)]
 
 

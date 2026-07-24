@@ -1,10 +1,13 @@
 """Minimal Telegram Bot API client for callbacks and outbound messages."""
 
+import re
 from dataclasses import dataclass
+from html import escape
 
 import httpx
 
 TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+_BOLD_MARKDOWN = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", flags=re.DOTALL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +101,11 @@ class TelegramBotClient:
 
         if not text.strip():
             raise ValueError("Telegram message text must not be empty")
-        body: dict[str, object] = {"chat_id": chat_id, "text": text}
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "text": _render_telegram_html(text),
+            "parse_mode": "HTML",
+        }
         if inline_keyboard is not None:
             body["reply_markup"] = {"inline_keyboard": inline_keyboard}
         response = await self._post("sendMessage", body, "message delivery")
@@ -125,7 +132,8 @@ class TelegramBotClient:
         body: dict[str, object] = {
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": text,
+            "text": _render_telegram_html(text),
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": inline_keyboard or []},
         }
         response = await self._post(
@@ -136,6 +144,23 @@ class TelegramBotClient:
         )
         if response.get("ok") is not True:
             raise RuntimeError("Telegram rejected the message edit")
+
+    async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
+        """Remove stale controls without replacing the message text."""
+
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": {"inline_keyboard": []},
+        }
+        response = await self._post(
+            "editMessageReplyMarkup",
+            body,
+            "reply-markup edit",
+            acceptable_error_descriptions=("message is not modified",),
+        )
+        if response.get("ok") is not True:
+            raise RuntimeError("Telegram rejected the reply-markup edit")
 
     async def _post(
         self,
@@ -168,3 +193,10 @@ class TelegramBotClient:
                 return {"ok": True, "result": True}
             raise RuntimeError(f"Telegram {operation} failed with HTTP {response.status_code}")
         return result
+
+
+def _render_telegram_html(text: str) -> str:
+    """Escape model text and translate only supported **bold** spans to Telegram HTML."""
+
+    escaped = escape(text, quote=False)
+    return _BOLD_MARKDOWN.sub(r"<b>\1</b>", escaped)

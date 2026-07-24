@@ -87,7 +87,10 @@ class TelegramOutboxDeliveryWorker:
                 catalog_view = await self._repository.get_catalog_item_creation_view(
                     outcome.aggregate_id
                 )
-                if outcome.outcome_type is ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED:
+                if (
+                    outcome.outcome_type is ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+                    and catalog_view.status == "awaiting_details"
+                ):
                     message = render_catalog_item_details_prompt(catalog_view)
                 else:
                     message = render_catalog_item_confirmation(catalog_view)

@@ -1,4 +1,4 @@
-"""Process durable Telegram callback events and refresh their source messages."""
+"""Process durable Telegram callback events and retire their source controls."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -48,15 +48,8 @@ class ProcessingOutbox(Protocol):
 
 
 class TelegramMessageEditor(Protocol):
-    async def edit_message_text(
-        self,
-        *,
-        chat_id: int,
-        message_id: int,
-        text: str,
-        inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
-        """Edit the message that originated a callback."""
+    async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
+        """Remove controls without replacing the message that originated a callback."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,52 +134,42 @@ class TelegramCallbackEventProcessor:
             outcome_type = ProcessingOutcomeType.PROPOSAL_READY
             aggregate_id = result_id
             payload: dict[str, object] = {}
-            text = "Item selected. See the new confirmation message."
         elif action is CallbackAction.SHOW_EXISTING_ITEMS:
             outcome_type = ProcessingOutcomeType.PROPOSAL_READY
             aggregate_id = result_id
             payload = {}
-            text = "Existing candidates requested. See the new selection message."
         elif action is CallbackAction.ADD_NEW_ITEM:
             outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
             aggregate_id = result_id
             payload = {}
-            text = "New item requested. See the new details message."
         elif action is CallbackAction.CONFIRM_NEW_ITEM:
             outcome_type = ProcessingOutcomeType.PROPOSAL_READY
             aggregate_id = result_id
             payload = {}
-            text = "Catalog item created. See the resumed transaction proposal."
         elif action is CallbackAction.CANCEL_NEW_ITEM:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "Catalog item creation cancelled."}
-            text = "Catalog item creation cancelled."
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id
             payload = {}
-            text = "Proposal confirmed. See the new inventory update."
         elif action is CallbackAction.CANCEL_PROPOSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "Proposal cancelled."}
-            text = "Proposal cancelled."
         elif action is CallbackAction.REVERSE_TRANSACTION:
             outcome_type = ProcessingOutcomeType.REVERSAL_REASON_REQUIRED
             aggregate_id = result_id
             payload = {}
-            text = "Reversal requested. I sent a separate message asking for the reason."
         elif action is CallbackAction.CONFIRM_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "Transaction reversed."}
-            text = "Reversal confirmed. See the new status message."
         elif action is CallbackAction.CANCEL_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "Reversal cancelled."}
-            text = "Reversal cancelled."
         else:
             raise ValueError("Completed callback action is not supported")
 
@@ -200,9 +183,7 @@ class TelegramCallbackEventProcessor:
                 payload=payload,
             )
         )
-        await self._message_editor.edit_message_text(
+        await self._message_editor.remove_inline_keyboard(
             chat_id=chat_id,
             message_id=message_id,
-            text=text,
-            inline_keyboard=None,
         )

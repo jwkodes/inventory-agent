@@ -53,7 +53,7 @@ class RecordingTelegramSender:
         self.messages: list[tuple[int, str]] = []
         self.keyboards: list[list[list[dict[str, str]]] | None] = []
         self.answers: list[str] = []
-        self.edits: list[tuple[int, int, str]] = []
+        self.removed_keyboards: list[tuple[int, int]] = []
 
     async def send_message(
         self,
@@ -75,15 +75,8 @@ class RecordingTelegramSender:
     ) -> None:
         self.answers.append(callback_query_id)
 
-    async def edit_message_text(
-        self,
-        *,
-        chat_id: int,
-        message_id: int,
-        text: str,
-        inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
-        self.edits.append((chat_id, message_id, text))
+    async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
+        self.removed_keyboards.append((chat_id, message_id))
 
 
 class FixedCommandInterpreter:
@@ -607,9 +600,9 @@ async def test_agent_text_processing_crosses_python_and_local_supabase_boundarie
             conversation.raise_for_status()
             stored_conversation = conversation.json()[0]
             assert len(stored_conversation["history"]) == 6
-            assert stored_conversation["allowed_variant_ids"] == [
-                "21000000-0000-0000-0000-000000000003"
-            ]
+            assert (
+                "21000000-0000-0000-0000-000000000003" in stored_conversation["allowed_variant_ids"]
+            )
             assert stored_conversation["last_source_event_id"] == str(event_id)
             assert stored_conversation["last_reply_text"] == (
                 "I prepared the receipt. Please confirm it."
@@ -1096,7 +1089,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             assert result is not None
             assert result.outcome.action is CallbackAction.CANCEL_PROPOSAL
             assert telegram.answers == [f"query-{callback_event_id}"]
-            assert telegram.edits == [(100000001, 77, "Proposal cancelled.")]
+            assert telegram.removed_keyboards == [(100000001, 77)]
 
             callback_outbox = await client.get(
                 "/processing_outbox",

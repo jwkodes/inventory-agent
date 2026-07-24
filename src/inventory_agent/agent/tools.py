@@ -90,7 +90,9 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "description": (
             "Create a no-write proposal to receive stock. Existing variant IDs must come "
             "from read_inventory. A new_item is allowed only after the user explicitly "
-            "agrees to add a new catalog item. This tool never changes inventory."
+            "agrees to add a new catalog item. Preserve user-provided custom fields in "
+            "new_item.attributes; attributes are optional unless a tool explicitly says "
+            "the organization requires them. This tool never changes inventory."
         ),
         "strict": True,
         "parameters": {

@@ -329,7 +329,15 @@ processor; no migration rollback is required.
 For this testing phase, the demo catalog and agent assume `simple` tracking for every
 item. The database retains its lot/serial design for later implementation, but the agent
 must not request lot, batch, expiry, or serial details and new catalog items are constrained
-to simple tracking.
+to simple tracking. New items generally require only a product name, SKU or internal code,
+and base unit. The agent may suggest useful custom attributes such as strength, colour, or
+size, but must present them as optional unless the company has explicitly configured a
+field as required. Every attribute question includes its reason: either the current
+inventory tracks that field, the field distinguishes existing variants, or a similar
+catalog item suggests it may be useful. Similar-item suggestions can be skipped and do not
+become requirements. The agent does not ask for a value already established by an exact
+SKU match. Attributes supplied by the user are retained in the item draft and stored when
+the item is confirmed.
 
 Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP document.
 The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
@@ -584,11 +592,16 @@ database boundary.
 Every successful button action enqueues a separate outbox-backed Telegram message so the
 user receives a new-message notification. Variant selection sends a fresh proposal,
 confirmation sends the inventory result with its next action, and proposal or reversal
-cancellation sends a status notice. The worker still edits the originating message to
-remove obsolete buttons, preventing stale controls from remaining active. Replayed
-identical edits are treated as success because Telegram may answer that the message is
-already unchanged. Callback failures retry after 30 seconds and become `failed` after the
-third unsuccessful attempt, matching text-event handling.
+cancellation sends a status notice. The worker removes only the obsolete inline keyboard
+from the originating message; it does not replace that message's text, so the original
+review remains visible in the conversation. Replayed identical keyboard removals are
+treated as success because Telegram may answer that the markup is already unchanged.
+Callback failures retry after 30 seconds and become `failed` after the third unsuccessful
+attempt, matching text-event handling.
+
+Outbound Telegram text is HTML-escaped before delivery. The narrow `**text**` emphasis
+syntax used by agent replies is translated to Telegram-safe bold text; arbitrary model
+output is not passed directly to Telegram's markup parser.
 
 Variant selection rechecks organization membership, verifies that the variant was actually
 offered, derives its base-unit delta, and records `human_selected` evidence. Lot- and

@@ -28,9 +28,11 @@ class FakeRepository:
         outcome: ClaimedProcessingOutcome | None,
         *,
         failure_completion: OutboxCompletionStatus = OutboxCompletionStatus.PENDING,
+        catalog_status: str = "awaiting_confirmation",
     ) -> None:
         self.outcome = outcome
         self.failure_completion = failure_completion
+        self.catalog_status = catalog_status
         self.finishes: list[tuple[UUID, bool, str | None, int]] = []
         self.requested_proposals: list[UUID] = []
 
@@ -74,16 +76,18 @@ class FakeRepository:
         assert request_id == CATALOG_REQUEST_ID
         return CatalogItemCreationView(
             request_id=request_id,
-            status="awaiting_confirmation",
+            status=self.catalog_status,
             suggested_name="Purple Widget",
             suggested_sku="ZX-999",
             suggested_base_unit="each",
             suggested_tracking_mode="simple",
-            name="Purple Widget",
-            sku="ZX-999",
-            base_unit="each",
-            tracking_mode="simple",
-            attributes={"colour": "purple"},
+            name="Purple Widget" if self.catalog_status == "awaiting_confirmation" else None,
+            sku="ZX-999" if self.catalog_status == "awaiting_confirmation" else None,
+            base_unit="each" if self.catalog_status == "awaiting_confirmation" else None,
+            tracking_mode=("simple" if self.catalog_status == "awaiting_confirmation" else None),
+            attributes=(
+                {"colour": "purple"} if self.catalog_status == "awaiting_confirmation" else {}
+            ),
         )
 
 
@@ -201,17 +205,19 @@ async def test_delivers_applied_transaction_with_reversal_button() -> None:
 
 
 async def test_delivers_catalog_detail_prompt_and_confirmation_as_new_messages() -> None:
-    for outcome_type, expected_text in [
+    for outcome_type, catalog_status, expected_text in [
         (
             ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED,
+            "awaiting_details",
             "Reply naturally",
         ),
         (
             ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+            "awaiting_confirmation",
             "Create this catalog item?",
         ),
     ]:
-        repository = FakeRepository(outcome(outcome_type))
+        repository = FakeRepository(outcome(outcome_type), catalog_status=catalog_status)
         sender = FakeSender()
 
         result = await TelegramOutboxDeliveryWorker(
@@ -222,6 +228,23 @@ async def test_delivers_catalog_detail_prompt_and_confirmation_as_new_messages()
         assert result.status is OutboxDeliveryStatus.SENT
         assert expected_text in sender.messages[0][1]
         assert sender.messages[0][2] is not None
+
+
+async def test_catalog_add_action_confirms_complete_agent_draft_without_reasking() -> None:
+    repository = FakeRepository(
+        outcome(ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED),
+        catalog_status="awaiting_confirmation",
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert "Create this catalog item?" in sender.messages[0][1]
+    assert "colour" in sender.messages[0][1]
 
 
 async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:

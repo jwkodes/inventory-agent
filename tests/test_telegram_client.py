@@ -31,6 +31,7 @@ async def test_send_message_serializes_inline_keyboard_and_returns_message_id() 
         assert json.loads(request.content) == {
             "chat_id": -100123,
             "text": "Review stock receipt",
+            "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [[{"text": "Confirm", "callback_data": "confirm-data"}]]
             },
@@ -58,6 +59,7 @@ async def test_edit_message_text_can_replace_and_remove_keyboard() -> None:
             "chat_id": -100123,
             "message_id": 77,
             "text": "Inventory updated.",
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": []},
         }
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 77}})
@@ -95,6 +97,44 @@ async def test_edit_message_text_treats_already_applied_edit_as_success() -> Non
         message_id=77,
         text="Inventory updated.",
     )
+
+
+async def test_send_message_safely_renders_bold_markdown_as_telegram_html() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": "Is <b>AMOX-502</b> new &amp; ready?",
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 78}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text="Is **AMOX-502** new & ready?",
+    )
+
+
+async def test_remove_inline_keyboard_preserves_message_text() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/bottest-token/editMessageReplyMarkup"
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "message_id": 77,
+            "reply_markup": {"inline_keyboard": []},
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 77}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.remove_inline_keyboard(chat_id=-100123, message_id=77)
 
 
 async def test_download_file_resolves_path_and_returns_bounded_bytes() -> None:
