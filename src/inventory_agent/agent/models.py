@@ -108,7 +108,7 @@ class TransactionReadArguments(BaseModel):
 class ReversalProposalArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    transaction_id: str = Field(min_length=1)
+    transaction_ref: str = Field(pattern=r"^T[1-9][0-9]*$")
     reason: str = Field(min_length=1)
     replacement: "CorrectionReplacementArguments | None"
 

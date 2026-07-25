@@ -51,8 +51,11 @@ class Settings(BaseSettings):
     inventory_display_timezone: str = "Asia/Singapore"
 
     telegram_bot_token: SecretStr | None = None
+    telegram_bot_username: str | None = None
     telegram_webhook_secret: SecretStr | None = None
     telegram_webhook_url: str | None = None
+    telegram_dev_user_simulation_enabled: bool = False
+    telegram_dev_user_simulation_session_minutes: int = Field(default=120, ge=5, le=1440)
 
     supabase_url: str = "http://127.0.0.1:54321"
     supabase_publishable_key: SecretStr | None = None

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
+from inventory_agent.agent.models import TransactionRecord
 from inventory_agent.agent.repository import AgentConversation
 from inventory_agent.agent.runtime import ModelTurn
 from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
@@ -61,6 +62,7 @@ class FakeEvents:
 @dataclass
 class FakeModel:
     calls: int = 0
+    last_input_items: list[dict[str, object]] | None = None
 
     async def respond(
         self,
@@ -70,6 +72,7 @@ class FakeModel:
         tools: list[dict[str, object]],
     ) -> ModelTurn:
         self.calls += 1
+        self.last_input_items = input_items
         return ModelTurn(
             response_id="response-1",
             model="gpt-test",
@@ -250,6 +253,32 @@ class UnusedReads:
         raise AssertionError("not expected")
 
 
+class ExactTransactionReads(UnusedReads):
+    def __init__(self) -> None:
+        self.queries: list[tuple[UUID, str | None, int]] = []
+
+    async def read_transactions(
+        self,
+        *,
+        organization_id: UUID,
+        query: str | None,
+        limit: int,
+    ) -> list[TransactionRecord]:
+        self.queries.append((organization_id, query, limit))
+        if query != str(TRANSACTION_ID):
+            return []
+        return [
+            TransactionRecord(
+                transaction_id=str(TRANSACTION_ID),
+                transaction_type="receive",
+                status="applied",
+                occurred_at="2026-07-25T10:00:00+08:00",
+                summary="Receive: 100 each Classic T-Shirt [SHIRT-GREY-M]",
+                reversed=False,
+            )
+        ]
+
+
 class UnusedProposals:
     async def create(self, draft: object) -> UUID:
         raise AssertionError("not expected")
@@ -299,13 +328,15 @@ def processor(
     catalog_interpreter: object | None = None,
     context_manager: object | None = None,
     proposal_actions: FakeProposalActions | None = None,
+    bot_username: str | None = None,
+    reads: object | None = None,
 ) -> TelegramAgentTextEventProcessor:
     return TelegramAgentTextEventProcessor(
         events=events,  # type: ignore[arg-type]
         model=model,
         conversations=conversations,
         catalog_reader=UnusedCatalogReader(),  # type: ignore[arg-type]
-        reads=UnusedReads(),  # type: ignore[arg-type]
+        reads=reads or UnusedReads(),  # type: ignore[arg-type]
         proposals=UnusedProposals(),  # type: ignore[arg-type]
         proposal_actions=proposal_actions or FakeProposalActions(),
         outbox=outbox,
@@ -313,6 +344,7 @@ def processor(
         catalog=catalog or FakeCatalog(),  # type: ignore[arg-type]
         catalog_interpreter=catalog_interpreter or UnusedCatalogInterpreter(),  # type: ignore[arg-type]
         context_manager=context_manager,  # type: ignore[arg-type]
+        bot_username=bot_username,
     )
 
 
@@ -340,6 +372,85 @@ async def test_unrelated_telegram_message_saves_conversation_and_enqueues_new_me
     assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.AGENT_MESSAGE
     assert "inventory assistant" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_group_bot_mention_is_removed_before_model_and_history() -> None:
+    model = FakeModel()
+    conversations = FakeConversations(conversation())
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=FakeOutbox(),
+        events=FakeEvents("@capybababot  show my past transactions"),
+        bot_username="capybababot",
+    ).process_next()
+
+    assert result is not None
+    assert model.last_input_items is not None
+    assert model.last_input_items[0] == {
+        "role": "user",
+        "content": "show my past transactions",
+    }
+    assert conversations.saved[0]["turn_history"][0] == {
+        "role": "user",
+        "content": "show my past transactions",
+    }
+
+
+async def test_user_supplied_uuid_is_resolved_before_the_model_with_current_turn_ref() -> None:
+    model = FakeModel()
+    stored = conversation().model_copy(
+        update={
+            "history": [
+                {"role": "user", "content": "show the transaction"},
+                {
+                    "type": "function_call",
+                    "call_id": "old-read",
+                    "name": "read_transactions",
+                    "arguments": '{"query":null,"limit":5}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "old-read",
+                    "output": '{"transaction_id":"hallucinated-old-id"}',
+                },
+                {
+                    "role": "assistant",
+                    "content": "The transaction is hallucinated-old-id.",
+                },
+            ],
+            "allowed_transaction_ids": [UUID("74000000-0000-0000-0000-000000000001")],
+        }
+    )
+    conversations = FakeConversations(stored)
+    reads = ExactTransactionReads()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=FakeOutbox(),
+        events=FakeEvents(f"reverse transaction {TRANSACTION_ID}"),
+        reads=reads,
+    ).process_next()
+
+    assert result is not None
+    assert reads.queries == [(ORGANIZATION_ID, str(TRANSACTION_ID), 1)]
+    assert model.last_input_items is not None
+    model_input = str(model.last_input_items)
+    assert '"transaction_ref":"T1"' in model_input
+    assert str(TRANSACTION_ID) in model_input
+    assert "hallucinated-old-id" not in model_input
+    saved = conversations.saved[0]
+    assert saved["allowed_transaction_ids"] == {TRANSACTION_ID}
+    assert any(
+        item.get("_ephemeral_agent_context") is True
+        for item in saved["turn_history"]  # type: ignore[union-attr]
+    )
+    assert all(
+        item.get("_ephemeral_agent_context") is not True
+        for item in saved["history"]  # type: ignore[union-attr]
+    )
 
 
 async def test_context_is_checked_before_and_after_a_completed_agent_turn() -> None:
@@ -481,7 +592,7 @@ async def test_exact_typed_confirm_without_active_proposal_refuses_to_guess() ->
     assert proposal_actions.confirmed == []
     assert proposal_actions.cancelled == []
     assert conversations.saved == []
-    assert "not currently pointing" in outbox.drafts[0].payload["message"]
+    assert "nothing to confirm" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]
 
 
@@ -525,5 +636,5 @@ async def test_rejected_typed_confirmation_reports_no_change_without_model() -> 
     assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
     assert model.calls == 0
     assert conversations.saved == []
-    assert "No additional stock change was made" in outbox.drafts[0].payload["message"]
+    assert "incomplete or no longer pending" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]

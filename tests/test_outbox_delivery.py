@@ -210,7 +210,7 @@ async def test_reversal_success_and_linked_replacement_are_delivered_together() 
     assert text.startswith("✅ **Transaction reversed**")
     assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in text
     assert "Review stock addition:" in text
-    assert "No inventory has changed" in text
+    assert "Resolve the unmatched item, or choose **Cancel**." in text
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is not None
 
@@ -231,6 +231,27 @@ async def test_delivers_plain_clarification_message() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages == [(-100123, "❓ **More information needed**\nWhich item?", None)]
+
+
+async def test_simulated_user_label_is_visible_on_every_outbound_result() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.AGENT_MESSAGE,
+            payload={
+                "message": "You have 10 switches.",
+                "_dev_simulation": {"alias": "bob", "display_name": "Bob"},
+            },
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert sender.messages == [(-100123, "🧪 **Simulating Bob**\n\nYou have 10 switches.", None)]
 
 
 async def test_delivers_callback_notice_as_a_new_message() -> None:
@@ -278,7 +299,7 @@ async def test_delivers_catalog_detail_prompt_and_confirmation_as_new_messages()
         (
             ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
             "awaiting_confirmation",
-            "Create this catalog item?",
+            "Please review, then choose **Create item** or **Cancel**.",
         ),
     ]:
         repository = FakeRepository(outcome(outcome_type), catalog_status=catalog_status)
@@ -307,7 +328,7 @@ async def test_catalog_add_action_confirms_complete_agent_draft_without_reasking
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert "Create this catalog item?" in sender.messages[0][1]
+    assert "Please review, then choose **Create item** or **Cancel**." in sender.messages[0][1]
     assert "colour" in sender.messages[0][1]
 
 
@@ -360,7 +381,7 @@ async def test_delivers_successful_reversal_with_timestamp_and_state_boundary() 
     assert sender.messages[0][1].startswith("✅ **Transaction reversed**")
     assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in sender.messages[0][1]
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in sender.messages[0][1]
-    assert "corrected replacement is a separate transaction" in sender.messages[0][1]
+    assert "The original stock movement was reversed." in sender.messages[0][1]
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is None
 

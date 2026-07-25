@@ -1,5 +1,7 @@
 """Deliver durable processing outcomes through Telegram."""
 
+import logging
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -20,6 +22,8 @@ from inventory_agent.telegram.confirmation import (
     render_reversal_confirmation,
     render_reversal_reason_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramMessageSender(Protocol):
@@ -54,11 +58,19 @@ class TelegramOutboxDeliveryWorker:
     async def deliver_one(self, outbox_id: UUID | None = None) -> OutboxDeliveryResult:
         """Claim and deliver at most one due outcome."""
 
+        total_started = perf_counter()
+        claim_started = perf_counter()
         outcome = await self._repository.claim(outbox_id)
         if outcome is None:
             return OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE)
+        _log_runtime(
+            component="outbox_claim",
+            started=claim_started,
+            outbox_id=outcome.outbox_id,
+        )
 
         try:
+            render_started = perf_counter()
             if outcome.outcome_type is ProcessingOutcomeType.PROPOSAL_READY:
                 if outcome.aggregate_id is None:
                     raise ValueError("Proposal-ready outcome is missing its proposal ID")
@@ -177,17 +189,42 @@ class TelegramOutboxDeliveryWorker:
                 text = _style_plain_outcome(outcome.outcome_type, payload_message)
                 keyboard = None
 
+            text = _with_dev_identity(text, outcome.payload)
+            _log_runtime(
+                component="telegram_message_render",
+                started=render_started,
+                outbox_id=outcome.outbox_id,
+                outcome_type=outcome.outcome_type,
+            )
+            send_started = perf_counter()
             telegram_message_id = await self._sender.send_message(
                 chat_id=outcome.chat_id,
                 text=text,
                 inline_keyboard=keyboard,
             )
+            _log_runtime(
+                component="telegram_api_send",
+                started=send_started,
+                outbox_id=outcome.outbox_id,
+            )
+            finish_started = perf_counter()
             completion = await self._repository.finish(
                 outbox_id=outcome.outbox_id,
                 success=True,
             )
             if completion is not OutboxCompletionStatus.SENT:
                 raise OutboxDeliveryError("Sent Telegram outcome could not be completed")
+            _log_runtime(
+                component="outbox_finish",
+                started=finish_started,
+                outbox_id=outcome.outbox_id,
+            )
+            _log_runtime(
+                component="outbox_delivery_total",
+                started=total_started,
+                outbox_id=outcome.outbox_id,
+                status=OutboxDeliveryStatus.SENT,
+            )
             return OutboxDeliveryResult(
                 status=OutboxDeliveryStatus.SENT,
                 outbox_id=outcome.outbox_id,
@@ -210,6 +247,12 @@ class TelegramOutboxDeliveryWorker:
                 raise OutboxDeliveryError(
                     "Failed Telegram outcome could not be rescheduled"
                 ) from error
+            _log_runtime(
+                component="outbox_delivery_total",
+                started=total_started,
+                outbox_id=outcome.outbox_id,
+                status=status,
+            )
             return OutboxDeliveryResult(status=status, outbox_id=outcome.outbox_id)
 
 
@@ -220,6 +263,23 @@ def _intent_label(intent: str) -> str:
         "adjust_stock": "stock adjustment",
     }
     return labels.get(intent, intent.replace("_", " "))
+
+
+def _log_runtime(
+    *,
+    component: str,
+    started: float,
+    outbox_id: UUID,
+    **fields: object,
+) -> None:
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    logger.info(
+        "component_runtime component=%s duration_ms=%.2f outbox_id=%s%s",
+        component,
+        (perf_counter() - started) * 1000,
+        outbox_id,
+        f" {details}" if details else "",
+    )
 
 
 def _with_agent_reply(rendered_text: str, payload: dict[str, object]) -> str:
@@ -240,6 +300,16 @@ def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> s
     if outcome_type is ProcessingOutcomeType.UNSUPPORTED_COMMAND:
         return f"🤖 **Inventory assistant**\n{stripped}"
     return stripped
+
+
+def _with_dev_identity(rendered_text: str, payload: dict[str, object]) -> str:
+    simulation = payload.get("_dev_simulation")
+    if not isinstance(simulation, dict):
+        return rendered_text
+    display_name = simulation.get("display_name")
+    if not isinstance(display_name, str) or not display_name.strip():
+        return rendered_text
+    return f"🧪 **Simulating {display_name.strip()}**\n\n{rendered_text}"
 
 
 def _payload_uuid(payload: dict[str, object], key: str) -> UUID | None:

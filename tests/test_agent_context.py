@@ -9,6 +9,7 @@ from inventory_agent.agent.context import (
     ContextRetentionPolicy,
     ContextRetentionSettings,
     durable_history_items,
+    model_history_items,
 )
 from inventory_agent.agent.repository import AgentConversation, AgentConversationTurn
 
@@ -196,3 +197,45 @@ def test_private_reasoning_is_excluded_from_future_active_context() -> None:
     ]
 
     assert durable_history_items(history) == [history[0], history[2]]
+
+
+def test_ephemeral_authoritative_context_is_kept_out_of_durable_history() -> None:
+    history = [
+        {
+            "role": "system",
+            "content": "current-turn transaction resolution",
+            "_ephemeral_agent_context": True,
+        },
+        {"role": "user", "content": "reverse that transaction"},
+    ]
+
+    assert durable_history_items(history) == [history[1]]
+
+
+def test_model_history_removes_stale_transaction_results_but_keeps_user_intent() -> None:
+    history = [
+        {"role": "user", "content": "show my last transactions"},
+        {
+            "type": "function_call",
+            "call_id": "read-transactions-1",
+            "name": "read_transactions",
+            "arguments": '{"query":null,"limit":5}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "read-transactions-1",
+            "output": '{"transactions":[{"transaction_id":"wrong-old-id"}]}',
+        },
+        {
+            "role": "assistant",
+            "content": "The first transaction is wrong-old-id.",
+        },
+        {"role": "user", "content": "the first one is wrong"},
+    ]
+
+    sanitized = model_history_items(history)
+
+    assert sanitized[0] == history[0]
+    assert sanitized[-1] == history[-1]
+    assert all("wrong-old-id" not in str(item) for item in sanitized)
+    assert "must read the transaction ledger again" in str(sanitized[1])

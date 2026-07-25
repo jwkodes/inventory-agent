@@ -3,7 +3,7 @@
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -18,6 +18,7 @@ from inventory_agent.agent.runtime import FunctionCall, ModelTurn
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
+from inventory_agent.dashboard.repository import DashboardRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
 from inventory_agent.matching.clarification import SupabaseMatchClarificationRepository
@@ -42,6 +43,12 @@ from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
 from inventory_agent.telegram.client import DownloadedTelegramFile
+from inventory_agent.telegram.registration import (
+    RegistrationApplicant,
+    SupabaseRegistrationRepository,
+    TelegramRegistrationNotificationWorker,
+    hash_invite_code,
+)
 
 pytestmark = pytest.mark.component
 
@@ -304,6 +311,96 @@ async def active_telegram_user_id(client: httpx.AsyncClient) -> int:
     telegram_user_id = rows[0]["telegram_user_id"]
     assert isinstance(telegram_user_id, int)
     return telegram_user_id
+
+
+async def test_registration_rejection_notifies_before_deleting_applicant() -> None:
+    settings, secret_key = local_supabase()
+    test_id = uuid4()
+    invite_code = f"component-{test_id}"
+    telegram_user_id = 1_500_000_000 + test_id.int % 500_000_000
+    dashboard = DashboardRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=secret_key,
+    )
+    registrations = SupabaseRegistrationRepository(
+        supabase_url=settings.supabase_url,
+        secret_key=secret_key,
+    )
+    sender = RecordingTelegramSender()
+    delivery = TelegramRegistrationNotificationWorker(
+        repository=registrations,
+        sender=sender,
+    )
+    invite: dict[str, object] | None = None
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+
+    try:
+        invite = await dashboard.create_registration_invite(
+            organization_id=ORGANIZATION_ID,
+            code_hash=hash_invite_code(invite_code),
+            code_hint=invite_code[-6:],
+            expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            max_uses=1,
+        )
+        submission = await registrations.submit_registration(
+            invite_code_hash=hash_invite_code(invite_code),
+            applicant=RegistrationApplicant(
+                telegram_user_id=telegram_user_id,
+                telegram_username="component_candidate",
+                display_name="Component Candidate",
+                private_chat_id=telegram_user_id,
+            ),
+        )
+        assert submission.status == "pending"
+        assert submission.request_id is not None
+
+        pending_delivery = await delivery.deliver_one()
+        assert pending_delivery.status is OutboxDeliveryStatus.SENT
+        assert "Registration submitted" in sender.messages[-1][1]
+
+        rejection = await dashboard.reject_registration(
+            organization_id=ORGANIZATION_ID,
+            registration_request_id=submission.request_id,
+        )
+        assert rejection["status"] == "rejection_notifying"
+        before_delivery = await dashboard.get_membership_administration(
+            organization_id=ORGANIZATION_ID
+        )
+        assert any(
+            row["telegram_user_id"] == telegram_user_id
+            for row in before_delivery["requests"]  # type: ignore[union-attr]
+        )
+
+        rejection_delivery = await delivery.deliver_one()
+        assert rejection_delivery.status is OutboxDeliveryStatus.SENT
+        assert "Registration not approved" in sender.messages[-1][1]
+
+        after_delivery = await dashboard.get_membership_administration(
+            organization_id=ORGANIZATION_ID
+        )
+        assert all(
+            row["telegram_user_id"] != telegram_user_id
+            for row in after_delivery["requests"]  # type: ignore[union-attr]
+        )
+    finally:
+        async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+            notification_cleanup = await client.delete(
+                "/registration_telegram_notifications",
+                params={"chat_id": f"eq.{telegram_user_id}"},
+            )
+            notification_cleanup.raise_for_status()
+            request_cleanup = await client.delete(
+                "/organization_registration_requests",
+                params={"telegram_user_id": f"eq.{telegram_user_id}"},
+            )
+            request_cleanup.raise_for_status()
+            if invite is not None:
+                invite_cleanup = await client.delete(
+                    "/organization_registration_invites",
+                    params={"id": f"eq.{invite['id']}"},
+                )
+                invite_cleanup.raise_for_status()
 
 
 async def test_linked_correction_replacement_is_persisted_and_cancelled_safely() -> None:
@@ -1420,7 +1517,7 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
             assert telegram.messages == [
                 (
                     component_chat_id,
-                    "🚫 **Proposal cancelled**\nNo inventory changes were applied.",
+                    "🚫 **Proposal cancelled**",
                 )
             ]
 

@@ -71,12 +71,18 @@ class FakeCallbackProcessor:
 
 
 class FakeDeliveryWorker:
-    def __init__(self, events: list[str], result: OutboxDeliveryResult) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        result: OutboxDeliveryResult,
+        label: str = "delivery",
+    ) -> None:
         self.events = events
         self.result = result
+        self.label = label
 
     async def deliver_one(self) -> OutboxDeliveryResult:
-        self.events.append("delivery")
+        self.events.append(self.label)
         return self.result
 
 
@@ -93,6 +99,11 @@ async def test_one_cycle_processes_text_before_delivering_its_outcome() -> None:
                 outbox_id=OUTBOX_ID,
             ),
         ),
+        registration_delivery_worker=FakeDeliveryWorker(
+            events,
+            OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
+            "registration",
+        ),
         delivery_worker=FakeDeliveryWorker(
             events,
             OutboxDeliveryResult(
@@ -105,7 +116,7 @@ async def test_one_cycle_processes_text_before_delivering_its_outcome() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "image", "text", "delivery"]
+    assert events == ["callback", "image", "text", "registration", "delivery"]
 
 
 async def test_text_failure_does_not_block_existing_outbox_delivery() -> None:
@@ -117,6 +128,11 @@ async def test_text_failure_does_not_block_existing_outbox_delivery() -> None:
             events,
             TextEventProcessingError("recorded failure"),
         ),
+        registration_delivery_worker=FakeDeliveryWorker(
+            events,
+            OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
+            "registration",
+        ),
         delivery_worker=FakeDeliveryWorker(
             events,
             OutboxDeliveryResult(status=OutboxDeliveryStatus.SENT, outbox_id=OUTBOX_ID),
@@ -125,7 +141,7 @@ async def test_text_failure_does_not_block_existing_outbox_delivery() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "image", "text", "delivery"]
+    assert events == ["callback", "image", "text", "registration", "delivery"]
 
 
 async def test_idle_one_shot_cycle_returns_after_both_queues_are_empty() -> None:
@@ -134,6 +150,11 @@ async def test_idle_one_shot_cycle_returns_after_both_queues_are_empty() -> None
         callback_processor=FakeCallbackProcessor(events),
         image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(events, None),
+        registration_delivery_worker=FakeDeliveryWorker(
+            events,
+            OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
+            "registration",
+        ),
         delivery_worker=FakeDeliveryWorker(
             events,
             OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
@@ -142,7 +163,7 @@ async def test_idle_one_shot_cycle_returns_after_both_queues_are_empty() -> None
         poll_seconds=2,
     )
 
-    assert events == ["callback", "image", "text", "delivery"]
+    assert events == ["callback", "image", "text", "registration", "delivery"]
 
 
 async def test_callback_is_processed_before_text_and_delivery() -> None:
@@ -161,6 +182,11 @@ async def test_callback_is_processed_before_text_and_delivery() -> None:
         callback_processor=FakeCallbackProcessor(events, callback_result),
         image_processor=FakeImageProcessor(events),
         text_processor=FakeTextProcessor(events, None),
+        registration_delivery_worker=FakeDeliveryWorker(
+            events,
+            OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
+            "registration",
+        ),
         delivery_worker=FakeDeliveryWorker(
             events,
             OutboxDeliveryResult(status=OutboxDeliveryStatus.IDLE),
@@ -169,7 +195,7 @@ async def test_callback_is_processed_before_text_and_delivery() -> None:
         poll_seconds=2,
     )
 
-    assert events == ["callback", "image", "text", "delivery"]
+    assert events == ["callback", "image", "text", "registration", "delivery"]
 
 
 def test_worker_suppresses_http_client_request_urls() -> None:

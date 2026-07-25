@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -18,6 +20,7 @@ from inventory_agent.agent.models import (
     StockProposalArguments,
     TrackingMode,
     TransactionReadArguments,
+    TransactionRecord,
 )
 from inventory_agent.agent.prompt import PROMPT_VERSION
 from inventory_agent.agent.repository import AgentReadRepository
@@ -33,6 +36,8 @@ from inventory_agent.proposals.models import (
 )
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCatalogReader(Protocol):
@@ -70,6 +75,7 @@ class GroundedAgentCatalogReader:
         arguments: InventoryReadArguments,
     ) -> tuple[list[CatalogVariant], dict[UUID, InventoryCandidate]]:
         query = arguments.sku or arguments.query or ""
+        search_started = perf_counter()
         if arguments.sku is not None:
             candidates = await self._candidates.find_candidates(
                 organization_id=organization_id,
@@ -98,6 +104,12 @@ class GroundedAgentCatalogReader:
                 query=query,
                 limit=arguments.limit,
             )
+        _log_runtime(
+            component="catalog_candidate_search",
+            started=search_started,
+            organization_id=organization_id,
+            result_count=len(candidates),
+        )
 
         requested_attributes = {
             attribute.key.casefold(): attribute.value.casefold()
@@ -109,10 +121,17 @@ class GroundedAgentCatalogReader:
                 for candidate in candidates
                 if _candidate_has_attributes(candidate, requested_attributes)
             ]
+        balances_started = perf_counter()
         balances = await self._reads.get_variant_balances(
             organization_id=organization_id,
             location_id=location_id,
             variant_ids=[candidate.item_variant_id for candidate in candidates],
+        )
+        _log_runtime(
+            component="inventory_balance_read",
+            started=balances_started,
+            organization_id=organization_id,
+            result_count=len(balances),
         )
         records = [
             _catalog_variant(candidate, balances.get(candidate.item_variant_id, Decimal("0")))
@@ -145,7 +164,7 @@ class ProductionInventoryAgentTools:
         proposals: ProposalRepository,
         reversals: ReversalRepository,
         allowed_variant_ids: set[UUID] | None = None,
-        allowed_transaction_ids: set[UUID] | None = None,
+        preselected_transactions: list[TransactionRecord] | None = None,
     ) -> None:
         self._context = context
         self._catalog = catalog
@@ -153,8 +172,12 @@ class ProductionInventoryAgentTools:
         self._proposals = proposals
         self._reversals = reversals
         self.allowed_variant_ids = set(allowed_variant_ids or set())
-        self.allowed_transaction_ids = set(allowed_transaction_ids or set())
+        self.allowed_transaction_ids: set[UUID] = set()
         self._candidate_evidence: dict[UUID, InventoryCandidate] = {}
+        self._transaction_ids_by_ref: dict[str, UUID] = {}
+        self._transaction_refs_by_id: dict[UUID, str] = {}
+        for transaction in preselected_transactions or []:
+            self._register_transaction(transaction)
         self._results_by_call_id: dict[str, str] = {}
         self.stock_proposal_id: UUID | None = None
         self.reversal_request_id: UUID | None = None
@@ -169,12 +192,20 @@ class ProductionInventoryAgentTools:
     ) -> str:
         if call_id in self._results_by_call_id:
             return self._results_by_call_id[call_id]
+        started = perf_counter()
         try:
             result = await self._dispatch(call_id=call_id, name=name, arguments=arguments)
         except (ValueError, ValidationError) as error:
             result = {"ok": False, "error": str(error)}
         output = json.dumps(result, separators=(",", ":"), default=str)
         self._results_by_call_id[call_id] = output
+        _log_runtime(
+            component=f"agent_tool.{name}",
+            started=started,
+            organization_id=self._context.organization_id,
+            source_event_id=self._context.source_event_id,
+            ok=bool(result.get("ok")),
+        )
         return output
 
     async def _dispatch(
@@ -392,13 +423,21 @@ class ProductionInventoryAgentTools:
         self.allowed_transaction_ids.update(
             UUID(transaction.transaction_id) for transaction in transactions
         )
+        serialized_transactions = []
+        for transaction in transactions:
+            serialized_transactions.append(
+                {
+                    **transaction.model_dump(mode="json"),
+                    "transaction_ref": self._register_transaction(transaction),
+                }
+            )
         return {
             "ok": True,
             "count": len(transactions),
             "targeted_count": len(targeted),
             "exact_id_lookup": exact_id_lookup is not None,
             "included_recent_fallback": included_recent_fallback,
-            "transactions": [transaction.model_dump(mode="json") for transaction in transactions],
+            "transactions": serialized_transactions,
         }
 
     async def _propose_reversal(
@@ -409,10 +448,10 @@ class ProductionInventoryAgentTools:
     ) -> dict[str, object]:
         if self.stock_proposal_id is not None or self.reversal_request_id is not None:
             raise ValueError("only one mutation proposal is allowed per user message")
-        transaction_id = UUID(arguments.transaction_id)
-        if transaction_id not in self.allowed_transaction_ids:
+        transaction_id = self._transaction_ids_by_ref.get(arguments.transaction_ref)
+        if transaction_id is None:
             raise ValueError(
-                "transaction_id was not returned by read_transactions in this conversation"
+                "transaction_ref was not returned by read_transactions during this user message"
             )
         request_id = await self._reversals.begin(
             transaction_id=transaction_id,
@@ -463,6 +502,17 @@ class ProductionInventoryAgentTools:
             "confirmation_required": True,
         }
 
+    def _register_transaction(self, transaction: TransactionRecord) -> str:
+        transaction_id = UUID(transaction.transaction_id)
+        existing = self._transaction_refs_by_id.get(transaction_id)
+        if existing is not None:
+            return existing
+        transaction_ref = f"T{len(self._transaction_ids_by_ref) + 1}"
+        self._transaction_ids_by_ref[transaction_ref] = transaction_id
+        self._transaction_refs_by_id[transaction_id] = transaction_ref
+        self.allowed_transaction_ids.add(transaction_id)
+        return transaction_ref
+
 
 def _candidate_has_attributes(
     candidate: InventoryCandidate,
@@ -505,4 +555,21 @@ def _catalog_variant(candidate: InventoryCandidate, on_hand: Decimal) -> Catalog
             if value is not None
         ],
         on_hand=on_hand,
+    )
+
+
+def _log_runtime(
+    *,
+    component: str,
+    started: float,
+    organization_id: UUID,
+    **fields: object,
+) -> None:
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    logger.info(
+        "component_runtime component=%s duration_ms=%.2f organization_id=%s%s",
+        component,
+        (perf_counter() - started) * 1000,
+        organization_id,
+        f" {details}" if details else "",
     )

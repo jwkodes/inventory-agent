@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from typing import Annotated, Literal
 from uuid import UUID
@@ -17,6 +19,7 @@ from inventory_agent.config import Settings, get_settings
 from inventory_agent.dashboard.prompts import prompt_catalog
 from inventory_agent.dashboard.repository import DashboardRepository
 from inventory_agent.dashboard.supervisor import SupervisorClient
+from inventory_agent.telegram.registration import hash_invite_code
 
 router = APIRouter(prefix="/dev", include_in_schema=False)
 _basic = HTTPBasic(auto_error=False)
@@ -87,6 +90,31 @@ class ProcessCommand(BaseModel):
     service: Literal["api", "worker", "all"]
 
 
+class RegistrationInviteCreate(BaseModel):
+    """Bounded invite lifetime and use count selected by an admin."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expires_in_hours: int = Field(default=72, ge=1, le=24 * 30)
+    max_uses: int = Field(default=1, ge=1, le=1000)
+
+
+class RegistrationApproval(BaseModel):
+    """The role assigned by an admin during approval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["worker", "manager", "admin"] = "worker"
+
+
+class InventoryResetConfirmation(BaseModel):
+    """Explicit destructive reset acknowledgement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation: str = Field(min_length=7, max_length=150)
+
+
 def get_supervisor_client(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SupervisorClient | None:
@@ -148,6 +176,136 @@ async def inventory(
     repository: DashboardData,
 ) -> dict[str, object]:
     return await _require_repository(repository).get_inventory(organization_id=organization_id)
+
+
+@router.post("/api/inventory/reset")
+async def reset_inventory(
+    organization_id: UUID,
+    body: InventoryResetConfirmation,
+    request: Request,
+    _: DashboardAccess,
+    repository: DashboardData,
+    supervisor: SupervisorData,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    """Pause processing and atomically clear one company's operational test data."""
+
+    _require_loopback_dashboard(request)
+    _require_config_writes(settings)
+    if supervisor is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The development supervisor is required for a safe inventory reset",
+        )
+    worker_was_running = False
+    try:
+        snapshot = await supervisor.status()
+        worker_was_running = _worker_running(snapshot)
+        if worker_was_running:
+            await supervisor.command(action="stop", service="worker")
+            await _wait_for_worker(supervisor, running=False)
+        result = await _require_repository(repository).reset_inventory_data(
+            organization_id=organization_id,
+            confirmation=body.confirmation,
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        try:
+            if worker_was_running:
+                await supervisor.command(action="start", service="worker")
+        finally:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Inventory reset could not be completed safely: {exc}",
+            ) from exc
+
+    if worker_was_running:
+        try:
+            await supervisor.command(action="start", service="worker")
+            await _wait_for_worker(supervisor, running=True)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Inventory data was reset, but the message processor could not be "
+                    f"restarted: {exc}"
+                ),
+            ) from exc
+    return {**result, "processor_restarted": worker_was_running}
+
+
+@router.get("/api/memberships")
+async def membership_administration(
+    organization_id: UUID,
+    _: DashboardAccess,
+    repository: DashboardData,
+) -> dict[str, object]:
+    return await _require_repository(repository).get_membership_administration(
+        organization_id=organization_id
+    )
+
+
+@router.post("/api/membership-invites", status_code=status.HTTP_201_CREATED)
+async def create_membership_invite(
+    organization_id: UUID,
+    body: RegistrationInviteCreate,
+    request: Request,
+    _: DashboardAccess,
+    repository: DashboardData,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    _require_loopback_dashboard(request)
+    _require_config_writes(settings)
+    invite_code = f"INV-{secrets.token_urlsafe(12)}"
+    expires_at = datetime.now(UTC) + timedelta(hours=body.expires_in_hours)
+    invite = await _require_repository(repository).create_registration_invite(
+        organization_id=organization_id,
+        code_hash=hash_invite_code(invite_code),
+        code_hint=invite_code[-6:],
+        expires_at=expires_at.isoformat(),
+        max_uses=body.max_uses,
+    )
+    return {
+        "invite": invite,
+        "invite_code": invite_code,
+        "command": f"/register {invite_code}",
+        "shown_once": True,
+    }
+
+
+@router.post("/api/registration-requests/{registration_request_id}/approve")
+async def approve_registration(
+    registration_request_id: UUID,
+    organization_id: UUID,
+    body: RegistrationApproval,
+    request: Request,
+    _: DashboardAccess,
+    repository: DashboardData,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    _require_loopback_dashboard(request)
+    _require_config_writes(settings)
+    return await _require_repository(repository).approve_registration(
+        organization_id=organization_id,
+        registration_request_id=registration_request_id,
+        role=body.role,
+    )
+
+
+@router.post("/api/registration-requests/{registration_request_id}/reject")
+async def reject_registration(
+    registration_request_id: UUID,
+    organization_id: UUID,
+    request: Request,
+    _: DashboardAccess,
+    repository: DashboardData,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, object]:
+    _require_loopback_dashboard(request)
+    _require_config_writes(settings)
+    return await _require_repository(repository).reject_registration(
+        organization_id=organization_id,
+        registration_request_id=registration_request_id,
+    )
 
 
 @router.get("/api/configuration")
@@ -393,6 +551,10 @@ def _runtime_configuration(settings: Settings) -> list[dict[str, object]]:
         "embedding_dimensions": settings.openai_embedding_dimensions,
         "matching_strategy": settings.inventory_matching_strategy,
         "candidate_judging_enabled": settings.inventory_candidate_judging_enabled,
+        "telegram_dev_user_simulation_enabled": (settings.telegram_dev_user_simulation_enabled),
+        "telegram_dev_user_simulation_session_minutes": (
+            settings.telegram_dev_user_simulation_session_minutes
+        ),
         "storage_bucket": settings.supabase_storage_bucket,
     }
     return [
@@ -469,6 +631,30 @@ def _require_loopback_dashboard(request: Request) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Process controls are available only through the local dashboard URL",
         )
+
+
+def _worker_running(snapshot: dict[str, object]) -> bool:
+    services = snapshot.get("services")
+    if not isinstance(services, dict):
+        raise ValueError("Development supervisor returned no service state")
+    worker = services.get("worker")
+    if not isinstance(worker, dict):
+        raise ValueError("Development supervisor returned no worker state")
+    return worker.get("running") is True
+
+
+async def _wait_for_worker(
+    supervisor: SupervisorClient,
+    *,
+    running: bool,
+    attempts: int = 50,
+) -> None:
+    for _ in range(attempts):
+        if _worker_running(await supervisor.status()) is running:
+            return
+        await asyncio.sleep(0.1)
+    state = "start" if running else "stop"
+    raise ValueError(f"Message processor did not {state} in time")
 
 
 def _read_secret(value: object) -> str | None:

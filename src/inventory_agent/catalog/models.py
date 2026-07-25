@@ -66,3 +66,4 @@ class CatalogItemCreationView(BaseModel):
     base_unit: str | None = None
     tracking_mode: CatalogTrackingMode | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    details_reason: str | None = None

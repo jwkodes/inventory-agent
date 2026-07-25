@@ -6,7 +6,7 @@ update public.organization_users
 set telegram_user_id = 100000001
 where id = '11000000-0000-0000-0000-000000000001';
 
-select plan(35);
+select plan(40);
 
 select has_table(
   'public',
@@ -48,6 +48,10 @@ select has_function(
 select has_function(
   'public', 'confirm_catalog_item_creation', array['uuid', 'uuid'],
   'catalog item confirmation exists'
+);
+select has_function(
+  'public', 'prepare_catalog_item_creation_confirmation', array['uuid', 'uuid'],
+  'catalog item confirmation validates SKU availability'
 );
 select has_function(
   'public', 'cancel_catalog_item_creation', array['uuid', 'uuid'],
@@ -367,7 +371,7 @@ values (
   'message',
   'processed',
   now(),
-  '{"message":{"from":{"id":100000001},"chat":{"id":100000001},"text":"AMOX-502 is new"}}'
+  '{"message":{"from":{"id":100000001},"chat":{"id":100000001},"text":"PGTAP-AMOX-502 is new"}}'
 );
 
 create temporary table agent_catalog_proposal as
@@ -381,8 +385,8 @@ select public.create_inventory_proposal(
   '{
     "intent":"RECEIVE_STOCK",
     "lines":[{
-      "source_text":"3 boxes of AMOX-502",
-      "item_reference":{"type":"SKU","value":"AMOX-502"},
+      "source_text":"3 boxes of PGTAP-AMOX-502",
+      "item_reference":{"type":"SKU","value":"PGTAP-AMOX-502"},
       "description":"Amoxicillin",
       "quantity":"3",
       "unit":"box",
@@ -396,7 +400,7 @@ select public.create_inventory_proposal(
   jsonb_build_array(
     jsonb_build_object(
       'line_number', 1,
-      'source_text', '3 boxes of AMOX-502',
+      'source_text', '3 boxes of PGTAP-AMOX-502',
       'extracted_description', 'Amoxicillin',
       'requested_quantity', 3,
       'requested_unit', 'box',
@@ -405,7 +409,7 @@ select public.create_inventory_proposal(
         'source', 'inventory_agent_tool',
         'new_item', jsonb_build_object(
           'name', 'Amoxicillin',
-          'sku', 'AMOX-502',
+          'sku', 'PGTAP-AMOX-502',
           'base_unit', 'box',
           'tracking_mode', 'simple',
           'attributes', jsonb_build_array(
@@ -475,6 +479,49 @@ select is(
   ),
   null,
   'a complete agent draft waits for confirmation rather than another text reply'
+);
+
+update public.catalog_item_creation_requests
+set sku = 'PGTAP-ZX-999'
+where id = (select request_id from agent_catalog_request);
+
+select is(
+  (
+    public.prepare_catalog_item_creation_confirmation(
+      (select request_id from agent_catalog_request),
+      '11000000-0000-0000-0000-000000000001'
+    ) ->> 'ready'
+  ),
+  'false',
+  'a duplicate SKU reopens catalog detail collection instead of failing silently'
+);
+select is(
+  (
+    select request.status::text
+    from public.catalog_item_creation_requests as request
+    where request.id = (select request_id from agent_catalog_request)
+  ),
+  'awaiting_details',
+  'duplicate SKU recovery waits for a natural-language correction'
+);
+select is(
+  (
+    public.prepare_catalog_item_creation_confirmation(
+      (select request_id from agent_catalog_request),
+      '11000000-0000-0000-0000-000000000001'
+    ) ->> 'ready'
+  ),
+  'false',
+  'repeated stale button clicks return the same recoverable conflict'
+);
+select ok(
+  (
+    select request.sku is null
+      and request.details_reason like '%PGTAP-ZX-999%'
+    from public.catalog_item_creation_requests as request
+    where request.id = (select request_id from agent_catalog_request)
+  ),
+  'duplicate SKU recovery clears the conflict and explains what must change'
 );
 
 select * from finish();

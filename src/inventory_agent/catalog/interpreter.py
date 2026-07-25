@@ -1,6 +1,8 @@
 """OpenAI-backed extraction for conversational catalog-item details."""
 
+import logging
 from dataclasses import dataclass
+from time import perf_counter
 
 from openai import AsyncOpenAI
 from openai.types.shared import ReasoningEffort
@@ -10,6 +12,8 @@ from inventory_agent.catalog.models import (
     ExtractedCatalogItemDetails,
 )
 from inventory_agent.extraction.interpreter import CommandExtractionError, _find_refusal
+
+logger = logging.getLogger(__name__)
 
 CATALOG_DETAILS_PROMPT_VERSION = "catalog-item-details-v3"
 CATALOG_DETAILS_INSTRUCTIONS = """You extract catalog-item details from an SME worker's
@@ -83,6 +87,7 @@ class OpenAICatalogDetailsInterpreter:
             "Worker reply:\n"
             f"{user_text}"
         )
+        started = perf_counter()
         response = await self._client.responses.parse(
             model=self._model,
             reasoning={"effort": self._reasoning_effort},
@@ -90,6 +95,11 @@ class OpenAICatalogDetailsInterpreter:
             input=context,
             text_format=ExtractedCatalogItemDetails,
             store=False,
+        )
+        logger.info(
+            "component_runtime component=catalog_details_extraction duration_ms=%.2f model=%s",
+            (perf_counter() - started) * 1000,
+            getattr(response, "model", self._model),
         )
         details = response.output_parsed
         if details is None:

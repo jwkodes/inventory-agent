@@ -207,9 +207,65 @@ def estimate_history_tokens(history: list[dict[str, object]]) -> int:
 def durable_history_items(
     history: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Drop private reasoning payloads that are only needed inside the current tool loop."""
+    """Drop private reasoning and current-turn context that must not become stale authority."""
 
-    return [item for item in history if item.get("type") != "reasoning"]
+    return [
+        item
+        for item in history
+        if item.get("type") != "reasoning" and item.get("_ephemeral_agent_context") is not True
+    ]
+
+
+def model_history_items(
+    history: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Retain conversation intent while removing stale authoritative transaction results."""
+
+    durable = durable_history_items(history)
+    segments: list[list[dict[str, object]]] = []
+    current: list[dict[str, object]] = []
+    for item in durable:
+        if item.get("role") == "user" and current:
+            segments.append(current)
+            current = []
+        current.append(item)
+    if current:
+        segments.append(current)
+
+    sanitized: list[dict[str, object]] = []
+    for segment in segments:
+        transaction_call_ids = {
+            str(item.get("call_id"))
+            for item in segment
+            if item.get("type") == "function_call"
+            and item.get("name") == "read_transactions"
+            and item.get("call_id") is not None
+        }
+        if not transaction_call_ids:
+            sanitized.extend(segment)
+            continue
+        for item in segment:
+            if item.get("type") == "function_call" and item.get("name") == "read_transactions":
+                continue
+            if (
+                item.get("type") == "function_call_output"
+                and str(item.get("call_id")) in transaction_call_ids
+            ):
+                continue
+            if item.get("role") == "assistant":
+                continue
+            sanitized.append(item)
+        sanitized.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "I previously displayed transaction results, but their identifiers and "
+                    "status are intentionally not retained as authoritative context. I must "
+                    "read the transaction ledger again before using or describing them."
+                ),
+            }
+        )
+    return sanitized
 
 
 def _flatten_history(turns: list[AgentConversationTurn]) -> list[dict[str, object]]:

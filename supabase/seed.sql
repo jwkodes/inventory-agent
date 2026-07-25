@@ -3,8 +3,8 @@
 insert into public.organizations (id, name, slug, inventory_profile)
 values (
   '10000000-0000-0000-0000-000000000001',
-  'Demo SME',
-  'demo-sme',
+  'Cabybaba Pte Ltd',
+  'cabybaba-pte-ltd',
   'general'
 )
 on conflict (id) do nothing;
@@ -20,8 +20,8 @@ values (
   '11000000-0000-0000-0000-000000000001',
   '10000000-0000-0000-0000-000000000001',
   100000001,
-  'Demo Manager',
-  'manager'
+  'Demo Admin',
+  'admin'
 )
 on conflict (id) do nothing;
 

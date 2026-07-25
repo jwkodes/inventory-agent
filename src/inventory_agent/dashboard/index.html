@@ -225,6 +225,8 @@
     .actions { display: flex; align-items: center; gap: 8px; margin-top: 17px; }
     .primary { background: var(--lime); color: #101214; border-color: var(--lime); font-weight: 700; }
     .primary:hover { background: #d7ff8d; border-color: #d7ff8d; }
+    .danger { color: #ffc1be; border-color: rgba(255,130,125,.42); background: rgba(255,130,125,.08); font-weight: 700; }
+    .danger:hover { border-color: var(--red); background: rgba(255,130,125,.14); }
     button:disabled { opacity: .45; cursor: not-allowed; }
     .hint { color: var(--faint); font-size: 10px; line-height: 1.55; }
     .setting-row {
@@ -297,6 +299,7 @@
       <nav>
         <button class="nav-button active" data-view="flow"><span class="nav-icon">⌁</span>Flow inspector</button>
         <button class="nav-button" data-view="inventory"><span class="nav-icon">▦</span>Inventory</button>
+        <button class="nav-button" data-view="members"><span class="nav-icon">♙</span>Members</button>
         <button class="nav-button" data-view="system"><span class="nav-icon">◉</span>App health</button>
         <button class="nav-button" data-view="conversations"><span class="nav-icon">◫</span>Conversations</button>
         <button class="nav-button" data-view="config"><span class="nav-icon">⚙</span>Configuration</button>
@@ -337,6 +340,58 @@
         <div class="pane" style="margin-top:15px">
           <div class="pane-head"><h3>Recent immutable transactions</h3><span class="count">latest 50</span></div>
           <div id="transactions"></div>
+        </div>
+        <div class="pane" style="margin-top:15px;border-color:rgba(255,130,125,.3)">
+          <div class="pane-head"><h3>Danger zone</h3><span class="count">selected company only</span></div>
+          <div class="settings-body">
+            <p class="hint">Delete this company’s catalog, stock, transactions, proposals, Telegram event history, and agent conversations. Members, roles, locations, custom fields, registration, and company settings are preserved.</p>
+            <button class="icon-button danger" id="reset-inventory" type="button">Reset inventory test data</button>
+            <div id="reset-result"></div>
+            <div id="reset-history"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="members-view">
+        <div class="metric-grid" id="member-metrics"></div>
+        <div class="settings-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Create registration invite</h3><span class="count">code shown once</span></div>
+            <form class="settings-body" id="invite-form">
+              <div class="field-grid">
+                <label>Expires after
+                  <select id="invite-hours">
+                    <option value="24">24 hours</option>
+                    <option value="72" selected>3 days</option>
+                    <option value="168">7 days</option>
+                    <option value="720">30 days</option>
+                  </select>
+                </label>
+                <label>Maximum uses<input id="invite-uses" type="number" min="1" max="1000" value="1" required></label>
+              </div>
+              <p class="hint">Send the command privately. Only its SHA-256 hash is stored.</p>
+              <button class="icon-button primary" type="submit">Generate invite</button>
+              <div id="new-invite"></div>
+            </form>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Recent invite records</h3><span class="count" id="invite-count">—</span></div>
+            <div class="settings-body" id="invite-list"></div>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Registration requests</h3><span class="count" id="request-count">—</span></div>
+          <div class="table-pane" style="border:0;border-radius:0"><table>
+            <thead><tr><th>Applicant</th><th>Telegram</th><th>Submitted</th><th>Status</th><th>Role</th><th>Decision</th></tr></thead>
+            <tbody id="registration-request-body"></tbody>
+          </table></div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Company members</h3><span class="count" id="member-count">—</span></div>
+          <div class="table-pane" style="border:0;border-radius:0"><table>
+            <thead><tr><th>Name</th><th>Telegram user ID</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead>
+            <tbody id="member-body"></tbody>
+          </table></div>
         </div>
       </section>
 
@@ -432,7 +487,7 @@
     const state = {
       view: "flow", organizationId: null, events: [], selectedEventId: null,
       inventory: null, prompts: null, configuration: null, conversations: [],
-      selectedConversationId: null, system: null,
+      selectedConversationId: null, system: null, memberships: null, organizations: [],
     };
     const $ = (selector) => document.querySelector(selector);
     const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -475,11 +530,13 @@
       $$(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
       $$(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
       const titles = {
-        flow:"Flow inspector", inventory:"Inventory", system:"App health & controls", conversations:"Conversations",
+        flow:"Flow inspector", inventory:"Inventory", members:"Members & registration",
+        system:"App health & controls", conversations:"Conversations",
         config:"Configuration", prompts:"Models & prompts",
       };
       const brows = {
         flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger",
+        members:"Invite · approve · assign roles",
         system:"Health · receiver · message processor",
         conversations:"Company · user · durable context",
         config:"Effective values · safe overrides · audit",
@@ -488,6 +545,7 @@
       $("#page-title").textContent = titles[view];
       $("#eyebrow").textContent = brows[view];
       if (view === "inventory" && !state.inventory) loadInventory();
+      if (view === "members" && !state.memberships) loadMemberships();
       if (view === "system" && !state.system) loadSystem();
       if (view === "conversations" && !state.conversations.length) loadConversations();
       if (view === "config" && !state.configuration) loadConfiguration();
@@ -497,6 +555,7 @@
     async function boot() {
       try {
         const data = await api("/dev/api/organizations");
+        state.organizations = data.organizations;
         const select = $("#organization");
         select.innerHTML = data.organizations.map(org => `<option value="${esc(org.id)}">${esc(org.name)} · ${esc(org.inventory_profile)}</option>`).join("");
         if (!data.organizations.length) throw new Error("No organizations are available.");
@@ -508,6 +567,7 @@
     async function loadCurrentView() {
       if (state.view === "flow") await loadEvents();
       if (state.view === "inventory") await loadInventory();
+      if (state.view === "members") await loadMemberships();
       if (state.view === "system") await loadSystem();
       if (state.view === "conversations") await loadConversations();
       if (state.view === "config") await loadConfiguration();
@@ -690,6 +750,125 @@
         <div class="event" style="cursor:default"><div class="event-top">${badge(tx.status)}<span class="badge">${esc(tx.transaction_type)}</span><span class="event-time">${time(tx.applied_at)}</span></div>
         <div class="event-summary">${(linesByTx[tx.id] || []).map(line => `${Number(line.quantity_delta) >= 0 ? "+" : ""}${line.quantity_delta} ${line.base_unit} · ${shortId(line.item_variant_id)}`).join(" · ") || esc(tx.notes || tx.reason || "Inventory transaction")}</div>
         <div class="event-meta">${esc(tx.id)}${tx.reversal_of_transaction_id ? ` · reverses ${esc(tx.reversal_of_transaction_id)}` : ""}</div></div>`).join("") : `<div class="empty">No applied transactions yet.</div>`;
+      const resets = Array.isArray(data.resets) ? data.resets : [];
+      $("#reset-history").innerHTML = resets.length ? `<h4 class="section-title">Recent reset audit</h4>${resets.map(reset => `
+        <div class="audit-row"><div><strong>${time(reset.created_at)}</strong>
+        <p>${Object.entries(reset.deleted_counts || {}).map(([key,value]) => `${esc(key.replaceAll("_"," "))}: ${esc(value)}`).join(" · ")}</p></div>
+        <span class="badge">reset</span></div>`).join("")}` : `<p class="hint">No inventory resets recorded.</p>`;
+    }
+
+    async function resetInventory() {
+      const organization = state.organizations.find(row => row.id === state.organizationId);
+      if (!organization?.slug) {
+        showError(new Error("The selected company slug is unavailable."));
+        return;
+      }
+      const expectedConfirmation = `RESET ${organization.slug}`;
+      const confirmation = window.prompt(
+        `This permanently deletes ${organization.name}’s catalog, stock, transactions, event history, and agent conversations. Type ${expectedConfirmation} to continue.`
+      );
+      if (confirmation === null) return;
+      if (confirmation !== expectedConfirmation) {
+        showError(new Error(`Reset cancelled: you must type ${expectedConfirmation} exactly.`));
+        return;
+      }
+      const button = $("#reset-inventory");
+      button.disabled = true;
+      button.textContent = "Resetting…";
+      showError(null);
+      try {
+        const result = await api(`/dev/api/inventory/reset?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST", body:{confirmation},
+        });
+        state.events = []; state.selectedEventId = null; state.inventory = null;
+        state.conversations = []; state.selectedConversationId = null;
+        await loadInventory();
+        const counts = Object.entries(result.deleted_counts || {})
+          .map(([key,value]) => `${esc(key.replaceAll("_"," "))}: ${esc(value)}`).join(" · ");
+        $("#reset-result").innerHTML = `<div class="summary-box"><strong>✅ Inventory test data reset</strong><br>${counts}<br>Message processing was ${result.processor_restarted ? "restarted" : "already paused"}.</div>`;
+      } catch (error) { showError(error); }
+      finally {
+        button.disabled = false;
+        button.textContent = "Reset inventory test data";
+      }
+    }
+
+    async function loadMemberships() {
+      if (!state.organizationId) return;
+      showError(null);
+      try {
+        state.memberships = await api(`/dev/api/memberships?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderMemberships();
+      } catch (error) { showError(error); }
+    }
+    function renderMemberships() {
+      const data = state.memberships || {invites:[], requests:[], members:[]};
+      $("#member-metrics").innerHTML = [
+        ["Active members", data.members.filter(row => row.active).length],
+        ["Pending requests", data.requests.filter(row => row.status === "pending").length],
+        ["Usable invites", data.invites.filter(row => row.active && new Date(row.expires_at) > new Date()).length],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(value)}</div></div>`).join("");
+      $("#invite-count").textContent = `${data.invites.length} records`;
+      $("#invite-list").innerHTML = data.invites.length ? data.invites.map(invite => {
+        const usable = invite.active && new Date(invite.expires_at) > new Date();
+        return `<div class="audit-row"><div><strong>••••••${esc(invite.code_hint)}</strong>
+          <p>${esc(invite.use_count)} / ${esc(invite.max_uses)} uses · expires ${time(invite.expires_at)}</p></div>
+          ${badge(usable ? "active" : "closed")}</div>`;
+      }).join("") : `<div class="empty">No registration invites yet.</div>`;
+
+      $("#request-count").textContent = `${data.requests.length} requests`;
+      $("#registration-request-body").innerHTML = data.requests.length ? data.requests.map(request => `
+        <tr><td><strong>${esc(request.display_name)}</strong>${request.simulated_persona ? ` ${badge("🧪 simulated")}` : ""}</td>
+          <td>${request.telegram_username ? `@${esc(request.telegram_username)}<br>` : ""}<span class="mono">${esc(request.telegram_user_id)}</span></td>
+          <td>${time(request.created_at)}</td><td>${badge(request.status)}</td>
+          <td><select class="registration-role" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>
+            <option value="worker">Worker</option><option value="manager">Manager</option><option value="admin">Admin</option>
+          </select></td>
+          <td><div class="actions">
+            <button class="icon-button primary approve-registration" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>Approve</button>
+            <button class="icon-button reject-registration" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>Reject</button>
+          </div></td></tr>`).join("") : `<tr><td colspan="6"><div class="empty">No pending applicants.</div></td></tr>`;
+      $$(".approve-registration").forEach(button => button.addEventListener("click", () => decideRegistration(button.dataset.requestId, true)));
+      $$(".reject-registration").forEach(button => button.addEventListener("click", () => decideRegistration(button.dataset.requestId, false)));
+
+      $("#member-count").textContent = `${data.members.length} members`;
+      $("#member-body").innerHTML = data.members.length ? data.members.map(member => `
+        <tr><td><strong>${esc(member.display_name)}</strong>${member.simulated_persona ? ` ${badge("🧪 simulated")}` : ""}</td><td class="mono">${esc(member.telegram_user_id || "—")}</td>
+        <td>${badge(member.role)}</td><td>${badge(member.active ? "active" : "inactive")}</td><td>${time(member.created_at)}</td></tr>
+      `).join("") : `<tr><td colspan="5"><div class="empty">No members.</div></td></tr>`;
+    }
+    async function createInvite(event) {
+      event.preventDefault();
+      showError(null);
+      $("#new-invite").innerHTML = `<p class="hint loading">Generating one-time code</p>`;
+      try {
+        const result = await api(`/dev/api/membership-invites?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST",
+          body:{expires_in_hours:Number($("#invite-hours").value), max_uses:Number($("#invite-uses").value)},
+        });
+        $("#new-invite").innerHTML = `<div class="summary-box"><strong>Copy this now — it will not be shown again.</strong>
+          <pre>${esc(result.command)}</pre><button class="icon-button copy-invite" type="button">Copy command</button></div>`;
+        $(".copy-invite").addEventListener("click", async event => {
+          await navigator.clipboard.writeText(result.command);
+          event.currentTarget.textContent = "Copied";
+        });
+        await loadMemberships();
+      } catch (error) {
+        $("#new-invite").innerHTML = "";
+        showError(error);
+      }
+    }
+    async function decideRegistration(requestId, approve) {
+      if (!approve && !window.confirm("Reject this applicant? Their details are deleted after the Telegram notification is delivered.")) return;
+      const role = $(`.registration-role[data-request-id="${requestId}"]`)?.value || "worker";
+      showError(null);
+      try {
+        const suffix = approve ? "approve" : "reject";
+        await api(`/dev/api/registration-requests/${encodeURIComponent(requestId)}/${suffix}?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST", body:approve ? {role} : undefined,
+        });
+        await loadMemberships();
+      } catch (error) { showError(error); }
     }
 
     async function loadPrompts() {
@@ -913,23 +1092,26 @@
     }));
     $("#organization").addEventListener("change", async event => {
       state.organizationId = event.target.value;
-      state.inventory = null; state.configuration = null; state.conversations = [];
+      state.inventory = null; state.configuration = null; state.conversations = []; state.memberships = null;
       state.selectedEventId = null; state.selectedConversationId = null;
       await loadCurrentView();
     });
     $("#context-form").addEventListener("submit", saveContext);
+    $("#invite-form").addEventListener("submit", createInvite);
+    $("#reset-inventory").addEventListener("click", resetInventory);
     $("#reset-context").addEventListener("click", resetContext);
     $$(".system-command").forEach(button => button.addEventListener("click", () => runSystemCommand(button)));
     $("#refresh").addEventListener("click", async () => {
       if (state.view === "flow") await loadEvents(false);
       if (state.view === "inventory") await loadInventory();
+      if (state.view === "members") await loadMemberships();
       if (state.view === "system") { state.system = null; await loadSystem(); }
       if (state.view === "conversations") await loadConversations();
       if (state.view === "config") { state.configuration = null; await loadConfiguration(); }
       if (state.view === "prompts") { state.prompts = null; await loadPrompts(); }
     });
     const requestedView = window.location.hash.slice(1);
-    if (["flow", "inventory", "system", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
+    if (["flow", "inventory", "members", "system", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
     boot();
   </script>
 </body>

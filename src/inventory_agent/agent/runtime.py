@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any, Protocol, cast
 
 from openai import AsyncOpenAI
@@ -11,6 +13,8 @@ from openai.types.shared import ReasoningEffort
 
 from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 from inventory_agent.agent.tools import INVENTORY_TOOL_DEFINITIONS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +79,7 @@ class OpenAIResponsesAgentModel:
         instructions: str,
         tools: list[dict[str, object]],
     ) -> ModelTurn:
+        started = perf_counter()
         response = await self._client.responses.create(
             model=self._model,
             reasoning={"effort": self._reasoning_effort},
@@ -83,6 +88,13 @@ class OpenAIResponsesAgentModel:
             tools=cast(Any, tools),
             parallel_tool_calls=False,
             store=False,
+        )
+        logger.info(
+            "component_runtime component=openai_responses_api duration_ms=%.2f "
+            "model=%s reasoning_effort=%s",
+            (perf_counter() - started) * 1000,
+            response.model,
+            self._reasoning_effort,
         )
         output_items = [
             cast(dict[str, object], item.model_dump(mode="json", exclude_none=True))
@@ -120,6 +132,7 @@ class ToolTrace:
     name: str
     arguments: dict[str, object]
     output: str
+    duration_ms: float = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,11 +171,19 @@ class InventoryAgentSession:
     def history(self) -> list[dict[str, object]]:
         return list(self._history)
 
-    async def handle(self, user_text: str) -> AgentReply:
+    async def handle(
+        self,
+        user_text: str,
+        *,
+        turn_context: list[dict[str, object]] | None = None,
+    ) -> AgentReply:
         """Run model/tool rounds until the model answers or the safety budget ends."""
 
         if not user_text.strip():
             raise ValueError("user_text must not be empty")
+        started = perf_counter()
+        for item in turn_context or []:
+            self._history.append({**item, "_ephemeral_agent_context": True})
         self._history.append({"role": "user", "content": user_text})
         traces: list[ToolTrace] = []
         input_tokens = 0
@@ -170,11 +191,20 @@ class InventoryAgentSession:
         total_tokens = 0
         latest: ModelTurn | None = None
 
-        for _ in range(self._max_tool_rounds):
+        for round_number in range(1, self._max_tool_rounds + 1):
+            model_started = perf_counter()
             latest = await self._model.respond(
-                input_items=self._history,
+                input_items=_model_input_items(self._history),
                 instructions=_instructions_with_summary(self._summary),
                 tools=INVENTORY_TOOL_DEFINITIONS,
+            )
+            logger.info(
+                "component_runtime component=agent_model_round duration_ms=%.2f "
+                "round=%s model=%s function_calls=%s",
+                (perf_counter() - model_started) * 1000,
+                round_number,
+                latest.model,
+                len(latest.function_calls),
             )
             self._history.extend(latest.output_items)
             input_tokens += latest.input_tokens or 0
@@ -184,6 +214,13 @@ class InventoryAgentSession:
                 text = latest.output_text.strip()
                 if not text:
                     text = "I could not complete that inventory request. Please try again."
+                logger.info(
+                    "component_runtime component=agent_session_total duration_ms=%.2f "
+                    "model_rounds=%s tool_calls=%s",
+                    (perf_counter() - started) * 1000,
+                    round_number,
+                    len(traces),
+                )
                 return AgentReply(
                     text=text,
                     response_id=latest.response_id,
@@ -196,16 +233,19 @@ class InventoryAgentSession:
                 )
 
             for call in latest.function_calls:
+                tool_started = perf_counter()
                 output = await self._tools.execute(
                     call_id=call.call_id,
                     name=call.name,
                     arguments=call.arguments,
                 )
+                tool_duration_ms = (perf_counter() - tool_started) * 1000
                 traces.append(
                     ToolTrace(
                         name=call.name,
                         arguments=call.arguments,
                         output=output,
+                        duration_ms=tool_duration_ms,
                     )
                 )
                 self._history.append(
@@ -218,6 +258,13 @@ class InventoryAgentSession:
 
         model_name = latest.model if latest is not None else "unknown"
         response_id = latest.response_id if latest is not None else "none"
+        logger.info(
+            "component_runtime component=agent_session_total duration_ms=%.2f "
+            "model_rounds=%s tool_calls=%s exhausted=true",
+            (perf_counter() - started) * 1000,
+            self._max_tool_rounds,
+            len(traces),
+        )
         return AgentReply(
             text=(
                 "I could not safely finish that inventory request within the tool limit. "
@@ -231,6 +278,13 @@ class InventoryAgentSession:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
         )
+
+
+def _model_input_items(history: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {key: value for key, value in item.items() if key != "_ephemeral_agent_context"}
+        for item in history
+    ]
 
 
 def _instructions_with_summary(summary: str | None) -> str:

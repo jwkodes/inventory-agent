@@ -50,7 +50,8 @@ def test_resolved_proposal_has_confirm_and_cancel_buttons() -> None:
     assert actions == [CallbackAction.CONFIRM_PROPOSAL, CallbackAction.CANCEL_PROPOSAL]
     assert "➕ ADD 3 each" in message.text
     assert message.text.startswith("⏳ **Pending stock addition**")
-    assert "No inventory has changed yet." in message.text
+    assert "Please review, then choose **Confirm** or **Cancel**." in message.text
+    assert "No inventory has changed" not in message.text
 
 
 def test_stock_issue_is_visually_explicit_on_heading_and_every_line() -> None:
@@ -99,7 +100,7 @@ def test_unresolved_proposal_requires_candidate_selection() -> None:
     assert selection.target_id == LINE_ID
     assert selection.choice_id == VARIANT_ID
     assert final_actions == [CallbackAction.CANCEL_PROPOSAL]
-    assert "Resolve every unmatched line" in message.text
+    assert "Resolve the unmatched item, or choose **Cancel**." in message.text
 
 
 def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() -> None:
@@ -240,8 +241,23 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
     assert cancel.action is CallbackAction.CANCEL_NEW_ITEM
     assert "item name as “Purple Widget”" in prompt.text
     assert "Reply naturally" in prompt.text
-    assert "prototype currently supports simple tracking" in prompt.text
+    assert "Reply naturally in any format." in prompt.text
     assert "Name:" not in prompt.text
+
+    conflict_prompt = render_catalog_item_details_prompt(
+        details_view.model_copy(
+            update={
+                "suggested_sku": None,
+                "details_reason": (
+                    "SKU HAC-001 is already used by the blue variant. "
+                    "The green variant needs a different SKU."
+                ),
+            }
+        )
+    )
+    assert conflict_prompt.text.startswith("⚠️ **Different SKU needed**")
+    assert "HAC-001" in conflict_prompt.text
+    assert "other item details have been retained" in conflict_prompt.text
 
     confirmation = render_catalog_item_confirmation(
         details_view.model_copy(
@@ -259,6 +275,10 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
         decode_callback(button.callback_data).action for button in confirmation.inline_keyboard[0]
     ]
     assert actions == [CallbackAction.CONFIRM_NEW_ITEM, CallbackAction.CANCEL_NEW_ITEM]
+    assert "Unit: each" in confirmation.text
+    assert "Attributes: colour: purple" in confirmation.text
+    assert "{'colour': 'purple'}" not in confirmation.text
+    assert "Tracking:" not in confirmation.text
 
 
 def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None:
@@ -272,7 +292,7 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
     assert reverse.action is CallbackAction.REVERSE_TRANSACTION
     assert reverse.target_id == TRANSACTION_ID
     assert applied.text.startswith("✅ **Stock deducted**")
-    assert "deduction transaction was applied" in applied.text
+    assert "Transaction ID" in applied.text
     assert f"Transaction ID: `{TRANSACTION_ID}`" in applied.text
     assert "24 Jul 2026, 07:42:19 PM (Asia/Singapore)" in applied.text
 

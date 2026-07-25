@@ -7,7 +7,10 @@ from uuid import UUID
 
 import httpx
 
-from inventory_agent.catalog.repository import CatalogItemCreationRepository
+from inventory_agent.catalog.repository import (
+    CatalogItemConfirmationConflict,
+    CatalogItemCreationRepository,
+)
 from inventory_agent.proposals.actions import ProposalActionRepository
 from inventory_agent.reversals.repository import ReversalRepository
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
@@ -155,6 +158,19 @@ class TelegramCallbackDispatcher:
                 message = "Reversal cancelled"
             else:
                 raise ValueError("Unsupported callback action")
+        except CatalogItemConfirmationConflict as error:
+            await self._try_answer(
+                callback_query_id=callback_query_id,
+                text="That SKU is already in use. I sent the details needed to continue.",
+                show_alert=True,
+            )
+            return CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                command.action,
+                error.request_id,
+                str(error),
+                "awaiting_details",
+            )
         except (ValueError, RuntimeError, httpx.HTTPError) as error:
             return CallbackOutcome(
                 CallbackOutcomeStatus.FAILED,

@@ -9,7 +9,10 @@ from inventory_agent.catalog.models import (
     CatalogItemDetails,
     ExtractedCatalogItemDetails,
 )
-from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
+from inventory_agent.catalog.repository import (
+    CatalogItemConfirmationConflict,
+    SupabaseCatalogItemCreationRepository,
+)
 
 ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000001")
@@ -38,6 +41,7 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
         },
         "save_catalog_item_creation_draft": str(REQUEST_ID),
         "save_catalog_item_creation_details": str(REQUEST_ID),
+        "prepare_catalog_item_creation_confirmation": {"ready": True},
         "confirm_catalog_item_creation": str(PROPOSAL_ID),
         "cancel_catalog_item_creation": str(REQUEST_ID),
     }
@@ -90,3 +94,30 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
     )
     assert await repository.confirm(request_id=REQUEST_ID, actor_id=ACTOR_ID) == PROPOSAL_ID
     assert await repository.cancel(request_id=REQUEST_ID, actor_id=ACTOR_ID) == REQUEST_ID
+
+
+async def test_catalog_repository_surfaces_recoverable_duplicate_sku_conflict() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/prepare_catalog_item_creation_confirmation")
+        return httpx.Response(
+            200,
+            json={
+                "ready": False,
+                "request_id": str(REQUEST_ID),
+                "message": "SKU HAC-001 is already used by the blue variant.",
+            },
+        )
+
+    repository = SupabaseCatalogItemCreationRepository(
+        supabase_url="http://supabase.test",
+        secret_key="test-secret",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    try:
+        await repository.confirm(request_id=REQUEST_ID, actor_id=ACTOR_ID)
+    except CatalogItemConfirmationConflict as error:
+        assert error.request_id == REQUEST_ID
+        assert "HAC-001" in str(error)
+    else:
+        raise AssertionError("duplicate SKU should reopen catalog detail collection")

@@ -12,6 +12,14 @@ from inventory_agent.catalog.models import (
 )
 
 
+class CatalogItemConfirmationConflict(ValueError):
+    """The item draft was reopened because its SKU is already in use."""
+
+    def __init__(self, *, request_id: UUID, message: str) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+
+
 class CatalogItemCreationRepository(Protocol):
     async def begin(self, *, line_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
         """Begin or resume collection of a new catalog item's details."""
@@ -159,6 +167,22 @@ class SupabaseCatalogItemCreationRepository:
         )
 
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        preparation = await self._call(
+            "prepare_catalog_item_creation_confirmation",
+            {"p_request_id": str(request_id), "p_actor_id": str(actor_id)},
+        )
+        if not isinstance(preparation, dict) or not isinstance(preparation.get("ready"), bool):
+            raise ValueError("Supabase returned an invalid catalog confirmation preparation")
+        if preparation["ready"] is False:
+            message = preparation.get("message")
+            raise CatalogItemConfirmationConflict(
+                request_id=request_id,
+                message=(
+                    message
+                    if isinstance(message, str) and message.strip()
+                    else "The proposed SKU is already in use. Reply with a different SKU."
+                ),
+            )
         return _required_uuid(
             await self._call(
                 "confirm_catalog_item_creation",
@@ -192,3 +216,10 @@ def _required_uuid(result: object, operation: str) -> UUID:
     if not isinstance(result, str):
         raise ValueError(f"Supabase returned an invalid ID for {operation}")
     return UUID(result)
+
+
+__all__ = [
+    "CatalogItemConfirmationConflict",
+    "CatalogItemCreationRepository",
+    "SupabaseCatalogItemCreationRepository",
+]

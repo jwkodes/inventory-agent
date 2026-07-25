@@ -220,23 +220,25 @@ async def test_reversal_requires_transaction_from_prior_read() -> None:
             call_id="reverse-1",
             name="propose_reversal",
             arguments={
-                "transaction_id": "txn-1",
+                "transaction_ref": "T1",
                 "reason": "Wrong count",
                 "replacement": None,
             },
         )
     )
-    await tools.execute(
-        call_id="transactions-1",
-        name="read_transactions",
-        arguments={"query": "shirts", "limit": 5},
+    transaction_read = json.loads(
+        await tools.execute(
+            call_id="transactions-1",
+            name="read_transactions",
+            arguments={"query": "shirts", "limit": 5},
+        )
     )
     accepted = json.loads(
         await tools.execute(
             call_id="reverse-2",
             name="propose_reversal",
             arguments={
-                "transaction_id": "txn-1",
+                "transaction_ref": "T1",
                 "reason": "Wrong count",
                 "replacement": None,
             },
@@ -244,6 +246,7 @@ async def test_reversal_requires_transaction_from_prior_read() -> None:
     )
 
     assert rejected["ok"] is False
+    assert transaction_read["transactions"][0]["transaction_ref"] == "T1"
     assert accepted["ok"] is True
     assert accepted["inventory_changed"] is False
 

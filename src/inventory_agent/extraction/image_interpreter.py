@@ -1,6 +1,8 @@
 """OpenAI-backed invoice image interpretation using Structured Outputs."""
 
 import base64
+import logging
+from time import perf_counter
 
 from openai import AsyncOpenAI
 from openai.types.shared import ReasoningEffort
@@ -12,6 +14,8 @@ from inventory_agent.extraction.interpreter import (
     _find_refusal,
 )
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
+
+logger = logging.getLogger(__name__)
 
 IMAGE_PROMPT_VERSION = "inventory-invoice-image-v1"
 SUPPORTED_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -57,6 +61,7 @@ class OpenAIImageCommandInterpreter:
 
         encoded = base64.b64encode(image_bytes).decode("ascii")
         caption_text = caption.strip() if caption and caption.strip() else "(none)"
+        started = perf_counter()
         response = await self._client.responses.parse(
             model=self._model,
             reasoning={"effort": self._reasoning_effort},
@@ -79,6 +84,11 @@ class OpenAIImageCommandInterpreter:
             ],
             text_format=ExtractedInventoryCommand,
             store=False,
+        )
+        logger.info(
+            "component_runtime component=invoice_image_extraction duration_ms=%.2f model=%s",
+            (perf_counter() - started) * 1000,
+            getattr(response, "model", self._model),
         )
         command = response.output_parsed
         if command is None:

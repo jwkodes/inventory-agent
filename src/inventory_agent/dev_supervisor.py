@@ -135,7 +135,9 @@ class ProcessSupervisor:
         if process is None or process.stdout is None:
             return
         while line := await process.stdout.readline():
-            service.logs.append(line.decode(errors="replace").rstrip())
+            decoded = line.decode(errors="replace").rstrip()
+            service.logs.append(decoded)
+            logger.info("managed_service_log service=%s %s", service.name.value, decoded)
         await process.wait()
         service.last_exit_code = process.returncode
 

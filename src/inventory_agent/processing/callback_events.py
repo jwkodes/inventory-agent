@@ -179,18 +179,16 @@ class TelegramCallbackEventProcessor:
             aggregate_id = result_id
             payload = {}
         elif action is CallbackAction.CONFIRM_NEW_ITEM:
-            outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+            if catalog_status == "awaiting_details":
+                outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+            else:
+                outcome_type = ProcessingOutcomeType.PROPOSAL_READY
             aggregate_id = result_id
             payload = {}
         elif action is CallbackAction.CANCEL_NEW_ITEM:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {
-                "message": (
-                    "🚫 **Catalog item creation cancelled**\n"
-                    "No catalog or inventory changes were applied."
-                )
-            }
+            payload = {"message": "🚫 **Catalog item creation cancelled**"}
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id
@@ -198,7 +196,7 @@ class TelegramCallbackEventProcessor:
         elif action is CallbackAction.CANCEL_PROPOSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."}
+            payload = {"message": "🚫 **Proposal cancelled**"}
         elif action is CallbackAction.REVERSE_TRANSACTION:
             outcome_type = ProcessingOutcomeType.REVERSAL_REASON_REQUIRED
             aggregate_id = result_id
@@ -213,15 +211,14 @@ class TelegramCallbackEventProcessor:
                 aggregate_id = None
                 payload = {
                     "message": (
-                        "✅ **Transaction reversed**\n"
-                        "The opposite inventory transaction was applied successfully."
+                        "✅ **Transaction reversed**\nThe original stock movement was reversed."
                     ),
                     "transaction_id": str(result_id),
                 }
         elif action is CallbackAction.CANCEL_REVERSAL:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
-            payload = {"message": "🚫 **Reversal cancelled**\nNo inventory changes were applied."}
+            payload = {"message": "🚫 **Reversal cancelled**"}
         else:
             raise ValueError("Completed callback action is not supported")
 
@@ -235,7 +232,14 @@ class TelegramCallbackEventProcessor:
                 payload=payload,
             )
         )
-        if self._conversation_recorder is not None and action in _CONTEXT_LIFECYCLE_ACTIONS:
+        conflict_reopened = (
+            action is CallbackAction.CONFIRM_NEW_ITEM and catalog_status == "awaiting_details"
+        )
+        if (
+            self._conversation_recorder is not None
+            and action in _CONTEXT_LIFECYCLE_ACTIONS
+            and not conflict_reopened
+        ):
             await self._conversation_recorder.record_callback_outcome(
                 organization_id=organization_id,
                 organization_user_id=actor_id,

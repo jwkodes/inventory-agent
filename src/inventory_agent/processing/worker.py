@@ -69,6 +69,10 @@ from inventory_agent.proposals.repository import SupabaseProposalRepository
 from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.client import TelegramBotClient
+from inventory_agent.telegram.registration import (
+    SupabaseRegistrationRepository,
+    TelegramRegistrationNotificationWorker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +102,12 @@ async def run_loop(
     callback_processor: NextCallbackEventProcessor,
     image_processor: NextImageEventProcessor,
     text_processor: NextTextEventProcessor,
+    registration_delivery_worker: NextOutboxDeliveryWorker,
     delivery_worker: NextOutboxDeliveryWorker,
     watch: bool,
     poll_seconds: float,
 ) -> None:
-    """Prioritize button actions, then process images, text, and outbound delivery."""
+    """Process inputs, registration notices, and ordinary outbound delivery."""
 
     while True:
         callback_result: CallbackEventProcessingResult | None = None
@@ -144,19 +149,30 @@ async def run_loop(
                 text_result.proposal_id,
             )
 
+        registration_delivery_result = await registration_delivery_worker.deliver_one()
+        if registration_delivery_result.status is not OutboxDeliveryStatus.IDLE:
+            logger.info(
+                "registration_delivery status=%s notification_id=%s telegram_message_id=%s",
+                registration_delivery_result.status,
+                registration_delivery_result.outbox_id,
+                registration_delivery_result.telegram_message_id,
+            )
+
         delivery_result = await delivery_worker.deliver_one()
-        logger.info(
-            "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
-            delivery_result.status,
-            delivery_result.outbox_id,
-            delivery_result.telegram_message_id,
-        )
+        if delivery_result.status is not OutboxDeliveryStatus.IDLE:
+            logger.info(
+                "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
+                delivery_result.status,
+                delivery_result.outbox_id,
+                delivery_result.telegram_message_id,
+            )
         if not watch:
             return
         if (
             callback_result is None
             and image_result is None
             and text_result is None
+            and registration_delivery_result.status is OutboxDeliveryStatus.IDLE
             and delivery_result.status is OutboxDeliveryStatus.IDLE
         ):
             await asyncio.sleep(poll_seconds)
@@ -289,6 +305,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reversals=reversal_repository,
                 catalog=catalog_repository,
                 catalog_interpreter=catalog_interpreter,
+                bot_username=settings.telegram_bot_username,
                 context_manager=AgentContextManager(
                     conversations=agent_repository,
                     defaults=ContextRetentionSettings(
@@ -317,6 +334,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 catalog=catalog_repository,
                 clarifications=clarification_repository,
                 candidate_judge=candidate_judge,
+                bot_username=settings.telegram_bot_username,
             )
         image_processor = TelegramImageEventProcessor(
             events=event_repository,
@@ -332,16 +350,25 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reasoning_effort=settings.openai_reasoning_effort,
             ),
             commands=command_handler,
+            bot_username=settings.telegram_bot_username,
         )
         delivery_worker = TelegramOutboxDeliveryWorker(
             repository=proposal_view_repository,
             sender=telegram_client,
             display_timezone=settings.inventory_display_timezone,
         )
+        registration_delivery_worker = TelegramRegistrationNotificationWorker(
+            repository=SupabaseRegistrationRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            sender=telegram_client,
+        )
         await run_loop(
             callback_processor=callback_processor,
             image_processor=image_processor,
             text_processor=text_processor,
+            registration_delivery_worker=registration_delivery_worker,
             delivery_worker=delivery_worker,
             watch=watch,
             poll_seconds=poll_seconds,

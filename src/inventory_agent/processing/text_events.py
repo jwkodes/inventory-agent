@@ -24,6 +24,7 @@ from inventory_agent.processing.repository import (
 )
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
+from inventory_agent.telegram.group_activation import strip_bot_reference
 
 
 class CommandInterpreter(Protocol):
@@ -61,6 +62,7 @@ class TelegramTextEventProcessor:
         catalog: CatalogItemCreationRepository,
         clarifications: MatchClarificationRepository | None = None,
         candidate_judge: CandidateJudge | None = None,
+        bot_username: str | None = None,
     ) -> None:
         self._events = events
         self._interpreter = interpreter
@@ -70,6 +72,7 @@ class TelegramTextEventProcessor:
         self._catalog = catalog
         self._clarifications = clarifications
         self._candidate_judge = candidate_judge
+        self._bot_username = bot_username
         self._commands = InventoryCommandHandler(
             matcher=matcher,
             proposals=proposals,
@@ -99,6 +102,14 @@ class TelegramTextEventProcessor:
         context: TelegramTextEventContext,
     ) -> TextEventProcessingResult:
         try:
+            context = context.model_copy(
+                update={
+                    "message_text": strip_bot_reference(
+                        context.message_text,
+                        bot_username=self._bot_username,
+                    )
+                }
+            )
             reversal_request_id = await self._reversals.capture_reason(
                 event_id=context.event_id,
                 actor_id=context.organization_user_id,
@@ -198,9 +209,7 @@ class TelegramTextEventProcessor:
                                 payload={
                                     "message": (
                                         "❓ **More information needed**\n"
-                                        "I still need "
-                                        f"{_natural_list(missing)}. "
-                                        "Reply naturally with the missing information."
+                                        f"Please send {_natural_list(missing)} in any format."
                                     )
                                 },
                             )

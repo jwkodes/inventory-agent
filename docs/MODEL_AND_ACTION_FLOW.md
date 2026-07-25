@@ -168,6 +168,35 @@ flowchart LR
 A reversal follows the same rule: the system creates a new opposite transaction. It never
 edits or deletes the original applied transaction.
 
+Transaction selection is deterministic even though the model conducts the conversation:
+
+```mermaid
+flowchart LR
+    U["Raw user message"] --> X{"Contains full UUID?"}
+    X -->|Yes| E["Application extracts UUID<br/>Exact company lookup"]
+    X -->|No / natural description| R["Model calls read_transactions"]
+    E --> T["Server maps result to T1/T2"]
+    R --> T
+    T --> M["Model proposes reversal using current-turn ref"]
+    M --> V["Server resolves ref to exact UUID"]
+    V --> P["Pending reversal confirmation"]
+    E -->|No exact row| N["Ask user to recopy or list transactions"]
+```
+
+The displayed UUID remains useful to workers and auditors, but it is not accepted as a
+model-supplied reversal argument. Current-turn references expire after each user message.
+When a user says “the first one” later, the agent rereads the ledger and receives a fresh
+mapping. Reusable conversation context retains user intent but strips old transaction
+tool results and their assistant paraphrases; raw event traces remain in the dashboard.
+
+## Runtime timing
+
+Every model boundary and major deterministic stage emits a structured
+`component_runtime` log with `duration_ms`. This covers webhook ingestion, conversation
+storage, compaction, model rounds, OpenAI calls, embeddings, catalog and balance reads,
+tools, outbox rendering, Telegram delivery, and total text-event duration. Timings are
+emitted when real work happens; they are diagnostic measurements rather than heartbeats.
+
 ## Important routing notes
 
 - The API never calls OpenAI. It authenticates and stores Telegram updates quickly.

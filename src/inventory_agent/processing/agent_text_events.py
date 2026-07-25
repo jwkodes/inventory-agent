@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -10,7 +13,9 @@ from inventory_agent.agent.context import (
     AgentContextManager,
     durable_history_items,
     estimate_history_tokens,
+    model_history_items,
 )
+from inventory_agent.agent.models import TransactionRecord
 from inventory_agent.agent.production_tools import (
     AgentCatalogReader,
     ProductionInventoryAgentTools,
@@ -43,8 +48,15 @@ from inventory_agent.proposals.actions import (
 )
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
+from inventory_agent.telegram.group_activation import strip_bot_reference
 
 logger = logging.getLogger(__name__)
+TRANSACTION_UUID_PATTERN = re.compile(
+    r"(?<![0-9a-fA-F])"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"(?![0-9a-fA-F])"
+)
 
 
 class CatalogDetailsInterpreter(Protocol):
@@ -79,6 +91,7 @@ class TelegramAgentTextEventProcessor:
         catalog: CatalogItemCreationRepository,
         catalog_interpreter: CatalogDetailsInterpreter,
         context_manager: AgentContextManager | None = None,
+        bot_username: str | None = None,
     ) -> None:
         self._events = events
         self._model = model
@@ -92,6 +105,7 @@ class TelegramAgentTextEventProcessor:
         self._catalog = catalog
         self._catalog_interpreter = catalog_interpreter
         self._context_manager = context_manager
+        self._bot_username = bot_username
 
     async def process(self, event_id: UUID) -> TextEventProcessingResult:
         context = await self._events.claim_text_event(event_id)
@@ -112,15 +126,30 @@ class TelegramAgentTextEventProcessor:
         self,
         context: TelegramTextEventContext,
     ) -> TextEventProcessingResult:
+        processing_started = perf_counter()
         try:
+            context = context.model_copy(
+                update={
+                    "message_text": strip_bot_reference(
+                        context.message_text,
+                        bot_username=self._bot_username,
+                    )
+                }
+            )
             pending = await self._handle_pending_deterministic_flow(context)
             if pending is not None:
                 return pending
 
+            conversation_load_started = perf_counter()
             conversation = await self._conversations.load(
                 organization_id=context.organization_id,
                 organization_user_id=context.organization_user_id,
                 chat_id=context.chat_id,
+            )
+            self._log_runtime(
+                component="conversation_load",
+                started=conversation_load_started,
+                context=context,
             )
             if conversation.last_source_event_id == context.event_id:
                 result = await self._enqueue_replayed_turn(context, conversation)
@@ -135,8 +164,25 @@ class TelegramAgentTextEventProcessor:
                 return proposal_control
 
             if self._context_manager is not None:
+                compaction_started = perf_counter()
                 conversation = await self._context_manager.compact_if_needed(conversation)
+                self._log_runtime(
+                    component="context_compaction_before_turn",
+                    started=compaction_started,
+                    context=context,
+                )
 
+            exact_lookup_started = perf_counter()
+            preselected_transactions, turn_context = await self._resolve_explicit_transactions(
+                context
+            )
+            self._log_runtime(
+                component="explicit_transaction_resolution",
+                started=exact_lookup_started,
+                context=context,
+                requested=len(_transaction_ids_in_text(context.message_text)),
+                found=len(preselected_transactions),
+            )
             tools = ProductionInventoryAgentTools(
                 context=ProductionToolContext(
                     organization_id=context.organization_id,
@@ -151,9 +197,9 @@ class TelegramAgentTextEventProcessor:
                 proposals=self._proposals,
                 reversals=self._reversals,
                 allowed_variant_ids=set(conversation.allowed_variant_ids),
-                allowed_transaction_ids=set(conversation.allowed_transaction_ids),
+                preselected_transactions=preselected_transactions,
             )
-            active_history = durable_history_items(conversation.history)
+            active_history = model_history_items(conversation.history)
             session = InventoryAgentSession(
                 model=self._model,
                 tools=tools,
@@ -161,10 +207,11 @@ class TelegramAgentTextEventProcessor:
                 summary=conversation.summary,
             )
             history_start = len(active_history)
-            reply = await session.handle(context.message_text)
+            reply = await session.handle(context.message_text, turn_context=turn_context)
             raw_turn_history = session.history[history_start:]
             turn_history = durable_history_items(raw_turn_history)
             persisted_history = active_history + turn_history
+            save_started = perf_counter()
             await self._conversations.save(
                 conversation_id=conversation.conversation_id,
                 source_event_id=context.event_id,
@@ -184,12 +231,23 @@ class TelegramAgentTextEventProcessor:
                 output_tokens=reply.output_tokens,
                 total_tokens=reply.total_tokens,
             )
+            self._log_runtime(
+                component="conversation_save",
+                started=save_started,
+                context=context,
+            )
+            enqueue_started = perf_counter()
             result = await self._enqueue_agent_turn(
                 context=context,
                 reply_text=reply.text,
                 proposal_id=tools.stock_proposal_id,
                 reversal_request_id=tools.reversal_request_id,
                 reversal_reason=tools.reversal_reason,
+            )
+            self._log_runtime(
+                component="outbox_enqueue_agent_turn",
+                started=enqueue_started,
+                context=context,
             )
             await self._require_finish(context.event_id)
             await self._compact_after_turn(context)
@@ -207,6 +265,79 @@ class TelegramAgentTextEventProcessor:
                     "Agent processing and failure recording both failed"
                 ) from finish_error
             raise AgentTextEventProcessingError("Agent text event processing failed") from error
+        finally:
+            self._log_runtime(
+                component="telegram_text_event_total",
+                started=processing_started,
+                context=context,
+            )
+
+    async def _resolve_explicit_transactions(
+        self,
+        context: TelegramTextEventContext,
+    ) -> tuple[list[TransactionRecord], list[dict[str, object]]]:
+        requested = _transaction_ids_in_text(context.message_text)
+        if not requested:
+            return [], []
+        found: list[TransactionRecord] = []
+        missing: list[str] = []
+        for transaction_id in requested:
+            records = await self._reads.read_transactions(
+                organization_id=context.organization_id,
+                query=str(transaction_id),
+                limit=1,
+            )
+            exact = next(
+                (record for record in records if UUID(record.transaction_id) == transaction_id),
+                None,
+            )
+            if exact is None:
+                missing.append(str(transaction_id))
+            else:
+                found.append(exact)
+        resolved = [
+            {
+                **transaction.model_dump(mode="json"),
+                "transaction_ref": f"T{index}",
+            }
+            for index, transaction in enumerate(found, start=1)
+        ]
+        context_payload = {
+            "authoritative_current_turn_transaction_resolution": {
+                "resolved": resolved,
+                "not_found": missing,
+                "instruction": (
+                    "Use transaction_ref for reversal proposals. UUID text is display-only. "
+                    "Do not fuzzy-match or repair a UUID that was not found."
+                ),
+            }
+        }
+        return found, [
+            {
+                "role": "system",
+                "content": json.dumps(context_payload, separators=(",", ":"), default=str),
+            }
+        ]
+
+    @staticmethod
+    def _log_runtime(
+        *,
+        component: str,
+        started: float,
+        context: TelegramTextEventContext,
+        **fields: object,
+    ) -> None:
+        details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        logger.info(
+            "component_runtime component=%s duration_ms=%.2f organization_id=%s "
+            "source_event_id=%s chat_id=%s%s",
+            component,
+            (perf_counter() - started) * 1000,
+            context.organization_id,
+            context.event_id,
+            context.chat_id,
+            f" {details}" if details else "",
+        )
 
     async def _compact_after_turn(self, context: TelegramTextEventContext) -> None:
         if self._context_manager is None:
@@ -287,8 +418,7 @@ class TelegramAgentTextEventProcessor:
                     payload={
                         "message": (
                             "❓ **More information needed**\n"
-                            f"I still need {_natural_list(missing)}. "
-                            "Reply naturally with the missing information."
+                            f"Please send {_natural_list(missing)} in any format."
                         )
                     },
                 )
@@ -344,10 +474,8 @@ class TelegramAgentTextEventProcessor:
                     chat_id=context.chat_id,
                     payload={
                         "message": (
-                            "⚠️ **No active proposal selected**\n"
-                            f"I did not {action} anything because this conversation is "
-                            "not currently pointing to a pending stock proposal. Ask me "
-                            "to prepare or show the intended change again."
+                            "⚠️ **No pending proposal**\n"
+                            f"There is nothing to {action}. Ask me to prepare the change first."
                         )
                     },
                 )
@@ -382,11 +510,9 @@ class TelegramAgentTextEventProcessor:
                     chat_id=context.chat_id,
                     payload={
                         "message": (
-                            "⚠️ **Proposal action not applied**\n"
-                            f"I could not {action} the active proposal. It may still "
-                            "need an item match, may no longer be pending, or may fail an "
-                            "inventory validation. No additional stock change was made. "
-                            "Ask me to show or prepare the intended change again."
+                            "⚠️ **Proposal not updated**\n"
+                            f"I couldn't {action} it because it is incomplete or no longer "
+                            "pending. Ask me to prepare the change again."
                         )
                     },
                 )
@@ -416,7 +542,7 @@ class TelegramAgentTextEventProcessor:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             status = TextEventProcessingStatus.AGENT_MESSAGE
             aggregate_id = None
-            payload = {"message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."}
+            payload = {"message": "🚫 **Proposal cancelled**"}
             lifecycle_message = (
                 "Inventory system event: The user typed the exact Cancel command for "
                 f"stock proposal {result_id}. It was cancelled and no inventory change "
@@ -542,3 +668,15 @@ def _typed_proposal_control(message_text: str) -> str | None:
     if normalized in {"confirm", "cancel"}:
         return normalized
     return None
+
+
+def _transaction_ids_in_text(message_text: str) -> list[UUID]:
+    transaction_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for match in TRANSACTION_UUID_PATTERN.finditer(message_text):
+        transaction_id = UUID(match.group())
+        if transaction_id in seen:
+            continue
+        seen.add(transaction_id)
+        transaction_ids.append(transaction_id)
+    return transaction_ids

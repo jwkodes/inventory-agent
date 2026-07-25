@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.repository import CatalogItemConfirmationConflict
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
     TelegramCallbackDispatcher,
@@ -118,9 +119,11 @@ class RecordingCatalog:
         events: list[str],
         *,
         status: str = "awaiting_confirmation",
+        confirmation_conflict: bool = False,
     ) -> None:
         self.events = events
         self.status = status
+        self.confirmation_conflict = confirmation_conflict
 
     async def begin(self, *, line_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
         self.events.append("begin_catalog")
@@ -154,6 +157,11 @@ class RecordingCatalog:
 
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("confirm_catalog")
+        if self.confirmation_conflict:
+            raise CatalogItemConfirmationConflict(
+                request_id=request_id,
+                message="SKU HAC-001 is already used by the blue variant.",
+            )
         return PROPOSAL_ID
 
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
@@ -326,3 +334,29 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         "ack",
         "cancel_catalog",
     ]
+
+
+async def test_duplicate_catalog_sku_reopens_details_and_alerts_immediately() -> None:
+    events: list[str] = []
+    answerer = RecordingAnswerer(events)
+    callback_dispatcher = TelegramCallbackDispatcher(
+        answerer=answerer,
+        repository=RecordingActions(events),
+        reversals=RecordingReversals(events),
+        catalog=RecordingCatalog(events, confirmation_conflict=True),
+    )
+
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="duplicate-sku",
+        callback_data=encode_callback(
+            CallbackCommand(CallbackAction.CONFIRM_NEW_ITEM, CATALOG_REQUEST_ID)
+        ),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.status is CallbackOutcomeStatus.COMPLETED
+    assert outcome.result_id == CATALOG_REQUEST_ID
+    assert outcome.catalog_status == "awaiting_details"
+    assert answerer.alert is True
+    assert events == ["ack", "confirm_catalog", "ack"]

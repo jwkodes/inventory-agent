@@ -210,9 +210,7 @@ async def test_cancelled_proposal_sends_a_new_notice() -> None:
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
     assert outbox.drafts[0].aggregate_id is None
-    assert outbox.drafts[0].payload == {
-        "message": "🚫 **Proposal cancelled**\nNo inventory changes were applied."
-    }
+    assert outbox.drafts[0].payload == {"message": "🚫 **Proposal cancelled**"}
 
 
 async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
@@ -265,10 +263,7 @@ async def test_confirmed_reversal_removes_buttons() -> None:
     assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
     assert outbox.drafts[0].payload == {
-        "message": (
-            "✅ **Transaction reversed**\n"
-            "The opposite inventory transaction was applied successfully."
-        ),
+        "message": ("✅ **Transaction reversed**\nThe original stock movement was reversed."),
         "transaction_id": str(TRANSACTION_ID),
     }
 
@@ -318,9 +313,7 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
     await processor.process_next()
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
-    assert outbox.drafts[0].payload == {
-        "message": "🚫 **Reversal cancelled**\nNo inventory changes were applied."
-    }
+    assert outbox.drafts[0].payload == {"message": "🚫 **Reversal cancelled**"}
 
 
 @pytest.mark.parametrize(
@@ -368,6 +361,36 @@ async def test_catalog_actions_send_new_outbox_messages(
     await processor.process_next()
 
     assert outbox.drafts[0].outcome_type.value == outcome_type
+
+
+async def test_duplicate_catalog_sku_sends_new_detail_prompt_without_retrying() -> None:
+    events = FakeEvents(context())
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    conversation = RecordingConversation()
+    processor = TelegramCallbackEventProcessor(
+        events=events,
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CONFIRM_NEW_ITEM,
+                PROPOSAL_ID,
+                "SKU already in use",
+                "awaiting_details",
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+        conversation_recorder=conversation,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == "catalog_item_details_required"
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
+    assert editor.removed_keyboards == [(-100123, 77)]
+    assert conversation.calls == []
+    assert events.finishes == [(EVENT_ID, True, None)]
 
 
 async def test_invalid_callback_is_completed_without_editing_message() -> None:

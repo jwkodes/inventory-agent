@@ -1,8 +1,10 @@
 """Constrained LLM judgment of already-retrieved inventory candidates."""
 
 import json
+import logging
 import re
 from enum import StrEnum
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -12,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from inventory_agent.extraction.schema import ExtractedAttribute, ExtractedCommandLine
 from inventory_agent.matching.models import InventoryCandidate
+
+logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "inventory-candidate-judge-v1"
 INSTRUCTIONS = """You judge whether an inventory mention matches one of a small set of
@@ -128,6 +132,7 @@ class OpenAICandidateJudge:
             "ATTRIBUTE_MATCHING_ROLES": roles,
             "CANDIDATES": candidate_payload,
         }
+        started = perf_counter()
         response = await self._client.responses.parse(
             model=self._model,
             reasoning={"effort": self._reasoning_effort},
@@ -135,6 +140,13 @@ class OpenAICandidateJudge:
             input=json.dumps(payload, ensure_ascii=False),
             text_format=CandidateJudgeOutput,
             store=False,
+        )
+        logger.info(
+            "component_runtime component=candidate_judge duration_ms=%.2f model=%s "
+            "candidate_count=%s",
+            (perf_counter() - started) * 1000,
+            getattr(response, "model", self._model),
+            len(candidates),
         )
         judgment = response.output_parsed
         if judgment is None:

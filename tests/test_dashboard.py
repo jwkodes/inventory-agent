@@ -18,13 +18,23 @@ from inventory_agent.main import create_app
 ORGANIZATION_ID = UUID("10000000-0000-0000-0000-000000000001")
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 CONVERSATION_ID = UUID("65000000-0000-0000-0000-000000000001")
+REGISTRATION_REQUEST_ID = UUID("72000000-0000-0000-0000-000000000001")
 
 
 class FakeDashboardRepository:
-    context_settings: dict[str, object] | None = None
+    def __init__(self) -> None:
+        self.context_settings: dict[str, object] | None = None
+        self.registration_actions: list[tuple[str, object]] = []
 
     async def list_organizations(self) -> list[dict[str, object]]:
-        return [{"id": str(ORGANIZATION_ID), "name": "Demo SME", "inventory_profile": "general"}]
+        return [
+            {
+                "id": str(ORGANIZATION_ID),
+                "name": "Cabybaba Pte Ltd",
+                "slug": "cabybaba-pte-ltd",
+                "inventory_profile": "general",
+            }
+        ]
 
     async def list_events(
         self,
@@ -42,7 +52,52 @@ class FakeDashboardRepository:
 
     async def get_inventory(self, *, organization_id: UUID) -> dict[str, object]:
         assert organization_id == ORGANIZATION_ID
-        return {"metrics": {"active_skus": 1}, "items": []}
+        return {"metrics": {"active_skus": 1}, "items": [], "resets": []}
+
+    async def reset_inventory_data(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        if kwargs["confirmation"] != "RESET cabybaba-pte-ltd":
+            raise ValueError(
+                "Type RESET cabybaba-pte-ltd exactly to confirm the inventory data reset"
+            )
+        self.registration_actions.append(("reset", kwargs))
+        return {
+            "status": "reset",
+            "reset_id": "reset-1",
+            "deleted_counts": {"items": 7, "transactions": 12},
+            "preserved": ["members", "locations"],
+        }
+
+    async def get_membership_administration(self, *, organization_id: UUID) -> dict[str, object]:
+        assert organization_id == ORGANIZATION_ID
+        return {
+            "invites": [],
+            "requests": [
+                {
+                    "id": str(REGISTRATION_REQUEST_ID),
+                    "display_name": "New Worker",
+                    "status": "pending",
+                }
+            ],
+            "members": [{"display_name": "Demo Admin", "role": "admin", "active": True}],
+        }
+
+    async def create_registration_invite(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        assert isinstance(kwargs["code_hash"], str)
+        assert len(str(kwargs["code_hash"])) == 64
+        self.registration_actions.append(("invite", kwargs))
+        return {"id": "invite-1", "code_hint": kwargs["code_hint"]}
+
+    async def approve_registration(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        self.registration_actions.append(("approve", kwargs))
+        return {"status": "approved", "role": kwargs["role"]}
+
+    async def reject_registration(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["organization_id"] == ORGANIZATION_ID
+        self.registration_actions.append(("reject", kwargs))
+        return {"status": "rejection_notifying"}
 
     async def get_context_settings(self, *, organization_id: UUID) -> dict[str, object] | None:
         assert organization_id == ORGANIZATION_ID
@@ -102,17 +157,23 @@ class FakeSupervisorClient:
 
     def __init__(self) -> None:
         self.commands = []
+        self.worker_running = True
 
     async def status(self) -> dict[str, object]:
         return {
             "services": {
                 "api": {"running": True, "logs": []},
-                "worker": {"running": True, "logs": ["worker idle"]},
+                "worker": {"running": self.worker_running, "logs": ["worker idle"]},
             }
         }
 
     async def command(self, *, action: str, service: str) -> dict[str, object]:
         self.commands.append((action, service))
+        if service == "worker":
+            if action == "stop":
+                self.worker_running = False
+            elif action in {"start", "restart"}:
+                self.worker_running = True
         return {"accepted": True, "action": action, "service": service}
 
 
@@ -147,10 +208,13 @@ async def test_dashboard_requires_basic_auth_and_serves_self_contained_ui() -> N
     assert "Conversations" in response.text
     assert "Configuration" in response.text
     assert "App health" in response.text
+    assert "Members" in response.text
+    assert "Create registration invite" in response.text
     assert "Restart receiver" in response.text
     assert "Restart only the web process that receives Telegram updates" in response.text
     assert "Model assignments and invocation" in response.text
     assert "/dev/api/events" in response.text
+    assert "Reset inventory test data" in response.text
 
 
 async def test_dashboard_read_apis_are_authenticated_and_organization_scoped() -> None:
@@ -173,7 +237,7 @@ async def test_dashboard_read_apis_are_authenticated_and_organization_scoped() -
         )
         prompts = await client.get("/dev/api/prompts", headers=basic_header())
 
-    assert organizations.json()["organizations"][0]["name"] == "Demo SME"
+    assert organizations.json()["organizations"][0]["name"] == "Cabybaba Pte Ltd"
     assert events.json()["events"][0]["summary"] == "Received 3 widgets"
     assert flow.json()["event"]["id"] == str(EVENT_ID)
     assert inventory.json()["metrics"]["active_skus"] == 1
@@ -237,6 +301,99 @@ async def test_dashboard_configuration_and_conversation_apis() -> None:
     assert conversations.json()["conversations"][0]["chat_id"] == 123
     assert detail.json()["user"]["display_name"] == "Demo Manager"
     assert reset.json()["cleared"] is True
+
+
+async def test_dashboard_admin_can_create_invite_approve_and_reject() -> None:
+    repository = FakeDashboardRepository()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: dashboard_settings(enabled=True, writes=True)
+    app.dependency_overrides[get_dashboard_repository] = lambda: repository
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://127.0.0.1",
+    ) as client:
+        membership = await client.get(
+            "/dev/api/memberships",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+        invite = await client.post(
+            "/dev/api/membership-invites",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={"expires_in_hours": 72, "max_uses": 1},
+            headers=basic_header(),
+        )
+        approved = await client.post(
+            f"/dev/api/registration-requests/{REGISTRATION_REQUEST_ID}/approve",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={"role": "manager"},
+            headers=basic_header(),
+        )
+        rejected = await client.post(
+            f"/dev/api/registration-requests/{REGISTRATION_REQUEST_ID}/reject",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            headers=basic_header(),
+        )
+
+    assert membership.json()["requests"][0]["display_name"] == "New Worker"
+    assert invite.status_code == 201
+    assert invite.json()["command"].startswith("/register INV-")
+    assert invite.json()["shown_once"] is True
+    assert approved.json() == {"status": "approved", "role": "manager"}
+    assert rejected.json() == {"status": "rejection_notifying"}
+    assert [action for action, _ in repository.registration_actions] == [
+        "invite",
+        "approve",
+        "reject",
+    ]
+
+
+async def test_dashboard_reset_stops_worker_resets_selected_company_and_restarts() -> None:
+    repository = FakeDashboardRepository()
+    supervisor = FakeSupervisorClient()
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: dashboard_settings(enabled=True, writes=True)
+    app.dependency_overrides[get_dashboard_repository] = lambda: repository
+    app.dependency_overrides[get_supervisor_client] = lambda: supervisor
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://127.0.0.1",
+    ) as client:
+        rejected = await client.post(
+            "/dev/api/inventory/reset",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={"confirmation": "RESET another-company"},
+            headers=basic_header(),
+        )
+        reset = await client.post(
+            "/dev/api/inventory/reset",
+            params={"organization_id": str(ORGANIZATION_ID)},
+            json={"confirmation": "RESET cabybaba-pte-ltd"},
+            headers=basic_header(),
+        )
+
+    assert rejected.status_code == 503
+    assert reset.status_code == 200
+    assert reset.json()["deleted_counts"] == {"items": 7, "transactions": 12}
+    assert reset.json()["processor_restarted"] is True
+    assert supervisor.commands == [
+        ("stop", "worker"),
+        ("start", "worker"),
+        ("stop", "worker"),
+        ("start", "worker"),
+    ]
+    assert supervisor.worker_running is True
+    assert repository.registration_actions == [
+        (
+            "reset",
+            {
+                "organization_id": ORGANIZATION_ID,
+                "confirmation": "RESET cabybaba-pte-ltd",
+            },
+        )
+    ]
 
 
 async def test_dashboard_configuration_writes_require_separate_opt_in() -> None:
@@ -360,6 +517,8 @@ async def test_dashboard_repository_builds_event_summaries_and_inventory_rows() 
         if path.endswith("/item_unit_conversions"):
             return httpx.Response(200, json=[])
         if path.endswith("/inventory_transactions"):
+            return httpx.Response(200, json=[])
+        if path.endswith("/organization_data_resets"):
             return httpx.Response(200, json=[])
         if path.endswith("/transaction_lines"):
             return httpx.Response(200, json=[])

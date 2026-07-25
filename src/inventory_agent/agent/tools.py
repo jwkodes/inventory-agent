@@ -145,10 +145,11 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "description": (
             "Search recent immutable inventory transactions before proposing a reversal. "
             "A full transaction UUID performs an exact lookup. Returns authoritative "
-            "transaction IDs together with the stored transaction_type, stored status, "
-            "timestamp, summary, and derived reversed flag. A natural-language filtered "
-            "search also includes recent transactions as fallback evidence so wording "
-            "cannot hide an existing transaction."
+            "transaction_ref values for use by propose_reversal, plus display-only UUIDs, "
+            "the stored transaction_type, stored status, timestamp, summary, and derived "
+            "reversed flag. A natural-language filtered search also includes recent "
+            "transactions as fallback evidence so wording cannot hide an existing "
+            "transaction. References are valid only during the current user message."
         ),
         "strict": True,
         "parameters": {
@@ -166,16 +167,21 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "name": "propose_reversal",
         "description": (
             "Create a no-write compensating reversal proposal for a transaction returned by "
-            "read_transactions. For a correction whose replacement quantities are already "
-            "known, include a grounded replacement so its separate confirmation appears "
-            "automatically after the reversal succeeds. This never deletes history or "
-            "changes inventory."
+            "read_transactions during the current user message. Use its short transaction_ref, "
+            "never copy or reconstruct the display-only transaction UUID. For a correction "
+            "whose replacement quantities are already known, include a grounded replacement "
+            "so its separate confirmation appears automatically after the reversal succeeds. "
+            "This never deletes history or changes inventory."
         ),
         "strict": True,
         "parameters": {
             "type": "object",
             "properties": {
-                "transaction_id": {"type": "string", "minLength": 1},
+                "transaction_ref": {
+                    "type": "string",
+                    "pattern": "^T[1-9][0-9]*$",
+                    "description": "Current-turn reference returned by read_transactions.",
+                },
                 "reason": {"type": "string", "minLength": 1},
                 "replacement": {
                     "anyOf": [
@@ -197,7 +203,7 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
                     ]
                 },
             },
-            "required": ["transaction_id", "reason", "replacement"],
+            "required": ["transaction_ref", "reason", "replacement"],
             "additionalProperties": False,
         },
     },
@@ -216,7 +222,8 @@ class SimulatedInventoryTools:
         self._catalog = catalog
         self._transactions = transactions or []
         self._seen_variant_ids: set[str] = set()
-        self._seen_transaction_ids: set[str] = set()
+        self._transaction_ids_by_ref: dict[str, str] = {}
+        self._transaction_refs_by_id: dict[str, str] = {}
         self._results_by_call_id: dict[str, str] = {}
         self.proposals: list[SimulationProposal] = []
 
@@ -349,25 +356,32 @@ class SimulatedInventoryTools:
                 >= 0.3
             ]
         selected = transactions[: arguments.limit]
-        self._seen_transaction_ids.update(transaction.transaction_id for transaction in selected)
+        serialized = []
+        for transaction in selected:
+            transaction_ref = self._transaction_ref(transaction.transaction_id)
+            serialized.append(
+                {
+                    **transaction.model_dump(mode="json"),
+                    "transaction_ref": transaction_ref,
+                }
+            )
         return {
             "ok": True,
             "count": len(selected),
-            "transactions": [transaction.model_dump(mode="json") for transaction in selected],
+            "transactions": serialized,
         }
 
     def _propose_reversal(
         self,
         arguments: ReversalProposalArguments,
     ) -> dict[str, object]:
-        if arguments.transaction_id not in self._seen_transaction_ids:
-            raise ValueError("transaction_id was not returned by read_transactions in this session")
+        transaction_id = self._transaction_ids_by_ref.get(arguments.transaction_ref)
+        if transaction_id is None:
+            raise ValueError(
+                "transaction_ref was not returned by read_transactions during this user message"
+            )
         transaction = next(
-            (
-                record
-                for record in self._transactions
-                if record.transaction_id == arguments.transaction_id
-            ),
+            (record for record in self._transactions if record.transaction_id == transaction_id),
             None,
         )
         if transaction is None:
@@ -386,6 +400,15 @@ class SimulatedInventoryTools:
             "inventory_changed": False,
             "confirmation_required": True,
         }
+
+    def _transaction_ref(self, transaction_id: str) -> str:
+        existing = self._transaction_refs_by_id.get(transaction_id)
+        if existing is not None:
+            return existing
+        transaction_ref = f"T{len(self._transaction_ids_by_ref) + 1}"
+        self._transaction_ids_by_ref[transaction_ref] = transaction_id
+        self._transaction_refs_by_id[transaction_id] = transaction_ref
+        return transaction_ref
 
 
 def _attributes_include(

@@ -1,11 +1,15 @@
 """OpenAI-backed text interpretation using native Structured Outputs."""
 
+import logging
 from dataclasses import dataclass
+from time import perf_counter
 
 from openai import AsyncOpenAI
 from openai.types.shared import ReasoningEffort
 
 from inventory_agent.extraction.schema import ExtractedInventoryCommand
+
+logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "inventory-command-v1"
 INSTRUCTIONS = """You extract inventory commands from SME workers' messages.
@@ -67,6 +71,7 @@ class OpenAITextCommandInterpreter:
         if not user_text.strip():
             raise ValueError("user_text must not be empty")
 
+        started = perf_counter()
         response = await self._client.responses.parse(
             model=self._model,
             reasoning={"effort": self._reasoning_effort},
@@ -74,6 +79,11 @@ class OpenAITextCommandInterpreter:
             input=user_text,
             text_format=ExtractedInventoryCommand,
             store=False,
+        )
+        logger.info(
+            "component_runtime component=structured_text_extraction duration_ms=%.2f model=%s",
+            (perf_counter() - started) * 1000,
+            getattr(response, "model", self._model),
         )
         command = response.output_parsed
         if command is None:

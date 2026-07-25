@@ -302,8 +302,50 @@ electronics. Organizations can then modify the field definitions.
 - OpenAI, Telegram, and Supabase secret keys exist only on the backend.
 - Source artifacts are private and accessed through signed URLs.
 - Telegram chat ID alone is not authorization; the Telegram user must be an active
-  organization member with the required role.
+  organization member. Complete role-specific transaction reads and the remaining
+  mutation-policy matrix are future production-hardening work.
+- Group privacy may be disabled at Telegram so natural mentions are delivered, but the
+  webhook rejects group messages that do not mention the configured bot, reply directly
+  to it, or begin with a bot command. Rejected group chatter is never persisted or sent
+  to OpenAI.
+- Development user simulation is applied only after webhook-secret authentication and
+  only for a real active company admin. A chat-scoped, expiring session maps that
+  controller to a stable synthetic Telegram ID. The overlaid ID then passes through the
+  ordinary registration, membership, conversation, proposal, and callback authorization
+  paths; the source event retains both the controller and persona identities. `/user`
+  commands bypass inventory events and OpenAI, and the entire feature is unavailable
+  outside `APP_ENV=development`.
+- The prototype maps an immutable numeric Telegram user ID to one organization and one of
+  `worker`, `manager`, or `admin`. Multiple simultaneous active memberships are rejected
+  at the webhook until company selection exists.
+- Inventory and transaction reads are currently company-wide for every active role.
+  Workers can apply ordinary stock proposals; catalog creation and reversals require a
+  manager or admin. Narrower role-based reads remain production-hardening work.
+- The private-chat `/register INVITE_CODE` flow resolves the company from a
+  random, expiring, use-limited invite created by that company's admin. Only the invite
+  hash is stored, and redemption consumes a use atomically before a pending request is
+  created. Registration bypasses OpenAI and normal inventory-event storage and grants no
+  inventory access while pending.
+- A pending registration retains an applicant's Telegram details only while approval is
+  pending. Approval converts those details into an active, audited membership with the
+  admin-selected role. Registration state notices have their own durable worker queue.
+  Rejection moves to `rejection_notifying`; successful Telegram delivery atomically
+  deletes the pending request and all applicant profile fields, while failed delivery
+  schedules a retry. Previously approved members are deactivated instead of deleted so
+  transaction attribution and ledger audit links remain intact.
 - Database functions recheck authorization and transaction state.
+- Catalog creation checks company-SKU uniqueness when an agent draft is hydrated and again
+  immediately before insertion. A conflict reopens the durable request for a replacement
+  SKU, preserves all other item facts, and produces a new Telegram explanation instead of
+  retrying an unfulfillable button callback.
+- The development-only company reset is available only through the authenticated local
+  dashboard with writes and the process supervisor enabled. It requires an exact
+  `RESET <company-slug>` acknowledgement and an active company admin, pauses the worker,
+  then deletes that company's operational catalog, inventory ledger, proposals,
+  source-event records, and conversations in one database transaction. A
+  transaction-local service function may remove otherwise immutable ledger rows only
+  during this reset. Company identity, memberships, roles, locations, custom-field
+  configuration, registration state, company settings, and a reset audit are preserved.
 - Raw user content is data, not an instruction that can bypass business rules.
 - Applied ledger movements are immutable.
 

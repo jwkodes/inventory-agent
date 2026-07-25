@@ -478,6 +478,7 @@ async def test_filtered_transaction_read_includes_recent_fallback_evidence() -> 
     assert result["included_recent_fallback"] is True
     assert result["count"] == 1
     assert result["transactions"][0]["transaction_id"] == ("60000000-0000-0000-0000-000000000001")
+    assert result["transactions"][0]["transaction_ref"] == "T1"
     assert tools.allowed_transaction_ids == {UUID("60000000-0000-0000-0000-000000000001")}
 
 
@@ -511,6 +512,99 @@ async def test_full_transaction_id_is_exact_without_recent_fallback() -> None:
     assert result["included_recent_fallback"] is False
     assert result["transactions"][0]["transaction_type"] == "receive"
     assert result["transactions"][0]["status"] == "applied"
+    assert result["transactions"][0]["transaction_ref"] == "T1"
+
+
+async def test_transaction_reference_does_not_authorize_a_later_tool_instance() -> None:
+    first_turn = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-transaction-list",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=ExactTransactionReads(),
+        proposals=FakeProposals(),
+        reversals=FakeReversals(),
+    )
+    await first_turn.execute(
+        call_id="read-transaction",
+        name="read_transactions",
+        arguments={"query": str(TRANSACTION_ID), "limit": 1},
+    )
+    later_turn = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-later-turn",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=ExactTransactionReads(),
+        proposals=FakeProposals(),
+        reversals=FakeReversals(),
+    )
+
+    result = json.loads(
+        await later_turn.execute(
+            call_id="stale-reversal",
+            name="propose_reversal",
+            arguments={
+                "transaction_ref": "T1",
+                "reason": "Wrong transaction",
+                "replacement": None,
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert "during this user message" in result["error"]
+
+
+async def test_application_preselected_exact_transaction_authorizes_current_turn_ref() -> None:
+    transaction = (
+        await ExactTransactionReads().read_transactions(
+            organization_id=ORGANIZATION_ID,
+            query=str(TRANSACTION_ID),
+            limit=1,
+        )
+    )[0]
+    reversals = LinkedCorrectionReversals()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-exact-preselection",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=ExactTransactionReads(),
+        proposals=FakeProposals(),
+        reversals=reversals,
+        preselected_transactions=[transaction],
+    )
+
+    result = json.loads(
+        await tools.execute(
+            call_id="reverse-preselected",
+            name="propose_reversal",
+            arguments={
+                "transaction_ref": "T1",
+                "reason": "The user selected this exact UUID",
+                "replacement": None,
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert tools.reversal_request_id == REVERSAL_REQUEST_ID
 
 
 async def test_correction_reversal_persists_grounded_replacement_for_automatic_follow_up() -> None:
@@ -552,7 +646,7 @@ async def test_correction_reversal_persists_grounded_replacement_for_automatic_f
             call_id="correct-receipt",
             name="propose_reversal",
             arguments={
-                "transaction_id": str(TRANSACTION_ID),
+                "transaction_ref": "T1",
                 "reason": "The correct receipt was 5 widgets",
                 "replacement": {
                     "operation": "ADD",

@@ -279,8 +279,10 @@ It should return:
 Before registering a webhook, identify your Telegram numeric user ID:
 
 1. Put the BotFather token in `.env` as `TELEGRAM_BOT_TOKEN`.
-2. Send the bot a private message in Telegram.
-3. Run:
+2. Put the bot username without its leading `@` in `.env`, for example
+   `TELEGRAM_BOT_USERNAME=capybababot`.
+3. Send the bot a private message in Telegram.
+4. Run:
 
 ```bash
 uv run python -m inventory_agent.telegram.discover_users
@@ -331,6 +333,191 @@ The dashboard's application restart only recreates the supervisor's API and work
 processes. It deliberately leaves the supervisor running, so it cannot reload values that
 changed in `.env`; without the full restart, incoming messages can reach the new bot's
 webhook while replies are still sent with the old bot token.
+
+#### Safe Telegram group-chat activation
+
+Telegram privacy mode delivers addressed commands and direct replies to a bot, but it does
+not reliably deliver an ordinary natural-language `@botname` mention. To support natural
+group requests while preventing every group message from reaching OpenAI:
+
+1. Open `@BotFather` in Telegram and send `/setprivacy`.
+2. Select the inventory bot and choose **Disable**.
+3. Remove the bot from each existing group and add it again; Telegram applies the changed
+   privacy setting when the bot rejoins.
+4. Confirm that `.env` contains the exact username without `@`:
+
+   ```dotenv
+   TELEGRAM_BOT_USERNAME=capybababot
+   ```
+
+5. Fully reload `.env` with:
+
+   ```bash
+   ./scripts/stop-dev.sh
+   ./scripts/start-dev.sh
+   ```
+
+In a group or supergroup, the webhook accepts a message only when it:
+
+- contains the configured `@botname`;
+- is a direct Telegram reply to a message sent by that bot; or
+- starts with a bot command.
+
+All other group messages are acknowledged and discarded before membership lookup,
+`source_events` storage, worker processing, or an OpenAI request. Accepted messages still
+require the sender's Telegram user ID to map to exactly one active organization membership.
+The original Telegram payload is retained for audit, while the configured bot mention is
+removed from the text passed to the model. Private-chat behavior is unchanged.
+
+Agent conversation context is separate for each organization, organization user, and chat,
+so a group does not inherit anyone's direct-message conversation. Inventory balances and
+transactions are currently company-scoped, however: every active member of the same
+organization can read the shared company ledger. Per-role and per-user transaction
+visibility remains a production-hardening task in the build sequence below.
+
+#### Simulate multiple Telegram users in development
+
+One real Telegram account can exercise onboarding, roles, separate conversation history,
+and confirmation buttons through stable simulated identities. This feature is unavailable
+unless `APP_ENV=development`, is disabled by default, and only a real Telegram account with
+an active company `admin` membership may use it.
+
+Enable it in the local `.env`:
+
+```dotenv
+TELEGRAM_DEV_USER_SIMULATION_ENABLED=true
+TELEGRAM_DEV_USER_SIMULATION_SESSION_MINUTES=120
+```
+
+Then fully restart so the webhook process reloads `.env`:
+
+```bash
+./scripts/stop-dev.sh
+./scripts/start-dev.sh
+```
+
+Send these commands through the real bot:
+
+```text
+/user bob     create or select Bob in this chat
+/user Bob Lee create or select Bob Lee as the stable alias `bob-lee`
+/user         show the identity active in this chat
+/users        list personas created by your real account
+/user me      return to your real Telegram identity
+```
+
+Persona names are case-insensitive; spaces are normalized to hyphens, and aliases contain
+at most 28 letters, numbers, underscores, or hyphens. Each alias retains a stable synthetic
+Telegram ID across restarts. Selection is scoped to the real controller account and
+current chat, so choosing Bob in a private chat does not change the same controller's
+identity in a group. The session expires after the configured period of inactivity.
+
+To test the complete new-member journey:
+
+1. As the real admin, create an invite in **Members & registration**.
+2. In the bot's private chat, send `/user bob`.
+3. Send `/register INVITE_CODE`. The pending dashboard row is marked `🧪 simulated`.
+4. Approve Bob and choose a role in the dashboard.
+5. Continue sending inventory messages as Bob. Replies are headed
+   `🧪 Simulating Bob`, and buttons use Bob as their actor.
+6. Use `/user me` before returning to ordinary testing.
+
+The webhook secret is authenticated before simulation is considered. `/user` commands are
+deterministic, stored outside the inventory event stream, and never call OpenAI. For an
+ordinary message or callback, only the logical sender is replaced; the real controller ID,
+persona ID, alias, synthetic ID, and destination chat are retained in the source-event
+audit record. Simulated members still go through the normal invite, approval, role,
+membership, proposal, confirmation, and conversation boundaries.
+
+Disable `TELEGRAM_DEV_USER_SIMULATION_ENABLED` and fully restart before a real multi-person
+demo. In production the feature remains unavailable even if the setting is accidentally
+enabled.
+
+#### Registering company members
+
+The prototype has a deterministic, company-scoped invitation and approval flow. It uses
+the immutable numeric Telegram user ID as identity; Telegram `@username` and display name
+are retained only to help the admin recognize a pending applicant.
+
+1. An existing company admin creates an invite in the member-management dashboard. The
+   invite has an expiry and use limit; the UI defaults to three days and one use.
+2. The dashboard displays the random invite code once. The database stores only its
+   SHA-256 hash and a short non-secret hint, never the reusable plaintext code.
+3. The applicant opens a private chat with the bot and sends:
+
+   ```text
+   /register INVITE_CODE
+   ```
+
+   Registration codes must not be posted in a group. Group registration commands are
+   discarded before the code reaches storage.
+4. The webhook handles `/register` before ordinary membership resolution, validates and
+   consumes one invite use atomically, and creates a pending request for the invite's
+   company. It does not store a normal inventory `source_event`, call OpenAI, expose
+   inventory, or create an active membership.
+5. The company's admin sees the pending Telegram user in the dashboard and either approves
+   them with a `worker`, `manager`, or `admin` role or rejects them.
+6. Approval creates the active `organization_users` membership, records an immutable
+   membership audit entry, and queues a new Telegram approval message. Rejection first
+   queues and successfully sends a new Telegram notice, then permanently deletes the
+   pending request, Telegram ID, username, display name, and private source-chat ID.
+   Telegram failures are retried with backoff and do not delete the applicant prematurely.
+
+The company’s first admin is bootstrapped during company creation. The development seed
+creates `Demo Admin`; subsequent admins must join through approval and applicants cannot
+grant their own role.
+
+To use it:
+
+1. Set `DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true` in `.env` and start the app.
+2. Open the local dashboard, select **Members**, and choose **Generate invite**.
+3. Copy the displayed `/register ...` command immediately and send it privately to the
+   intended person. Refresh **Members** after they submit it.
+4. Choose their role, then press **Approve** or **Reject**. The worker sends the result as
+   a new Telegram message. No OpenAI API call is made anywhere in registration.
+
+For an existing local database that predates this feature, apply the new migration without
+resetting inventory:
+
+```bash
+supabase migration up --local
+./scripts/stop-dev.sh
+./scripts/start-dev.sh
+```
+
+The restart is required because the receiver gains the `/register` route and the worker
+gains registration-notification delivery. Future ordinary invite and approval operations
+take effect without restarting.
+
+The old manual `organization_users` insertion remains a development-only recovery path in
+Supabase Studio, but normal onboarding should use an invite so approval and role assignment
+are audited. Never identify a member by display name alone.
+
+The current roles are:
+
+- `worker`: read company inventory and transactions, prepare ordinary stock additions or
+  deductions, and confirm them;
+- `manager`: worker capabilities plus catalog-item creation and transaction reversal;
+- `admin`: currently the same inventory permissions as manager, reserved for later company
+  administration features.
+
+All three roles can currently read the company's shared transaction ledger. Role-specific
+transaction visibility is not implemented yet.
+
+To remove access without deleting audit-linked history, deactivate the membership:
+
+```sql
+update public.organization_users as member
+set active = false
+from public.organizations as organization
+where member.organization_id = organization.id
+  and organization.slug = 'cabybaba-pte-ltd'
+  and member.telegram_user_id = 123456789;
+```
+
+Do not give the same Telegram user active memberships in multiple companies yet. The
+webhook deliberately returns `organization_selection_required` instead of guessing which
+company an incoming message belongs to.
 
 After restarting the computer:
 
@@ -471,9 +658,10 @@ DEV_SUPERVISOR_TOKEN=${DEV_DASHBOARD_TOKEN}
 ```
 
 Leave `DEV_DASHBOARD_CONFIG_WRITES_ENABLED=false` if the console should be entirely
-read-only. When enabled, it only permits the four validated, non-secret context settings
-shown on the Configuration page. It does not permit arbitrary environment-variable,
-database, secret, model, process, or shell changes.
+read-only. When enabled, it permits the validated, non-secret context settings and the
+explicit development-admin actions shown in the dashboard, including registration
+administration and the guarded inventory reset. It does not permit arbitrary
+environment-variable, secret, model, or shell changes.
 
 Restart the API after changing `.env`, then open:
 
@@ -487,14 +675,17 @@ do not put it in screenshots, source control, or shell history shared with other
 dashboard settings page identifies which values are editable and whether a restart is
 required.
 
-The dashboard has six views:
+The dashboard has seven views:
 
 - **Flow inspector** lists Telegram source events and reconstructs the durable path through
   raw input, source artifacts, current conversation context, model/tool messages, proposal
   and matching evidence, catalog clarification, outbound delivery, and applied transaction.
   Expandable JSON preserves the exact stored records for debugging.
 - **Inventory** shows every SKU, item and variant attributes, tracking mode, current
-  location balances, unit conversions, and the recent immutable transaction ledger.
+  location balances, unit conversions, and the recent immutable transaction ledger. Its
+  danger zone contains the guarded test-data reset described below.
+- **Members & registration** creates expiring invite codes, shows pending applicants, and
+  lets a company admin approve a role or reject and remove an applicant.
 - **App health** gives each live component a plainly named health card. Green means the
   local process controller, Telegram receiver/dashboard, inventory message processor,
   Supabase API, or Telegram public connection passed its current check; red shows the
@@ -515,11 +706,38 @@ The dashboard has six views:
   extraction, invoice extraction, catalog detail extraction, candidate judgment, and
   semantic retrieval.
 
-For the most recent main-agent turn, the persisted conversation snapshot is the exact
-model context ending at that turn. Older source events and deterministic callback events
-show the latest conversation snapshot for the same Telegram chat as supporting context;
-the selected event's raw input, proposal, matching evidence, outbox, and transaction
-records remain event-specific.
+#### Reset one company's inventory test data
+
+Use this only from the local dashboard while stress testing:
+
+1. Select the company in the dashboard header.
+2. Open **Inventory** and scroll to **Danger zone**.
+3. Click **Reset inventory test data**.
+4. Type the exact company-specific phrase shown, such as `RESET cabybaba-pte-ltd`.
+
+The API pauses the inventory message processor, runs one atomic company-scoped database
+reset, and starts the processor again if it was running beforehand. It deletes:
+
+- catalog items, variants, identifiers, aliases, unit conversions, and embeddings;
+- balances, lots, serials, immutable transaction ledger rows, and stock movements;
+- pending proposals, matching/catalog/reversal requests, and outbound processing records;
+- Telegram source-event and source-artifact database records; and
+- agent conversations and their stored turn history.
+
+It preserves the company, approved members and roles, locations, custom-field definitions,
+company settings, registration records, and a durable reset audit containing the deleted
+row counts. The reset is rejected unless dashboard writes and the local supervisor are
+enabled, the request comes through `localhost`, an active company admin exists, and the
+confirmation is exactly `RESET <selected-company-slug>`. Files previously uploaded to the
+local Supabase Storage bucket are not deleted in this prototype; their application
+database records are removed, so they no longer appear in the dashboard or agent flow.
+
+For the most recent main-agent turn, the raw turn trace retains the model/tool exchange and
+any exact UUID resolution used during that turn for dashboard auditing. The reusable
+conversation snapshot deliberately excludes ephemeral transaction-selection context.
+Older source events and deterministic callback events show the latest reusable snapshot
+for the same Telegram chat as supporting context; the selected event's raw input,
+proposal, matching evidence, outbox, and transaction records remain event-specific.
 
 The agent can:
 
@@ -542,6 +760,16 @@ append unrelated recent fallback rows. Every returned transaction explicitly inc
 the database's `transaction_type` and `status`, plus its timestamp, summary, and derived
 `reversed` flag. Agent replies must preserve those lifecycle terms rather than inventing
 labels such as “active.”
+
+Transaction UUIDs are display identifiers, not model-controlled mutation arguments. When
+the user includes a UUID, the application extracts it from the raw Telegram message and
+performs an exact organization-scoped lookup before the model runs. A found record becomes
+a short current-turn reference such as `T1`; `propose_reversal` accepts only that reference.
+Natural-language or positional selections such as “the first one” must call
+`read_transactions` again during the current message and use the newly returned reference.
+References expire at the end of the message. Old transaction tool outputs and assistant
+paraphrases from transaction-read turns are removed from reusable model context while the
+raw audit turn remains stored. UUIDs are never fuzzy-matched or silently repaired.
 
 Every mutation remains pending until the user presses the Telegram confirmation button
 or sends the exact standalone text command `Confirm` while that proposal is the active
@@ -657,7 +885,7 @@ Configuration is read from environment variables and `.env` by
 | `APP_ENV` | Runtime environment | `development` |
 | `LOG_LEVEL` | Application log level | `INFO` |
 | `DEV_DASHBOARD_ENABLED` | Enable the authenticated `/dev` dashboard outside production | `false` |
-| `DEV_DASHBOARD_CONFIG_WRITES_ENABLED` | Permit audited company context-setting overrides from the dashboard | `false` |
+| `DEV_DASHBOARD_CONFIG_WRITES_ENABLED` | Permit audited settings and guarded development-admin actions from the dashboard | `false` |
 | `DEV_DASHBOARD_USERNAME` | HTTP Basic username for the development dashboard | `inventory-dev` |
 | `DEV_DASHBOARD_TOKEN` | Dedicated password for the development dashboard | none |
 | `DEV_SUPERVISOR_ENABLED` | Enable the loopback-only API/worker process supervisor and dashboard controls | `false` |
@@ -680,6 +908,9 @@ Configuration is read from environment variables and `.env` by
 | `INVENTORY_CANDIDATE_JUDGING_ENABLED` | Constrained LLM candidate judgment and follow-up questions | `true` |
 | `INVENTORY_DISPLAY_TIMEZONE` | IANA timezone for user-facing transaction timestamps | `Asia/Singapore` |
 | `TELEGRAM_BOT_TOKEN` | BotFather token | none |
+| `TELEGRAM_BOT_USERNAME` | Username without `@`, used to activate and clean group requests | none |
+| `TELEGRAM_DEV_USER_SIMULATION_ENABLED` | Enable admin-only `/user NAME` identity simulation in development | `false` |
+| `TELEGRAM_DEV_USER_SIMULATION_SESSION_MINUTES` | Simulated identity inactivity window per controller and chat | `120` |
 | `TELEGRAM_WEBHOOK_SECRET` | Verifies Telegram webhook requests | none |
 | `TELEGRAM_WEBHOOK_URL` | Public HTTPS `/webhooks/telegram` endpoint | none |
 | `SUPABASE_URL` | Supabase project API URL | local API URL |
@@ -689,6 +920,61 @@ Configuration is read from environment variables and `.env` by
 
 The default model is a configuration baseline, not a permanent product decision. Model
 quality, latency, and cost will be measured against representative text and invoice cases.
+
+### Runtime latency logs
+
+With the default `LOG_LEVEL=INFO`, successful requests emit structured
+`component_runtime` lines containing `duration_ms`. The supervisor's API and worker log
+panels show these entries. Idle outbox polling is intentionally not logged, so useful
+timings remain visible.
+
+Timed components include Telegram webhook ingestion, total text-event processing,
+conversation load/save and compaction, every inventory-agent model round and OpenAI
+request, catalog search, embeddings, balance reads, agent tools, structured extractors,
+outbox rendering, and Telegram delivery. To inspect local process logs:
+
+```bash
+rg "component_runtime" .runtime/logs/*.log
+```
+
+For one slow reply, compare `agent_model_round`, `agent_tool.*`,
+`catalog_candidate_search`, `openai_embeddings`, and `telegram_api_send`. The largest
+`duration_ms` is the dominant measured stage; `telegram_text_event_total` is the
+worker-side total.
+
+#### Live local benchmark
+
+The opt-in benchmark exercises the complete agent path against local Supabase without
+sending Telegram messages:
+
+```bash
+uv run python scripts/benchmark-agent.py
+```
+
+This command uses the configured OpenAI API key and therefore consumes API credits. It
+also creates a real one-unit receipt and an exact-transaction reversal. Their net stock
+change is zero, while both immutable inventory ledger entries remain as an audit trail.
+The command refuses to run against a hosted Supabase URL.
+
+On 25 July 2026, using `gpt-5.6-luna` at low reasoning effort, the representative local
+run measured approximately:
+
+| Scenario | End-to-end runtime |
+|---|---:|
+| Semantic inventory query | 7.9 s |
+| Recent transaction query | 7.3 s |
+| Exact transaction UUID query | 2.1 s |
+| Receipt proposal | 8.4 s |
+| Exact UUID reversal proposal | 3.5 s |
+| Database receipt/reversal confirmation | 24–27 ms |
+
+OpenAI model rounds were the main cost. Semantic retrieval added about 2.3 seconds for
+the embedding request, while ordinary local database operations took roughly 10–56 ms.
+This test organization had an unusually low 1,000-token context override. It therefore
+summarized after nearly every turn, and each extra OpenAI call added 1.8–2.4 seconds.
+Raising or resetting the override toward the documented 30,000-token default makes those
+summarization calls less frequent. The tradeoff is that retained conversations can then
+grow larger, which may gradually increase the main model call's latency and token usage.
 
 ## Structured command extraction
 
@@ -717,6 +1003,15 @@ actually answers that pending item request; a separate receipt, deduction, query
 inventory command bypasses the stale request and reaches normal processing. The current
 prototype creates simple-tracked items only; lot and serial creation require an additional
 tracking-details flow.
+
+Company SKUs are unique per inventory variant. Agent-suggested catalog drafts are checked
+against current SKU ownership before the **Create item** confirmation is shown and checked
+again when the button is pressed. If a code is already used, the bot sends a new,
+explicit **Different SKU needed** message showing the existing and requested attributes,
+retains the other draft details, and accepts a natural-language replacement SKU. Nothing
+is created and the callback is completed rather than silently retried. A shared external
+manufacturer part number should eventually be stored separately from the variant’s unique
+company SKU, as described in the build sequence.
 
 ## Invoice image processing
 
@@ -956,6 +1251,10 @@ response ID, and model name are saved in `inventory_agent_conversations`. A retr
 same source event reuses the saved turn rather than paying for or creating another model
 response.
 
+For reversals, persisted transaction IDs are audit metadata only and never authorize a
+later model turn. Authorization comes from a server-managed `T1`, `T2`, and so on mapping
+created by exact UUID resolution or `read_transactions` in the current message.
+
 With the flag disabled, the structured processor checks candidate clarification before
 ordinary command extraction. In both modes, a reversal reason is captured without a model
 call and catalog replies use the dedicated catalog Structured Output extractor. The
@@ -1053,7 +1352,10 @@ lot-function tests. It is development data only and must never be loaded into pr
 11. Structured transaction retrieval for reliable reversal targeting:
     - exact `transaction_id` lookup with stored `transaction_type`, `status`, timestamp,
       summary, and derived reversal state — complete;
-    - expose `created_by` and `confirmed_by` organization-user attribution to the agent;
+    - expose the already stored `created_by` and `confirmed_by` organization-user
+      attribution to the agent, dashboard, and user-facing transaction details, including
+      each person's display name, Telegram username when retained, and role at lookup
+      time;
     - filter transactions by creator, confirmer, type, status, and date range;
     - add cursor-based pagination so the agent can traverse more than the current
       20-record result limit;
@@ -1079,3 +1381,30 @@ lot-function tests. It is development data only and must never be loaded into pr
       or invoice without needing to understand the identifier taxonomy; and
     - migrate or review catalog records whose current SKU was originally supplied as an
       external part number, with exact-matching and tenant-isolation tests.
+13. Company member onboarding and authorization:
+    - let an admin create a company-scoped, expiring, use-limited invitation in the
+      dashboard; display the random plaintext code once and store only its cryptographic
+      hash — complete;
+    - accept `/register INVITE_CODE` only in a private bot chat, atomically consume an
+      invite use, skip OpenAI and normal inventory event storage, retain the Telegram
+      profile only while approval is pending, and show it in that company's admin
+      dashboard — complete;
+    - let an admin approve the applicant with a `worker`, `manager`, or `admin`
+      role, then preserve the resulting membership and its role-change audit history —
+      initial approval audit complete; later role editing remains;
+    - on rejection, send the Telegram rejection notice first and then permanently delete
+      the pending request, Telegram user ID, username, display name, and source-chat ID —
+      complete;
+    - when `/register INVITE_CODE` is sent in a group, continue refusing and avoiding
+      persistence of the exposed code, but send a new Telegram reply explaining that
+      registration must be completed in a private bot chat instead of failing silently —
+      complete;
+    - distinguish rejection from removing an approved member: approved memberships are
+      deactivated rather than deleted because transactions and other audit records may
+      reference them;
+    - add company-selection handling for users who legitimately belong to more than one
+      organization;
+    - expose safe invite generation, approval, rejection, and role selection in the local
+      admin dashboard — complete; authenticated production admin accounts remain; and
+    - enforce role-specific read, proposal, confirmation, catalog, and reversal policies
+      consistently in both application and database boundaries.

@@ -69,7 +69,7 @@ def render_proposal_confirmation(
     for index, line in enumerate(lines, start=1):
         unit = f" {line.unit}" if line.unit else ""
         quantity = format(line.quantity.normalize(), "f")
-        match = line.matched_label or "match required"
+        match = line.matched_label or _unresolved_status(line)
         text_lines.append(f"{index}. {line_action} {quantity}{unit} — {line.description} → {match}")
         if line.matched_label is None:
             unresolved = True
@@ -139,7 +139,7 @@ def render_proposal_confirmation(
 
     if not unresolved:
         text_lines.insert(0, f"⏳ **Pending {operation_label}**")
-        text_lines.append("No inventory has changed yet.")
+        text_lines.append("Please review, then choose **Confirm** or **Cancel**.")
         keyboard.append(
             [
                 InlineButton(
@@ -158,9 +158,7 @@ def render_proposal_confirmation(
         )
     else:
         text_lines.insert(0, "⚠️ **Action needed**")
-        text_lines.append(
-            "Resolve every unmatched line before confirming. No inventory has changed."
-        )
+        text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
         keyboard.append(
             [
                 InlineButton(
@@ -183,6 +181,14 @@ def _movement_labels(intent_label: str) -> tuple[str, str]:
     if intent_label == "stock adjustment":
         return "stock adjustment", "↕️ ADJUST"
     return intent_label, "↕️ CHANGE"
+
+
+def _unresolved_status(line: ProposalLineView) -> str:
+    if line.match_decision == "clarification_required":
+        return "more information needed"
+    if line.match_decision == "not_found" and not line.show_candidates:
+        return "no catalog match"
+    return "choose a catalog match"
 
 
 def _line_action_label(
@@ -210,21 +216,40 @@ def _candidate_label(
 def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> ConfirmationMessage:
     """Ask for catalog facts without imposing a user-facing serialization format."""
 
+    if view.details_reason:
+        return ConfirmationMessage(
+            text=(
+                "⚠️ **Different SKU needed**\n"
+                f"{view.details_reason}\n\n"
+                "Reply naturally with the different SKU/internal code. "
+                "The other item details have been retained."
+            ),
+            inline_keyboard=[
+                [
+                    InlineButton(
+                        text="Cancel item creation",
+                        callback_data=encode_callback(
+                            CallbackCommand(CallbackAction.CANCEL_NEW_ITEM, view.request_id)
+                        ),
+                    )
+                ]
+            ],
+        )
+
     understood = (
         f"I understood the item name as “{view.suggested_name}”. " if view.suggested_name else ""
     )
     return ConfirmationMessage(
         text=(
             "📝 **New item details needed**\n"
-            "No existing item was matched. "
+            "I couldn't match this item. "
             f"{understood}"
-            "To create it, tell me:\n"
+            "Please send:\n"
             "• the item name\n"
             "• its SKU, part number, or internal product code\n"
-            "• how it is counted, such as each, box, bottle, kg, or litre\n"
+            "• its package or measurement unit, if it isn't counted individually\n"
             "• any useful attributes, such as colour or size (optional)\n\n"
-            "Reply naturally or use any list format you prefer. "
-            "This prototype currently supports simple tracking."
+            "Reply naturally in any format."
         ),
         inline_keyboard=[
             [
@@ -247,17 +272,18 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
     tracking_mode = view.tracking_mode
     if tracking_mode is None:
         raise ValueError("Catalog item tracking mode is missing")
+    text_lines = [
+        "⏳ **Pending catalog change**",
+        f"Name: {view.name}",
+        f"SKU: {view.sku}",
+        f"Unit: {view.base_unit}",
+    ]
+    if view.attributes:
+        attributes = ", ".join(f"{key}: {value}" for key, value in sorted(view.attributes.items()))
+        text_lines.append(f"Attributes: {attributes}")
+    text_lines.append("Please review, then choose **Create item** or **Cancel**.")
     return ConfirmationMessage(
-        text=(
-            "⏳ **Pending catalog change**\n"
-            "Create this catalog item?\n"
-            f"Name: {view.name}\n"
-            f"SKU: {view.sku}\n"
-            f"Base unit: {view.base_unit}\n"
-            f"Tracking: {tracking_mode.value}\n"
-            f"Attributes: {view.attributes}\n"
-            "The item has not been created yet."
-        ),
+        text="\n".join(text_lines),
         inline_keyboard=[
             [
                 InlineButton(
@@ -286,11 +312,10 @@ def render_applied_transaction(
 ) -> ConfirmationMessage:
     """Offer a complete reversal after a proposal has been applied."""
 
-    heading, result = _applied_transaction_copy(transaction_type)
+    heading = _applied_transaction_copy(transaction_type)
     return ConfirmationMessage(
         text=(
             f"{heading}\n"
-            f"{result}\n"
             f"🧾 Transaction ID: `{transaction_id}`\n"
             f"🕒 Transaction time: {_format_timestamp(applied_at, display_timezone)}"
         ),
@@ -307,13 +332,13 @@ def render_applied_transaction(
     )
 
 
-def _applied_transaction_copy(transaction_type: str) -> tuple[str, str]:
+def _applied_transaction_copy(transaction_type: str) -> str:
     if transaction_type == "receive":
-        return "✅ **Stock added**", "The addition transaction was applied successfully."
+        return "✅ **Stock added**"
     if transaction_type == "issue":
-        return "✅ **Stock deducted**", "The deduction transaction was applied successfully."
+        return "✅ **Stock deducted**"
     if transaction_type == "adjustment":
-        return "✅ **Stock adjusted**", "The adjustment transaction was applied successfully."
+        return "✅ **Stock adjusted**"
     raise ValueError("Applied proposal has an unsupported transaction type")
 
 
@@ -322,9 +347,7 @@ def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
 
     return ConfirmationMessage(
         text=(
-            "❓ **Reversal reason needed**\n"
-            "Reply with the reason for reversing this transaction. "
-            "The inventory will not change until you confirm."
+            "❓ **Reversal reason needed**\nReply with the reason, or choose **Cancel reversal**."
         ),
         inline_keyboard=[
             [
@@ -352,13 +375,12 @@ def render_reversal_confirmation(
     return ConfirmationMessage(
         text=(
             "⏳ **Pending reversal confirmation**\n"
-            "Review complete transaction reversal:\n"
+            "This reverses the entire original transaction.\n"
             f"🧾 Original transaction ID: `{original_transaction_id}`\n"
             "🕒 Original transaction time: "
             f"{_format_timestamp(original_transaction_applied_at, display_timezone)}\n"
             f"Reason: {reason}\n"
-            "Confirming will create an opposite inventory transaction. "
-            "No inventory has changed yet."
+            "Please review, then choose **Confirm reversal** or **Cancel**."
         ),
         inline_keyboard=[
             [
@@ -389,12 +411,9 @@ def render_reversal_applied(
 
     return (
         "✅ **Transaction reversed**\n"
-        "The opposite inventory transaction was applied successfully, restoring the "
-        "original stock.\n"
+        "The original stock movement was reversed.\n"
         f"🧾 Reversal transaction ID: `{transaction_id}`\n"
-        f"🕒 Reversal time: {_format_timestamp(applied_at, display_timezone)}\n"
-        "A corrected replacement is a separate transaction and will still require "
-        "confirmation."
+        f"🕒 Reversal time: {_format_timestamp(applied_at, display_timezone)}"
     )
 
 

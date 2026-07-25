@@ -281,6 +281,15 @@ class DashboardRepository:
                 "limit": "50",
             },
         )
+        resets = await self._get(
+            "organization_data_resets",
+            {
+                "select": "id,requested_by,reset_scope,deleted_counts,created_at",
+                "organization_id": organization_filter,
+                "order": "created_at.desc",
+                "limit": "10",
+            },
+        )
         transaction_ids = [str(transaction["id"]) for transaction in transactions]
         transaction_lines = await self._get_for_ids(
             "transaction_lines",
@@ -333,7 +342,173 @@ class DashboardRepository:
             "locations": locations,
             "transactions": transactions,
             "transaction_lines": transaction_lines,
+            "resets": resets,
         }
+
+    async def reset_inventory_data(
+        self,
+        *,
+        organization_id: UUID,
+        confirmation: str,
+    ) -> dict[str, object]:
+        actor_id = await self._active_admin_id(organization_id=organization_id)
+        result = await self._rpc(
+            "reset_organization_inventory_data",
+            {
+                "p_organization_id": str(organization_id),
+                "p_actor_id": str(actor_id),
+                "p_confirmation": confirmation,
+            },
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned an invalid inventory reset result")
+        return result
+
+    async def get_membership_administration(
+        self,
+        *,
+        organization_id: UUID,
+    ) -> dict[str, object]:
+        organization_filter = f"eq.{organization_id}"
+        invites = await self._get(
+            "organization_registration_invites",
+            {
+                "select": (
+                    "id,organization_id,code_hint,expires_at,max_uses,use_count,active,"
+                    "created_by,created_at,revoked_at"
+                ),
+                "organization_id": organization_filter,
+                "order": "created_at.desc",
+                "limit": "50",
+            },
+        )
+        requests = await self._get(
+            "organization_registration_requests",
+            {
+                "select": (
+                    "id,organization_id,telegram_user_id,telegram_username,display_name,"
+                    "status,created_at,updated_at"
+                ),
+                "organization_id": organization_filter,
+                "order": "created_at.asc",
+            },
+        )
+        members = await self._get(
+            "organization_users",
+            {
+                "select": ("id,telegram_user_id,display_name,role,active,created_at"),
+                "organization_id": organization_filter,
+                "order": "created_at.asc",
+            },
+        )
+        telegram_user_ids = [
+            str(row["telegram_user_id"])
+            for row in [*requests, *members]
+            if row.get("telegram_user_id") is not None
+        ]
+        personas = (
+            await self._get(
+                "telegram_dev_personas",
+                {
+                    "select": (
+                        "id,controller_telegram_user_id,alias,synthetic_telegram_user_id,"
+                        "display_name,created_at,last_used_at"
+                    ),
+                    "synthetic_telegram_user_id": f"in.({','.join(telegram_user_ids)})",
+                    "order": "alias.asc",
+                },
+            )
+            if telegram_user_ids
+            else []
+        )
+        personas_by_user_id = {
+            str(persona["synthetic_telegram_user_id"]): persona for persona in personas
+        }
+        return {
+            "invites": invites,
+            "requests": [
+                {
+                    **request,
+                    "simulated_persona": personas_by_user_id.get(
+                        str(request.get("telegram_user_id"))
+                    ),
+                }
+                for request in requests
+            ],
+            "members": [
+                {
+                    **member,
+                    "simulated_persona": personas_by_user_id.get(
+                        str(member.get("telegram_user_id"))
+                    ),
+                }
+                for member in members
+            ],
+            "dev_personas": personas,
+        }
+
+    async def create_registration_invite(
+        self,
+        *,
+        organization_id: UUID,
+        code_hash: str,
+        code_hint: str,
+        expires_at: str,
+        max_uses: int,
+    ) -> dict[str, object]:
+        actor_id = await self._active_admin_id(organization_id=organization_id)
+        result = await self._rpc(
+            "create_organization_registration_invite",
+            {
+                "p_organization_id": str(organization_id),
+                "p_actor_id": str(actor_id),
+                "p_code_hash": code_hash,
+                "p_code_hint": code_hint,
+                "p_expires_at": expires_at,
+                "p_max_uses": max_uses,
+            },
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned an invalid registration invite")
+        return result
+
+    async def approve_registration(
+        self,
+        *,
+        organization_id: UUID,
+        registration_request_id: UUID,
+        role: str,
+    ) -> dict[str, object]:
+        actor_id = await self._active_admin_id(organization_id=organization_id)
+        result = await self._rpc(
+            "approve_organization_registration",
+            {
+                "p_registration_request_id": str(registration_request_id),
+                "p_actor_id": str(actor_id),
+                "p_role": role,
+            },
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned an invalid registration approval")
+        return result
+
+    async def reject_registration(
+        self,
+        *,
+        organization_id: UUID,
+        registration_request_id: UUID,
+    ) -> dict[str, object]:
+        actor_id = await self._active_admin_id(organization_id=organization_id)
+        result = await self._rpc(
+            "reject_organization_registration",
+            {
+                "p_registration_request_id": str(registration_request_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+        if not isinstance(result, dict):
+            raise ValueError("Supabase returned an invalid registration rejection")
+        return result
 
     async def get_context_settings(
         self,
@@ -531,6 +706,22 @@ class DashboardRepository:
                 column: f"in.({','.join(values)})",
             },
         )
+
+    async def _active_admin_id(self, *, organization_id: UUID) -> UUID:
+        rows = await self._get(
+            "organization_users",
+            {
+                "select": "id",
+                "organization_id": f"eq.{organization_id}",
+                "role": "eq.admin",
+                "active": "eq.true",
+                "order": "created_at.asc",
+                "limit": "1",
+            },
+        )
+        if not rows:
+            raise ValueError("This organization has no active admin")
+        return UUID(str(rows[0]["id"]))
 
     async def _get(
         self,
