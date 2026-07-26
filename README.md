@@ -1612,3 +1612,27 @@ lot-function tests. It is development data only and must never be loaded into pr
       model switching, and prompt-version changes interact safely with caching; and
     - test cache isolation across companies, members, chats, models, and prompt versions,
       plus cold starts, cache expiry, compaction boundaries, and identical-prefix reuse.
+18. Authorized catalog maintenance:
+    - let authorized users modify existing catalog details from Telegram and the dashboard,
+      including adding, correcting, or removing custom attributes and aliases;
+    - decide and document whether catalog edits require `manager` or `admin`, defaulting to
+      manager-and-above only if the organization accepts that broader permission, otherwise
+      restricting edits to admins;
+    - support changes to item-family names, variant names, SKUs, external identifiers, base
+      units, and configured attributes through field-specific validation rather than an
+      unrestricted record update;
+    - present a clear before-and-after review and require explicit confirmation before
+      applying any catalog change;
+    - retain an immutable audit record containing the editor, confirmer, timestamp, reason,
+      previous values, and new values, while preserving the original catalog identity used
+      by historical transactions;
+    - prevent edits that create duplicate SKUs, identifiers, families, or indistinguishable
+      variants, and require an explicit merge workflow when two records represent the same
+      product;
+    - re-index names, aliases, identifiers, attributes, and semantic embeddings after a
+      confirmed edit so subsequent matching uses the updated catalog;
+    - define how base-unit changes affect existing balances and conversions, blocking unsafe
+      changes unless stock is zero or an audited conversion is supplied; and
+    - test role enforcement, tenant isolation, concurrent edits, stale confirmations,
+      duplicate identifiers, attribute addition/removal, audit history, matching refresh,
+      and unchanged historical transaction records.
