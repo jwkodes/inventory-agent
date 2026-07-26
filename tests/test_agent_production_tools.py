@@ -343,6 +343,31 @@ async def test_read_then_add_creates_existing_atomic_proposal_draft() -> None:
     assert proposals.drafts[0].idempotency_key == "telegram:telegram-1:inventory-agent"
 
 
+async def test_inventory_read_exposes_ranked_relevance_and_aggregation_guidance() -> None:
+    tools = production_tools(FakeProposals())
+
+    result = json.loads(
+        await tools.execute(
+            call_id="read-category",
+            name="read_inventory",
+            arguments={
+                "query": "widget",
+                "sku": None,
+                "attributes": [],
+                "include_zero_stock": True,
+                "limit": 50,
+            },
+        )
+    )
+
+    assert result["result_scope"] == "ranked_candidates"
+    assert result["query"] == "widget"
+    assert result["items"][0]["match_method"] == "exact_identifier"
+    assert result["items"][0]["match_score"] == "1"
+    assert "every ranked candidate" in result["aggregation_guidance"]
+    assert "per-variant breakdown plus the total" in result["aggregation_guidance"]
+
+
 async def test_production_tool_rejects_unread_variant() -> None:
     proposals = FakeProposals()
     tools = production_tools(proposals)

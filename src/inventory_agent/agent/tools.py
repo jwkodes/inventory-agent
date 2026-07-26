@@ -83,6 +83,9 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "description": (
             "Search or browse this company's catalog and current on-hand balances. "
             "Use null query and null SKU only when a broad inventory listing is necessary. "
+            "Query results are ranked candidates and can include incidental items; each "
+            "item includes its match method and score. For category-wide totals, request "
+            "limit 50 and inspect every candidate rather than using only the first result. "
             "Returns authoritative variant IDs that may be used in proposal tools."
         ),
         "strict": True,

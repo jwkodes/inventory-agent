@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v11"
+    assert PROMPT_VERSION == "inventory-agent-spike-v12"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -49,3 +49,14 @@ def test_transaction_corrections_require_broad_reads_and_complete_reversal() -> 
     assert "full transaction UUID" in normalized
     assert "`transaction_type`, `status`, and `reversed`" in normalized
     assert 'as "active"' in normalized
+
+
+def test_category_totals_are_exhaustive_and_balance_disputes_trigger_rereads() -> None:
+    normalized = " ".join(INSTRUCTIONS.split())
+    assert '"how many hairdryers do I have?"' in normalized
+    assert "not only the first or most recently discussed variant" in normalized
+    assert "per-variant breakdown and total" in normalized
+    assert "Ranked candidate results can contain incidental items" in normalized
+    assert "asks you to recheck a reported balance" in normalized
+    assert "read inventory again during that message" in normalized
+    assert "before rechecking" in normalized

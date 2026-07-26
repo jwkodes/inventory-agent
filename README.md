@@ -758,6 +758,14 @@ The agent can:
   transaction; and
 - answer inventory questions while declining unrelated chat.
 
+Name-based inventory reads return ranked candidates with their match method and score;
+they are not presented as an exact filtered set. For a generic category count such as
+“how many hairdryers,” the agent requests up to 50 candidates, inspects all results,
+excludes incidental matches, and reports every relevant variant plus the total. A new
+unqualified question is not narrowed by a colour or other qualifier from an earlier turn.
+If a user disputes a reported balance, the agent must perform a broader fresh read before
+asking whether stock should be added.
+
 Filtered transaction reads use ranked token matching rather than one literal phrase. They
 also include recent transactions as fallback evidence, so wording such as “red T-shirt
 sale” can still retrieve a stored `issue` transaction whose summary uses different terms.

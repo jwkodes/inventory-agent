@@ -150,6 +150,13 @@ final one to explain the prepared proposal. Tool execution itself does not call 
 conversational model, although a name-based `read_inventory` tool can call the embedding
 model for semantic retrieval.
 
+`read_inventory` labels name-query results as ranked candidates and includes each
+candidate's match method and score. For an unqualified category-wide quantity question,
+the agent requests the 50-result ceiling, evaluates every candidate, excludes incidental
+matches, and returns a per-variant breakdown and total. If the user challenges that
+answer, the agent rereads with broader criteria instead of treating the challenge as a
+request to receive stock.
+
 ## Confirmation and mutation boundary
 
 Models can read authoritative data and create pending proposals, but they cannot apply

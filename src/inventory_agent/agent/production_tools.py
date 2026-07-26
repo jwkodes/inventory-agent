@@ -249,11 +249,31 @@ class ProductionInventoryAgentTools:
         )
         self.allowed_variant_ids.update(UUID(record.variant_id) for record in records)
         self._candidate_evidence.update(evidence)
+        items: list[dict[str, object]] = []
+        for record in records:
+            item = record.model_dump(mode="json")
+            candidate = evidence.get(UUID(record.variant_id))
+            if candidate is not None:
+                item["match_method"] = candidate.match_method.value
+                item["match_score"] = str(candidate.match_score)
+            items.append(item)
         return {
             "ok": True,
             "count": len(records),
-            "items": [record.model_dump(mode="json") for record in records],
+            "result_scope": (
+                "catalog_listing"
+                if arguments.query is None and arguments.sku is None
+                else "ranked_candidates"
+            ),
+            "query": arguments.query,
+            "sku": arguments.sku,
+            "items": items,
             "has_more": len(records) == arguments.limit,
+            "aggregation_guidance": (
+                "For a category-wide quantity or total, inspect every ranked candidate, "
+                "include every genuinely relevant variant, exclude incidental candidates, "
+                "and report a per-variant breakdown plus the total."
+            ),
         }
 
     async def _propose_stock(
