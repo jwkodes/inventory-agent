@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(23);
+select plan(25);
 
 select has_table(
   'public',
@@ -317,6 +317,54 @@ select is(
   ),
   2::bigint,
   'the applied transaction contains both newly created products'
+);
+
+insert into public.source_events (
+  id, organization_id, provider, external_event_id, event_type, status, payload
+)
+values
+(
+  '50000000-0000-0000-0000-000000000722',
+  '10000000-0000-0000-0000-000000000001',
+  'telegram',
+  'catalog-batch-details-outbox',
+  'callback_query',
+  'processing',
+  '{}'::jsonb
+),
+(
+  '50000000-0000-0000-0000-000000000723',
+  '10000000-0000-0000-0000-000000000001',
+  'telegram',
+  'catalog-batch-confirmation-outbox',
+  'callback_query',
+  'processing',
+  '{}'::jsonb
+);
+
+select isnt(
+  public.enqueue_processing_outcome(
+    '10000000-0000-0000-0000-000000000001',
+    '50000000-0000-0000-0000-000000000722',
+    'catalog_batch_details_required',
+    (select batch_id from catalog_batch),
+    100000001,
+    '{}'::jsonb
+  ),
+  null::uuid,
+  'bulk detail prompts pass through the real outbox constraint'
+);
+select isnt(
+  public.enqueue_processing_outcome(
+    '10000000-0000-0000-0000-000000000001',
+    '50000000-0000-0000-0000-000000000723',
+    'catalog_batch_confirmation',
+    (select batch_id from catalog_batch),
+    100000001,
+    '{}'::jsonb
+  ),
+  null::uuid,
+  'bulk confirmations pass through the real outbox constraint'
 );
 
 select * from finish();
