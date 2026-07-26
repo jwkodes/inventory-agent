@@ -1138,7 +1138,7 @@ When any proposal—not only an invoice—contains several no-match lines, Teleg
 durable line-selection workflow before asking for catalog details. The worker resolves one
 line at a time as **Add**, **Match**, or **Ignore**. Each callback removes the controls
 from its source message without replacing the text, then sends a fresh review for the next
-line. **Add remaining N as new** is the shortcut when every remaining unmatched line is
+line. **Mark remaining N as new** is the shortcut when every remaining unmatched line is
 valid.
 
 Ignored lines remain in the proposal and keep the actor and timestamp in

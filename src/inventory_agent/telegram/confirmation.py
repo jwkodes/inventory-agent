@@ -274,7 +274,7 @@ def render_proposal_confirmation(
                 0,
                 [
                     InlineButton(
-                        text=f"Add remaining {len(pending_new_lines)} as new",
+                        text=f"Mark remaining {len(pending_new_lines)} as new",
                         callback_data=encode_callback(
                             CallbackCommand(CallbackAction.ADD_ALL_NEW_ITEMS, proposal_id)
                         ),

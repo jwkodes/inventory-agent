@@ -159,7 +159,7 @@ def test_multiple_unmatched_lines_offer_bulk_or_one_line_decision() -> None:
     )
 
     assert [button.text for button in message.inline_keyboard[0]] == [
-        "Add remaining 2 as new",
+        "Mark remaining 2 as new",
     ]
     assert [button.text for button in message.inline_keyboard[1]] == [
         "Add line 1",
