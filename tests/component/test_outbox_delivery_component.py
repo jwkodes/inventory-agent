@@ -19,10 +19,12 @@ from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepositor
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
 from inventory_agent.dashboard.repository import DashboardRepository
+from inventory_agent.extraction.clarification import SupabaseCommandClarificationRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
-from inventory_agent.extraction.schema import ExtractedInventoryCommand
+from inventory_agent.extraction.schema import ExtractedInventoryCommand, InventoryIntent
 from inventory_agent.matching.clarification import SupabaseMatchClarificationRepository
 from inventory_agent.matching.judge import CandidateJudgeOutput
+from inventory_agent.matching.models import MatchDecision, MatchDecisionStatus
 from inventory_agent.matching.repository import SupabaseInventoryCandidateRepository
 from inventory_agent.matching.service import InventoryItemMatcher, MatchingStrategy
 from inventory_agent.processing.agent_text_events import TelegramAgentTextEventProcessor
@@ -30,7 +32,11 @@ from inventory_agent.processing.callback_events import TelegramCallbackEventProc
 from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.image_events import TelegramImageEventProcessor
-from inventory_agent.processing.models import OutboxDeliveryStatus, TextEventProcessingStatus
+from inventory_agent.processing.models import (
+    OutboxDeliveryStatus,
+    TelegramTextEventContext,
+    TextEventProcessingStatus,
+)
 from inventory_agent.processing.repository import (
     SupabaseProcessingOutboxDeliveryRepository,
     SupabaseProcessingOutboxRepository,
@@ -277,6 +283,16 @@ class FixedTelegramImageDownloader:
         return DownloadedTelegramFile(
             data=b"component-invoice-image",
             file_path="photos/component.jpg",
+        )
+
+
+class NoMatchComponentMatcher:
+    async def match_line(self, **kwargs: object) -> MatchDecision:
+        return MatchDecision(
+            status=MatchDecisionStatus.NOT_FOUND,
+            selected=None,
+            candidates=[],
+            reason="No component catalog match.",
         )
 
 
@@ -1076,7 +1092,7 @@ async def test_match_clarification_resumes_a_real_persisted_proposal() -> None:
                     "p_idempotency_key": f"component-clarification-{proposal_event_id}",
                     "p_raw_command": {
                         "schema_version": "1.0",
-                        "intent": "RECEIVE_STOCK",
+                        "intent": InventoryIntent.RECEIVE_STOCK,
                         "location_hint": None,
                         "lines": [
                             {
@@ -1623,3 +1639,190 @@ async def test_reversal_reason_outbox_delivers_as_a_separate_message() -> None:
                 params={"id": f"eq.{event_id}"},
             )
             cleanup.raise_for_status()
+
+
+async def test_ambiguous_invoice_reply_resumes_preserved_lines_in_local_supabase() -> None:
+    settings, secret_key = local_supabase()
+    image_event_id = uuid4()
+    reply_event_id = uuid4()
+    chat_id = -(2_000_000_000 + image_event_id.int % 1_000_000_000)
+    headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+    rest_url = f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    proposal_id: UUID | None = None
+    async with httpx.AsyncClient(base_url=rest_url, headers=headers) as client:
+        member = await client.get(
+            "/organization_users",
+            params={
+                "select": "id,telegram_user_id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "id": f"eq.{ACTOR_ID}",
+                "active": "eq.true",
+                "limit": "1",
+            },
+        )
+        member.raise_for_status()
+        telegram_user_id = int(member.json()[0]["telegram_user_id"])
+        location = await client.get(
+            "/locations",
+            params={
+                "select": "id",
+                "organization_id": f"eq.{ORGANIZATION_ID}",
+                "active": "eq.true",
+                "limit": "1",
+            },
+        )
+        location.raise_for_status()
+        location_id = UUID(location.json()[0]["id"])
+        for event_id, event_type in (
+            (image_event_id, "invoice_image"),
+            (reply_event_id, "message"),
+        ):
+            created = await client.post(
+                "/source_events",
+                headers={"Prefer": "return=minimal"},
+                json={
+                    "id": str(event_id),
+                    "organization_id": str(ORGANIZATION_ID),
+                    "provider": "component_test",
+                    "external_event_id": f"component-command-clarification-{event_id}",
+                    "event_type": event_type,
+                    "status": "processing",
+                    "payload": {},
+                },
+            )
+            created.raise_for_status()
+
+        command_clarifications = SupabaseCommandClarificationRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
+        handler = InventoryCommandHandler(
+            matcher=NoMatchComponentMatcher(),
+            proposals=SupabaseProposalRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            outbox=SupabaseProcessingOutboxRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
+            command_clarifications=command_clarifications,
+        )
+        original = CommandExtractionResult(
+            command=ExtractedInventoryCommand.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "intent": "UNKNOWN",
+                    "location_hint": None,
+                    "lines": [
+                        {
+                            "source_text": "INV-WIDGET-91 7 boxes",
+                            "item_reference": {
+                                "type": "PART_NUMBER",
+                                "value": "INV-WIDGET-91",
+                            },
+                            "description": "Invoice Widget",
+                            "quantity": "7",
+                            "unit": "box",
+                            "attributes": [],
+                        }
+                    ],
+                    "notes": "component invoice",
+                    "needs_clarification": True,
+                    "clarification_question": (
+                        "Should these invoice lines be recorded as received stock?"
+                    ),
+                }
+            ),
+            response_id="component-image-clarification",
+            model="component-fake-model",
+            prompt_version="inventory-invoice-image-v1",
+        )
+        image_context = TelegramTextEventContext(
+            event_id=image_event_id,
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=location_id,
+            external_event_id=f"component-image-{image_event_id}",
+            chat_id=chat_id,
+            telegram_user_id=telegram_user_id,
+            message_text="",
+        )
+        try:
+            clarification_result = await handler.handle(
+                context=image_context,
+                extraction=original,
+            )
+            assert clarification_result.status is TextEventProcessingStatus.CLARIFICATION_REQUIRED
+            request_id = await command_clarifications.find_pending(
+                actor_id=ACTOR_ID,
+                chat_id=chat_id,
+            )
+            assert request_id is not None
+            preserved = await command_clarifications.get_view(request_id=request_id)
+            assert preserved.extraction.command.lines[0].item_reference.value == "INV-WIDGET-91"
+            assert preserved.extraction.command.lines[0].quantity == "7"
+
+            resolved = CommandExtractionResult(
+                command=original.command.model_copy(
+                    update={
+                        "intent": InventoryIntent.RECEIVE_STOCK,
+                        "needs_clarification": False,
+                        "clarification_question": None,
+                    }
+                ),
+                response_id="component-command-resolved",
+                model="component-fake-model",
+                prompt_version="inventory-command-clarification-v1",
+            )
+            reply_context = image_context.model_copy(
+                update={
+                    "event_id": reply_event_id,
+                    "external_event_id": f"component-reply-{reply_event_id}",
+                    "message_text": "Yes, all received stock.",
+                }
+            )
+            proposal_result = await handler.handle(
+                context=reply_context,
+                extraction=resolved,
+            )
+            proposal_id = proposal_result.proposal_id
+            assert proposal_id is not None
+            await command_clarifications.resolve(
+                request_id=request_id,
+                event_id=reply_event_id,
+                actor_id=ACTOR_ID,
+                user_reply="Yes, all received stock.",
+                extraction=resolved,
+                proposal_id=proposal_id,
+            )
+            proposal = await client.get(
+                "/transaction_proposals",
+                params={
+                    "select": "intent,raw_command",
+                    "id": f"eq.{proposal_id}",
+                },
+            )
+            proposal.raise_for_status()
+            assert proposal.json()[0]["intent"] == "receive_stock"
+            assert proposal.json()[0]["raw_command"]["lines"][0]["quantity"] == "7"
+            assert (
+                await command_clarifications.find_pending(
+                    actor_id=ACTOR_ID,
+                    chat_id=chat_id,
+                )
+                is None
+            )
+        finally:
+            if proposal_id is not None:
+                delete_proposal = await client.delete(
+                    "/transaction_proposals",
+                    params={"id": f"eq.{proposal_id}"},
+                )
+                delete_proposal.raise_for_status()
+            for event_id in (reply_event_id, image_event_id):
+                cleanup = await client.delete(
+                    "/source_events",
+                    params={"id": f"eq.{event_id}"},
+                )
+                cleanup.raise_for_status()

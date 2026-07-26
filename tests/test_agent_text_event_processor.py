@@ -12,8 +12,15 @@ from inventory_agent.catalog.models import (
     CatalogItemCreationView,
     ExtractedCatalogItemDetails,
 )
+from inventory_agent.extraction.clarification import (
+    CommandClarificationView,
+    StoredCommandExtraction,
+)
+from inventory_agent.extraction.interpreter import CommandExtractionResult
+from inventory_agent.extraction.schema import ExtractedInventoryCommand, InventoryIntent
 from inventory_agent.processing.agent_text_events import TelegramAgentTextEventProcessor
 from inventory_agent.processing.models import (
+    InventoryEventProcessingResult,
     ProcessingOutcomeDraft,
     ProcessingOutcomeType,
     TelegramTextEventContext,
@@ -30,6 +37,8 @@ OUTBOX_ID = UUID("60000000-0000-0000-0000-000000000001")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("72000000-0000-0000-0000-000000000001")
 TRANSACTION_ID = UUID("73000000-0000-0000-0000-000000000001")
+COMMAND_CLARIFICATION_ID = UUID("74000000-0000-0000-0000-000000000001")
+IMAGE_EVENT_ID = UUID("50000000-0000-0000-0000-000000000099")
 
 
 class FakeEvents:
@@ -198,6 +207,113 @@ class FakeOutbox:
         return OUTBOX_ID
 
 
+def ambiguous_invoice_extraction() -> CommandExtractionResult:
+    return CommandExtractionResult(
+        command=ExtractedInventoryCommand.model_validate(
+            {
+                "schema_version": "1.0",
+                "intent": "UNKNOWN",
+                "location_hint": None,
+                "lines": [
+                    {
+                        "source_text": "ABC-123 3 boxes",
+                        "item_reference": {
+                            "type": "PART_NUMBER",
+                            "value": "ABC-123",
+                        },
+                        "description": "Invoice Widget",
+                        "quantity": "3",
+                        "unit": "box",
+                        "attributes": [],
+                    }
+                ],
+                "notes": "invoice",
+                "needs_clarification": True,
+                "clarification_question": (
+                    "Should these invoice line items be recorded as received stock?"
+                ),
+            }
+        ),
+        response_id="invoice-response",
+        model="gpt-image-test",
+        prompt_version="inventory-invoice-image-v1",
+    )
+
+
+class FakeCommandClarifications:
+    def __init__(self) -> None:
+        extraction = ambiguous_invoice_extraction()
+        self.view = CommandClarificationView(
+            request_id=COMMAND_CLARIFICATION_ID,
+            organization_id=ORGANIZATION_ID,
+            requested_by=ACTOR_ID,
+            chat_id=123,
+            source_event_id=IMAGE_EVENT_ID,
+            question=extraction.command.clarification_question or "",
+            extraction=StoredCommandExtraction.from_result(extraction),
+        )
+        self.resolved: list[dict[str, object]] = []
+
+    async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
+        assert actor_id == ACTOR_ID
+        assert chat_id == 123
+        return COMMAND_CLARIFICATION_ID
+
+    async def get_view(self, *, request_id: UUID) -> CommandClarificationView:
+        assert request_id == COMMAND_CLARIFICATION_ID
+        return self.view
+
+    async def continue_request(self, **kwargs: object) -> UUID:
+        raise AssertionError("not expected")
+
+    async def resolve(self, **kwargs: object) -> UUID:
+        self.resolved.append(kwargs)
+        return COMMAND_CLARIFICATION_ID
+
+
+class ReceivingCommandClarificationInterpreter:
+    async def resolve(
+        self,
+        *,
+        view: CommandClarificationView,
+        user_reply: str,
+    ) -> CommandExtractionResult:
+        assert user_reply == "Yes all received stock"
+        original = view.extraction.command
+        return CommandExtractionResult(
+            command=original.model_copy(
+                update={
+                    "intent": InventoryIntent.RECEIVE_STOCK,
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                }
+            ),
+            response_id="clarification-response",
+            model="gpt-test",
+            prompt_version="inventory-command-clarification-v1",
+        )
+
+
+class RecordingCommandHandler:
+    def __init__(self) -> None:
+        self.extractions: list[CommandExtractionResult] = []
+
+    async def handle(
+        self,
+        *,
+        context: TelegramTextEventContext,
+        extraction: CommandExtractionResult,
+    ) -> InventoryEventProcessingResult:
+        self.extractions.append(extraction)
+        return InventoryEventProcessingResult(
+            event_id=context.event_id,
+            status=TextEventProcessingStatus.PROPOSAL_READY,
+            chat_id=context.chat_id,
+            proposal_id=PROPOSAL_ID,
+            outbox_id=OUTBOX_ID,
+        )
+
+
 class FakeReversals:
     async def capture_reason(
         self,
@@ -362,6 +478,9 @@ def processor(
     proposal_actions: FakeProposalActions | None = None,
     bot_username: str | None = None,
     reads: object | None = None,
+    command_clarifications: object | None = None,
+    command_clarification_interpreter: object | None = None,
+    command_handler: object | None = None,
 ) -> TelegramAgentTextEventProcessor:
     return TelegramAgentTextEventProcessor(
         events=events,  # type: ignore[arg-type]
@@ -376,6 +495,9 @@ def processor(
         catalog=catalog or FakeCatalog(),  # type: ignore[arg-type]
         catalog_interpreter=catalog_interpreter or UnusedCatalogInterpreter(),  # type: ignore[arg-type]
         context_manager=context_manager,  # type: ignore[arg-type]
+        command_clarifications=command_clarifications,  # type: ignore[arg-type]
+        command_clarification_interpreter=command_clarification_interpreter,  # type: ignore[arg-type]
+        command_handler=command_handler,  # type: ignore[arg-type]
         bot_username=bot_username,
     )
 
@@ -404,6 +526,32 @@ async def test_unrelated_telegram_message_saves_conversation_and_enqueues_new_me
     assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.AGENT_MESSAGE
     assert "inventory assistant" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]
+
+
+async def test_invoice_clarification_reply_resumes_saved_lines_before_agent_context() -> None:
+    model = FakeModel()
+    clarifications = FakeCommandClarifications()
+    command_handler = RecordingCommandHandler()
+
+    result = await processor(
+        model=model,
+        conversations=FakeConversations(conversation()),
+        outbox=FakeOutbox(),
+        events=FakeEvents("Yes all received stock"),
+        command_clarifications=clarifications,
+        command_clarification_interpreter=ReceivingCommandClarificationInterpreter(),
+        command_handler=command_handler,
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.PROPOSAL_READY
+    assert result.proposal_id == PROPOSAL_ID
+    assert model.calls == 0
+    resolved = command_handler.extractions[0].command
+    assert resolved.intent is InventoryIntent.RECEIVE_STOCK
+    assert resolved.lines[0].item_reference.value == "ABC-123"
+    assert resolved.lines[0].quantity == "3"
+    assert clarifications.resolved[0]["proposal_id"] == PROPOSAL_ID
 
 
 async def test_group_bot_mention_is_removed_before_model_and_history() -> None:

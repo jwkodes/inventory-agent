@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
 
+from inventory_agent.extraction.clarification import CommandClarificationRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import ExtractedCommandLine, InventoryIntent
 from inventory_agent.matching.clarification import MatchClarificationRepository
@@ -42,11 +43,13 @@ class InventoryCommandHandler:
         proposals: ProposalRepository,
         outbox: ProcessingOutboxRepository,
         clarifications: MatchClarificationRepository | None = None,
+        command_clarifications: CommandClarificationRepository | None = None,
     ) -> None:
         self._matcher = matcher
         self._proposals = proposals
         self._outbox = outbox
         self._clarifications = clarifications
+        self._command_clarifications = command_clarifications
 
     async def handle(
         self,
@@ -56,11 +59,21 @@ class InventoryCommandHandler:
     ) -> InventoryEventProcessingResult:
         command = extraction.command
         if command.needs_clarification or command.intent is InventoryIntent.UNKNOWN:
+            question = (
+                command.clarification_question or "What inventory change would you like to make?"
+            )
+            if self._command_clarifications is not None:
+                await self._command_clarifications.begin(
+                    source_event_id=context.event_id,
+                    actor_id=context.organization_user_id,
+                    chat_id=context.chat_id,
+                    question=question,
+                    extraction=extraction,
+                )
             return await self._with_message(
                 context=context,
                 outcome_type=ProcessingOutcomeType.CLARIFICATION_REQUIRED,
-                message=command.clarification_question
-                or "What inventory change would you like to make?",
+                message=question,
             )
         if command.intent is InventoryIntent.QUERY_INVENTORY:
             return await self._with_message(

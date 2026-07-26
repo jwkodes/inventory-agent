@@ -13,6 +13,7 @@ agent.
 | Structured text extraction | `gpt-5.6-luna` | `none` | Ordinary Telegram text only when `INVENTORY_AGENT_ENABLED=false`; this is currently the standby legacy path |
 | Conversation context summary | `gpt-5.6-sol` | `low` | Only when active history exceeds its age, estimated-token, or item limit and the policy is `summarize` |
 | Invoice image extraction | `gpt-5.6-luna` | `none` | Every supported Telegram invoice image |
+| Input clarification resolution | `gpt-5.6-luna` | `none` | A natural-language reply to an ambiguous saved invoice or legacy structured command |
 | Catalog detail extraction | `gpt-5.6-luna` | `none` | A natural-language reply while a new catalog item is waiting for required details |
 | Candidate judge | `gpt-5.6-luna` | `none` | Retrieved candidates in the invoice/structured pipeline need a constrained select, ask-user, or no-match decision |
 | Semantic retrieval | `text-embedding-3-small` | Not applicable | A name-based catalog search when the configured strategy is `semantic` or `hybrid`; exact SKU reads bypass it |
@@ -42,6 +43,9 @@ flowchart TD
 
     WORKER -->|Text| PENDING{"Pending deterministic flow?"}
     PENDING -->|Reversal reason| REASON["Store reason and request confirmation<br/>No model"]
+    PENDING -->|Saved input clarification| INPUT_RESOLVE["Merge reply into preserved command<br/>gpt-5.6-luna · effort none"]
+    INPUT_RESOLVE -->|Still ambiguous| INPUT_CLARIFY["Update saved extraction and ask one question"]
+    INPUT_RESOLVE -->|Resolved| STRUCTURED_MATCH
     PENDING -->|New-item details| CATALOG["Catalog detail extraction<br/>gpt-5.6-luna · effort none"]
     CATALOG --> CATALOG_VALID{"Required details complete?"}
     CATALOG_VALID -->|No| ASK_MORE["Ask only for missing details"]
@@ -70,7 +74,10 @@ flowchart TD
 
     WORKER -->|Invoice image| DOWNLOAD["Download, hash and privately store image<br/>No model"]
     DOWNLOAD --> IMAGE["Invoice image extraction<br/>gpt-5.6-luna · effort none"]
-    IMAGE --> STRUCTURED_MATCH
+    IMAGE --> INPUT_VALID{"Inventory action clear?"}
+    INPUT_VALID -->|No| INPUT_SAVE["Persist complete extraction<br/>and clarification state"]
+    INPUT_SAVE --> OUTBOX
+    INPUT_VALID -->|Yes| STRUCTURED_MATCH
     STRUCTURED_MATCH --> MATCH_TYPE{"Trusted exact match?"}
     MATCH_TYPE -->|Yes, no conflicting attributes| PROPOSAL
     MATCH_TYPE -->|No| SEMANTIC["Semantic candidate retrieval<br/>text-embedding-3-small"]
@@ -87,6 +94,7 @@ flowchart TD
     RESPONSE --> OUTBOX
     REVIEW --> OUTBOX
     ASK_MORE --> OUTBOX
+    INPUT_CLARIFY --> OUTBOX
     CLARIFY --> OUTBOX
     AGENT --> POST_LIMITS{"Post-turn context exceeds limit?"}
     POST_LIMITS -->|Yes, summarize policy| BG_SUMMARY["Background context summary<br/>does not block delivery"]
@@ -108,11 +116,18 @@ flowchart TD
     classDef storage fill:#28243a,stroke:#8d7dd1,color:#f8f4ff;
 
     class AGENT,SUMMARY,BG_SUMMARY primary;
-    class CATALOG,TEXT_EXTRACT,IMAGE,JUDGE routine;
+    class CATALOG,TEXT_EXTRACT,IMAGE,INPUT_RESOLVE,JUDGE routine;
     class EMBED,SEMANTIC embed;
     class EVENT,OUTBOX,CONTEXT_EVENT storage;
-    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,POST_LIMITS,BG_DONE,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
+    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,INPUT_VALID,INPUT_SAVE,INPUT_CLARIFY,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,POST_LIMITS,BG_DONE,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
 ```
+
+The input-clarification record is deliberately separate from ordinary conversation
+history. It keeps the original structured line items and model audit metadata, scopes the
+pending question to one organization member and Telegram chat, and routes the member's
+next reply to a constrained resolver before the inventory agent. Once resolved, the saved
+command continues through the same exact, semantic, candidate-judgment, and proposal
+stages as an unambiguous invoice.
 
 ## Ordinary text-agent tool loop
 

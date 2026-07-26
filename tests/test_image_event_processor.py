@@ -7,7 +7,11 @@ import pytest
 
 from inventory_agent.artifacts.repository import SourceArtifactDraft
 from inventory_agent.extraction.interpreter import CommandExtractionResult
-from inventory_agent.extraction.schema import ExtractedCommandLine, ExtractedInventoryCommand
+from inventory_agent.extraction.schema import (
+    ExtractedCommandLine,
+    ExtractedInventoryCommand,
+    InventoryIntent,
+)
 from inventory_agent.matching.models import MatchDecision, MatchDecisionStatus
 from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.image_events import (
@@ -118,6 +122,44 @@ class FakeInterpreter:
         )
 
 
+class AmbiguousInvoiceInterpreter(FakeInterpreter):
+    async def interpret(
+        self,
+        *,
+        image_bytes: bytes,
+        media_type: str,
+        caption: str | None = None,
+    ) -> CommandExtractionResult:
+        result = await super().interpret(
+            image_bytes=image_bytes,
+            media_type=media_type,
+            caption=caption,
+        )
+        return CommandExtractionResult(
+            command=result.command.model_copy(
+                update={
+                    "intent": InventoryIntent.UNKNOWN,
+                    "needs_clarification": True,
+                    "clarification_question": (
+                        "Should these invoice line items be recorded as received stock?"
+                    ),
+                }
+            ),
+            response_id=result.response_id,
+            model=result.model,
+            prompt_version=result.prompt_version,
+        )
+
+
+class FakeCommandClarifications:
+    def __init__(self) -> None:
+        self.begun: list[dict[str, object]] = []
+
+    async def begin(self, **kwargs: object) -> UUID:
+        self.begun.append(kwargs)
+        return UUID("90000000-0000-0000-0000-000000000011")
+
+
 class FakeMatcher:
     async def match_line(
         self,
@@ -177,6 +219,7 @@ def processor(
     events: FakeEvents,
     *,
     interpreter: FakeInterpreter | None = None,
+    command_clarifications: object | None = None,
 ) -> tuple[TelegramImageEventProcessor, FakeArtifacts, FakeProposals]:
     artifacts = FakeArtifacts()
     proposals = FakeProposals()
@@ -189,6 +232,7 @@ def processor(
             matcher=FakeMatcher(),
             proposals=proposals,
             outbox=FakeOutbox(),
+            command_clarifications=command_clarifications,  # type: ignore[arg-type]
         ),
     )
     return service, artifacts, proposals
@@ -209,6 +253,29 @@ async def test_image_event_stores_original_then_creates_reviewable_proposal() ->
     assert proposals.drafts[0].prompt_version == "inventory-invoice-image-v1"
     assert proposals.drafts[0].lines[0].requested_quantity == Decimal("3")
     assert proposals.drafts[0].lines[0].attributes == {"colour": "blue"}
+    assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_ambiguous_invoice_persists_extracted_lines_before_asking_question() -> None:
+    events = FakeEvents(context())
+    clarifications = FakeCommandClarifications()
+    service, _, proposals = processor(
+        events,
+        interpreter=AmbiguousInvoiceInterpreter(),
+        command_clarifications=clarifications,
+    )
+
+    result = await service.process_next()
+
+    assert result is not None
+    assert result.status is ImageEventProcessingStatus.CLARIFICATION_REQUIRED
+    assert proposals.drafts == []
+    begun = clarifications.begun[0]
+    extraction = begun["extraction"]
+    assert isinstance(extraction, CommandExtractionResult)
+    assert extraction.command.lines[0].item_reference.value == "ABC-123"
+    assert extraction.command.lines[0].quantity == "3"
+    assert begun["question"] == ("Should these invoice line items be recorded as received stock?")
     assert events.finishes == [(EVENT_ID, True, None)]
 
 

@@ -22,6 +22,10 @@ from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepositor
 from inventory_agent.catalog.interpreter import OpenAICatalogDetailsInterpreter
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
+from inventory_agent.extraction.clarification import (
+    OpenAICommandClarificationInterpreter,
+    SupabaseCommandClarificationRepository,
+)
 from inventory_agent.extraction.image_interpreter import OpenAIImageCommandInterpreter
 from inventory_agent.extraction.interpreter import OpenAITextCommandInterpreter
 from inventory_agent.matching.clarification import (
@@ -244,6 +248,10 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        command_clarification_repository = SupabaseCommandClarificationRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         candidate_repository = SupabaseInventoryCandidateRepository(
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
@@ -275,6 +283,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             proposals=proposals,
             outbox=outbox,
             clarifications=clarification_repository,
+            command_clarifications=command_clarification_repository,
         )
         catalog_interpreter = OpenAICatalogDetailsInterpreter(
             client=openai_client,
@@ -306,6 +315,13 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reversals=reversal_repository,
                 catalog=catalog_repository,
                 catalog_interpreter=catalog_interpreter,
+                command_clarifications=command_clarification_repository,
+                command_clarification_interpreter=OpenAICommandClarificationInterpreter(
+                    client=openai_client,
+                    model=settings.openai_model,
+                    reasoning_effort=settings.openai_reasoning_effort,
+                ),
+                command_handler=command_handler,
                 bot_username=settings.telegram_bot_username,
                 context_manager=AgentContextManager(
                     conversations=agent_repository,

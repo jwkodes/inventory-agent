@@ -18,8 +18,12 @@ question, or rejects every candidate. Its multi-turn conversation state is durab
 Original invoice
 images are checksummed and stored in a private Supabase bucket before extraction. Text and
 image events share matching, idempotent proposal creation, and the durable outbound-message
-outbox. The same worker processes stored Telegram button callbacks, applies idempotent
-proposal actions, and sends a new Telegram message after every successful action.
+outbox. If an invoice needs a question answered before matching, the complete extracted
+command and every line item are stored in a durable clarification record. The next natural
+reply resumes that saved command before ordinary conversation processing, so unrelated chat
+history cannot replace the invoice contents. The same worker processes stored Telegram
+button callbacks, applies idempotent proposal actions, and sends a new Telegram message
+after every successful action.
 
 ## Architecture principles
 
@@ -1045,6 +1049,16 @@ then sends those in-memory bytes to the OpenAI Responses API with `store=False`;
 artifact URL is created. Retries safely overwrite the same storage path and reuse the
 proposal and outbox idempotency keys. Extraction failures keep only a sanitized error,
 retry after 30 seconds, and become failed after the third attempt.
+
+When the image contains usable line items but leaves the requested inventory action
+ambiguous, the worker persists the exact structured extraction in
+`command_clarification_requests` before asking one concise question. A reply such as
+“Yes, all received stock” is merged into that saved extraction by a constrained Structured
+Outputs call. Original identifiers, quantities, units, and attributes must be retained
+unless the user explicitly corrects them. The resolved command then re-enters the normal
+matching and proposal path; it does not pass through the ordinary conversational agent or
+inherit an unrelated product from chat history. This state survives worker restarts and is
+shown as **Input clarification** in the dashboard event flow.
 
 ## Item matching
 

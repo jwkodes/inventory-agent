@@ -181,6 +181,14 @@ class DashboardRepository:
             "proposal_line_id",
             line_ids,
         )
+        command_clarifications = await self._get(
+            "command_clarification_requests",
+            {
+                "select": "*",
+                "or": (f"(source_event_id.eq.{event_id},last_source_event_id.eq.{event_id})"),
+                "order": "created_at.asc",
+            },
+        )
         transactions = await self._get_for_ids(
             "inventory_transactions",
             "proposal_id",
@@ -226,6 +234,7 @@ class DashboardRepository:
             "artifacts": artifacts,
             "catalog_requests": catalog_requests,
             "clarifications": clarifications,
+            "command_clarifications": command_clarifications,
             "transactions": transactions,
             "transaction_lines": transaction_lines,
         }

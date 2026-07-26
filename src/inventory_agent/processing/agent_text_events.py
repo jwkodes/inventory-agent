@@ -33,7 +33,14 @@ from inventory_agent.catalog.details import complete_catalog_item_details
 from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
 from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.catalog.repository import CatalogItemCreationRepository
+from inventory_agent.extraction.clarification import (
+    CommandClarificationInterpreter,
+    CommandClarificationRepository,
+)
+from inventory_agent.extraction.interpreter import CommandExtractionResult
+from inventory_agent.extraction.schema import InventoryIntent
 from inventory_agent.processing.models import (
+    InventoryEventProcessingResult,
     ProcessingOutcomeDraft,
     ProcessingOutcomeType,
     TelegramTextEventContext,
@@ -71,6 +78,16 @@ class CatalogDetailsInterpreter(Protocol):
         """Extract catalog fields from a natural user reply."""
 
 
+class ExtractedCommandHandler(Protocol):
+    async def handle(
+        self,
+        *,
+        context: TelegramTextEventContext,
+        extraction: CommandExtractionResult,
+    ) -> InventoryEventProcessingResult:
+        """Resume matching and proposal creation from a clarified command."""
+
+
 class AgentTextEventProcessingError(RuntimeError):
     """A claimed agent event failed and was recorded for retry."""
 
@@ -93,8 +110,22 @@ class TelegramAgentTextEventProcessor:
         catalog: CatalogItemCreationRepository,
         catalog_interpreter: CatalogDetailsInterpreter,
         context_manager: AgentContextManager | None = None,
+        command_clarifications: CommandClarificationRepository | None = None,
+        command_clarification_interpreter: CommandClarificationInterpreter | None = None,
+        command_handler: ExtractedCommandHandler | None = None,
         bot_username: str | None = None,
     ) -> None:
+        command_flow_dependencies = (
+            command_clarifications,
+            command_clarification_interpreter,
+            command_handler,
+        )
+        if any(value is not None for value in command_flow_dependencies) and not all(
+            value is not None for value in command_flow_dependencies
+        ):
+            raise ValueError(
+                "command clarification repository, interpreter, and handler are all required"
+            )
         self._events = events
         self._model = model
         self._conversations = conversations
@@ -107,6 +138,9 @@ class TelegramAgentTextEventProcessor:
         self._catalog = catalog
         self._catalog_interpreter = catalog_interpreter
         self._context_manager = context_manager
+        self._command_clarifications = command_clarifications
+        self._command_clarification_interpreter = command_clarification_interpreter
+        self._command_handler = command_handler
         self._bot_username = bot_username
         self._background_compactions: dict[tuple[UUID, UUID, int], asyncio.Task[None]] = {}
 
@@ -460,6 +494,73 @@ class TelegramAgentTextEventProcessor:
                 reversal_request_id=reversal_request_id,
                 outbox_id=outbox_id,
             )
+
+        if (
+            self._command_clarifications is not None
+            and self._command_clarification_interpreter is not None
+            and self._command_handler is not None
+        ):
+            command_request_id = await self._command_clarifications.find_pending(
+                actor_id=context.organization_user_id,
+                chat_id=context.chat_id,
+            )
+            if command_request_id is not None:
+                command_view = await self._command_clarifications.get_view(
+                    request_id=command_request_id
+                )
+                command_extraction = await self._command_clarification_interpreter.resolve(
+                    view=command_view,
+                    user_reply=context.message_text,
+                )
+                command = command_extraction.command
+                if command.needs_clarification or command.intent in {
+                    InventoryIntent.UNKNOWN,
+                    InventoryIntent.ADJUST_STOCK,
+                }:
+                    question = command.clarification_question or (
+                        "Should I add or remove these quantities?"
+                        if command.intent is InventoryIntent.ADJUST_STOCK
+                        else "What inventory change should I make?"
+                    )
+                    await self._command_clarifications.continue_request(
+                        request_id=command_request_id,
+                        event_id=context.event_id,
+                        actor_id=context.organization_user_id,
+                        user_reply=context.message_text,
+                        question=question,
+                        extraction=command_extraction,
+                    )
+                    outbox_id = await self._outbox.enqueue(
+                        ProcessingOutcomeDraft(
+                            organization_id=context.organization_id,
+                            source_event_id=context.event_id,
+                            outcome_type=ProcessingOutcomeType.CLARIFICATION_REQUIRED,
+                            chat_id=context.chat_id,
+                            payload={"message": f"❓ **More information needed**\n{question}"},
+                        )
+                    )
+                    await self._require_finish(context.event_id)
+                    return TextEventProcessingResult(
+                        event_id=context.event_id,
+                        status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                        chat_id=context.chat_id,
+                        outbox_id=outbox_id,
+                    )
+
+                result = await self._command_handler.handle(
+                    context=context,
+                    extraction=command_extraction,
+                )
+                await self._command_clarifications.resolve(
+                    request_id=command_request_id,
+                    event_id=context.event_id,
+                    actor_id=context.organization_user_id,
+                    user_reply=context.message_text,
+                    extraction=command_extraction,
+                    proposal_id=result.proposal_id,
+                )
+                await self._require_finish(context.event_id)
+                return result
 
         catalog_request_id = await self._catalog.find_pending(
             actor_id=context.organization_user_id,

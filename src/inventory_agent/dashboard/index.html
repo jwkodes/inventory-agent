@@ -687,6 +687,11 @@
         <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Question</dt><dd>${esc(request.question)}</dd>
         <dt>Turns</dt><dd>${esc(request.turn_count)}</dd></div>${attrs(request.accumulated_attributes)}${raw("Replies", request.clarification_replies)}`, "match")));
 
+      (flow.command_clarifications || []).forEach(request => steps.push(step("clarify", "Input clarification", `
+        <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Question</dt><dd>${esc(request.question)}</dd>
+        <dt>Source event</dt><dd>${esc(request.source_event_id)}</dd><dt>Proposal</dt><dd>${esc(request.proposal_id || "—")}</dd></div>
+        ${raw("Preserved extraction", request.extraction)}${raw("Replies", request.clarification_replies)}`, "match")));
+
       (flow.catalog_requests || []).forEach(request => steps.push(step("catalog", "Catalog item workflow", `
         <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Name</dt><dd>${esc(request.name || request.suggested_name)}</dd>
         <dt>SKU</dt><dd>${esc(request.sku || request.suggested_sku)}</dd><dt>Base unit</dt><dd>${esc(request.base_unit || request.suggested_base_unit)}</dd>
