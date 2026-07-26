@@ -600,7 +600,14 @@ immutable timestamped turn in `inventory_agent_turns`.
 Context limits are checked twice:
 
 1. Immediately before an LLM call, so an oversized context is never knowingly sent.
-2. After a successful turn, so the background worker prepares the next request in advance.
+2. After a successful turn, in a background task that does not delay the queued Telegram
+   reply.
+
+Only one compaction task runs for a given organization, user, and chat at a time. If that
+same conversation receives another message before its task finishes, the new turn waits
+for compaction and then reloads the latest durable history before calling the model.
+Unrelated conversations continue independently. On an orderly worker shutdown, pending
+compactions are allowed to finish before the OpenAI client closes.
 
 A turn leaves active context when it is older than
 `INVENTORY_AGENT_CONTEXT_RETENTION_DAYS`, or when retaining it would exceed either the
@@ -956,7 +963,7 @@ also creates a real one-unit receipt and an exact-transaction reversal. Their ne
 change is zero, while both immutable inventory ledger entries remain as an audit trail.
 The command refuses to run against a hosted Supabase URL.
 
-On 25 July 2026, using `gpt-5.6-luna` at low reasoning effort, the representative local
+On 25 July 2026, using `gpt-5.6-luna` at low reasoning effort, the original diagnostic
 run measured approximately:
 
 | Scenario | End-to-end runtime |
@@ -975,6 +982,9 @@ summarized after nearly every turn, and each extra OpenAI call added 1.8–2.4 s
 Raising or resetting the override toward the documented 30,000-token default makes those
 summarization calls less frequent. The tradeoff is that retained conversations can then
 grow larger, which may gradually increase the main model call's latency and token usage.
+That diagnostic run preceded background post-turn compaction. Telegram delivery now
+continues as soon as the reply is in the outbox; a post-turn summary no longer extends the
+current reply's critical path.
 
 ## Structured command extraction
 

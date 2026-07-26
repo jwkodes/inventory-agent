@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from functools import partial
 from time import perf_counter
 from typing import Protocol
 from uuid import UUID
@@ -106,6 +108,7 @@ class TelegramAgentTextEventProcessor:
         self._catalog_interpreter = catalog_interpreter
         self._context_manager = context_manager
         self._bot_username = bot_username
+        self._background_compactions: dict[tuple[UUID, UUID, int], asyncio.Task[None]] = {}
 
     async def process(self, event_id: UUID) -> TextEventProcessingResult:
         context = await self._events.claim_text_event(event_id)
@@ -140,6 +143,7 @@ class TelegramAgentTextEventProcessor:
             if pending is not None:
                 return pending
 
+            await self._wait_for_background_compaction(context)
             conversation_load_started = perf_counter()
             conversation = await self._conversations.load(
                 organization_id=context.organization_id,
@@ -250,7 +254,7 @@ class TelegramAgentTextEventProcessor:
                 context=context,
             )
             await self._require_finish(context.event_id)
-            await self._compact_after_turn(context)
+            self._schedule_background_compaction(context)
             return result
         except Exception as error:
             failure = f"{type(error).__name__}: agent text event processing failed"
@@ -339,9 +343,51 @@ class TelegramAgentTextEventProcessor:
             f" {details}" if details else "",
         )
 
-    async def _compact_after_turn(self, context: TelegramTextEventContext) -> None:
+    async def wait_for_background_compactions(self) -> None:
+        """Wait for scheduled compactions during tests or graceful shutdown."""
+
+        while tasks := tuple(self._background_compactions.values()):
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+            for key, task in tuple(self._background_compactions.items()):
+                if task.done():
+                    self._background_compactions.pop(key, None)
+
+    async def _wait_for_background_compaction(
+        self,
+        context: TelegramTextEventContext,
+    ) -> None:
+        task = self._background_compactions.get(self._compaction_key(context))
+        if task is None:
+            return
+        started = perf_counter()
+        await asyncio.shield(task)
+        self._log_runtime(
+            component="context_compaction_wait_before_turn",
+            started=started,
+            context=context,
+        )
+
+    def _schedule_background_compaction(
+        self,
+        context: TelegramTextEventContext,
+    ) -> None:
         if self._context_manager is None:
             return
+        key = self._compaction_key(context)
+        existing = self._background_compactions.get(key)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._compact_after_turn(context),
+            name=f"compact-agent-context-{context.chat_id}",
+        )
+        self._background_compactions[key] = task
+        task.add_done_callback(partial(self._forget_background_compaction, key))
+
+    async def _compact_after_turn(self, context: TelegramTextEventContext) -> None:
+        if self._context_manager is None:  # pragma: no cover - scheduling invariant
+            return
+        started = perf_counter()
         try:
             conversation = await self._conversations.load(
                 organization_id=context.organization_id,
@@ -349,11 +395,41 @@ class TelegramAgentTextEventProcessor:
                 chat_id=context.chat_id,
             )
             await self._context_manager.compact_if_needed(conversation)
+            self._log_runtime(
+                component="context_compaction_background",
+                started=started,
+                context=context,
+                status="completed",
+            )
         except Exception:
             logger.exception(
                 "agent_context_compaction status=failed conversation_chat_id=%s",
                 context.chat_id,
             )
+            self._log_runtime(
+                component="context_compaction_background",
+                started=started,
+                context=context,
+                status="failed",
+            )
+
+    @staticmethod
+    def _compaction_key(
+        context: TelegramTextEventContext,
+    ) -> tuple[UUID, UUID, int]:
+        return (
+            context.organization_id,
+            context.organization_user_id,
+            context.chat_id,
+        )
+
+    def _forget_background_compaction(
+        self,
+        key: tuple[UUID, UUID, int],
+        task: asyncio.Future[None],
+    ) -> None:
+        if self._background_compactions.get(key) is task:
+            self._background_compactions.pop(key, None)
 
     async def _handle_pending_deterministic_flow(
         self,

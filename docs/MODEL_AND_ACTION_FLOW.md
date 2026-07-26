@@ -88,6 +88,10 @@ flowchart TD
     REVIEW --> OUTBOX
     ASK_MORE --> OUTBOX
     CLARIFY --> OUTBOX
+    AGENT --> POST_LIMITS{"Post-turn context exceeds limit?"}
+    POST_LIMITS -->|Yes, summarize policy| BG_SUMMARY["Background context summary<br/>does not block delivery"]
+    POST_LIMITS -->|No or discard policy| BG_DONE["Background compaction complete"]
+    BG_SUMMARY --> BG_DONE
     NO_MATCH --> OUTBOX
     REASON --> OUTBOX
     APPLY --> OUTBOX
@@ -103,11 +107,11 @@ flowchart TD
     classDef deterministic fill:#282a2d,stroke:#7d838b,color:#f5f5f5;
     classDef storage fill:#28243a,stroke:#8d7dd1,color:#f8f4ff;
 
-    class AGENT,SUMMARY primary;
+    class AGENT,SUMMARY,BG_SUMMARY primary;
     class CATALOG,TEXT_EXTRACT,IMAGE,JUDGE routine;
     class EMBED,SEMANTIC embed;
     class EVENT,OUTBOX,CONTEXT_EVENT storage;
-    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
+    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,POST_LIMITS,BG_DONE,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
 ```
 
 ## Ordinary text-agent tool loop
@@ -196,6 +200,10 @@ Every model boundary and major deterministic stage emits a structured
 storage, compaction, model rounds, OpenAI calls, embeddings, catalog and balance reads,
 tools, outbox rendering, Telegram delivery, and total text-event duration. Timings are
 emitted when real work happens; they are diagnostic measurements rather than heartbeats.
+Post-turn compaction is scheduled after the outbox record is created and is logged as
+`context_compaction_background`; it is not included in the current
+`telegram_text_event_total`. A following turn in the same conversation logs
+`context_compaction_wait_before_turn` if it must wait for that task before loading history.
 
 ## Important routing notes
 
@@ -210,6 +218,9 @@ emitted when real work happens; they are diagnostic measurements rather than hea
 - Exact SKU reads query the database directly. Semantic embeddings are used for
   name-based retrieval, not for exact identifiers or broad inventory listings.
 - Context summarisation is conditional housekeeping, not an automatic call on every turn.
+- Post-turn context compaction runs in the background, so Telegram delivery does not wait
+  for a summary. A subsequent turn in the same user/chat is serialized behind that task
+  and reloads durable context afterward.
 - Button callbacks and exact standalone proposal controls do not call a model.
 - Successful confirmation and cancellation actions append a deterministic system turn to
   active agent context. The next agent turn can see that lifecycle result but must still

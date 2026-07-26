@@ -300,6 +300,7 @@ async def main() -> None:
                 f"transaction_id={reversal_transaction_id} net_stock_change=0"
             )
         finally:
+            await processor.wait_for_background_compactions()
             if event_ids:
                 await database.delete(
                     "/processing_outbox",

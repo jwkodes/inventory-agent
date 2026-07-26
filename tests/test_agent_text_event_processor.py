@@ -1,5 +1,6 @@
 """Telegram orchestration tests for the durable LLM-led agent path."""
 
+import asyncio
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -154,6 +155,37 @@ class FakeContextManager:
         conversation: AgentConversation,
     ) -> AgentConversation:
         self.calls += 1
+        return conversation
+
+
+class BlockingPostTurnContextManager:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.background_started = asyncio.Event()
+        self.release_background = asyncio.Event()
+
+    async def compact_if_needed(
+        self,
+        conversation: AgentConversation,
+    ) -> AgentConversation:
+        self.calls += 1
+        if self.calls == 2:
+            self.background_started.set()
+            await self.release_background.wait()
+        return conversation
+
+
+class FailingPostTurnContextManager:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def compact_if_needed(
+        self,
+        conversation: AgentConversation,
+    ) -> AgentConversation:
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("summary provider unavailable")
         return conversation
 
 
@@ -456,17 +488,65 @@ async def test_user_supplied_uuid_is_resolved_before_the_model_with_current_turn
 async def test_context_is_checked_before_and_after_a_completed_agent_turn() -> None:
     context_manager = FakeContextManager()
     conversations = FakeConversations(conversation())
-
-    result = await processor(
+    event_processor = processor(
         model=FakeModel(),
         conversations=conversations,
         outbox=FakeOutbox(),
         events=FakeEvents(),
         context_manager=context_manager,
-    ).process_next()
+    )
+
+    result = await event_processor.process_next()
+    await event_processor.wait_for_background_compactions()
 
     assert result is not None
     assert context_manager.calls == 2
+
+
+async def test_post_turn_compaction_does_not_block_reply_but_serializes_next_turn() -> None:
+    context_manager = BlockingPostTurnContextManager()
+    event_processor = processor(
+        model=FakeModel(),
+        conversations=FakeConversations(conversation()),
+        outbox=FakeOutbox(),
+        events=FakeEvents(),
+        context_manager=context_manager,
+    )
+
+    first_result = await event_processor.process_next()
+    assert first_result is not None
+    await asyncio.wait_for(context_manager.background_started.wait(), timeout=1)
+
+    second_turn = asyncio.create_task(event_processor.process_next())
+    await asyncio.sleep(0)
+    assert not second_turn.done()
+
+    context_manager.release_background.set()
+    second_result = await asyncio.wait_for(second_turn, timeout=1)
+    await event_processor.wait_for_background_compactions()
+
+    assert second_result is not None
+    assert context_manager.calls == 4
+
+
+async def test_background_compaction_failure_does_not_fail_or_poison_conversation() -> None:
+    context_manager = FailingPostTurnContextManager()
+    event_processor = processor(
+        model=FakeModel(),
+        conversations=FakeConversations(conversation()),
+        outbox=FakeOutbox(),
+        events=FakeEvents(),
+        context_manager=context_manager,
+    )
+
+    first_result = await event_processor.process_next()
+    await event_processor.wait_for_background_compactions()
+    second_result = await event_processor.process_next()
+    await event_processor.wait_for_background_compactions()
+
+    assert first_result is not None
+    assert second_result is not None
+    assert context_manager.calls == 4
 
 
 async def test_retried_saved_turn_reuses_reply_without_another_model_call() -> None:

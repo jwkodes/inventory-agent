@@ -89,6 +89,12 @@ crash. Transient processing failures retry after 30 seconds and the third failur
 retained for operations. The same runtime loop owns a separate delivery component and retry
 policy.
 
+Post-turn conversation compaction is scheduled after the durable outbox handoff and runs
+without blocking Telegram delivery. Tasks are keyed by organization, user, and chat. A
+new turn for the same conversation waits for its outstanding task and reloads durable
+history, preventing a stale pre-compaction snapshot from reaching the model; unrelated
+conversations can continue independently.
+
 The image worker accepts Telegram photos and JPEG/PNG/WebP documents up to the hosted Bot
 API's 20 MB download limit. It atomically claims the event, selects the largest Telegram
 photo size, stores the original bytes and SHA-256 metadata in private Supabase Storage,

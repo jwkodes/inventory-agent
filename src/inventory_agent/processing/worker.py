@@ -184,6 +184,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
     bot_token = _required_secret(settings.telegram_bot_token, "TELEGRAM_BOT_TOKEN")
     openai_api_key = _required_secret(settings.openai_api_key, "OPENAI_API_KEY")
     openai_client = AsyncOpenAI(api_key=openai_api_key)
+    agent_text_processor: TelegramAgentTextEventProcessor | None = None
     try:
         event_repository = SupabaseSourceEventWorkRepository(
             supabase_url=settings.supabase_url,
@@ -288,7 +289,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 model=settings.inventory_agent_model,
                 reasoning_effort=settings.inventory_agent_reasoning_effort,
             )
-            text_processor: NextTextEventProcessor = TelegramAgentTextEventProcessor(
+            agent_text_processor = TelegramAgentTextEventProcessor(
                 events=event_repository,
                 model=agent_model,
                 conversations=agent_repository,
@@ -318,6 +319,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                     summarizer=ModelConversationSummarizer(model=agent_model),
                 ),
             )
+            text_processor: NextTextEventProcessor = agent_text_processor
         else:
             text_processor = TelegramTextEventProcessor(
                 events=event_repository,
@@ -374,6 +376,8 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             poll_seconds=poll_seconds,
         )
     finally:
+        if agent_text_processor is not None:
+            await agent_text_processor.wait_for_background_compactions()
         await openai_client.close()
 
 
