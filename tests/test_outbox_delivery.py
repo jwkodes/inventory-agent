@@ -218,6 +218,46 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert repository.finishes == [(OUTBOX_ID, True, None, 30)]
 
 
+async def test_pending_proposal_replaces_premature_model_success_claim() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.PROPOSAL_READY,
+            payload={"agent_reply": "Done! Inventory has been updated successfully."},
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    text = sender.messages[0][1]
+    assert "Inventory has been updated successfully" not in text
+    assert "prepared for review and has not been applied" in text
+
+
+async def test_pending_proposal_removes_unbalanced_model_markdown() -> None:
+    repository = FakeRepository(
+        outcome(
+            ProcessingOutcomeType.PROPOSAL_READY,
+            payload={"agent_reply": "**Proposal prepared with malformed emphasis."},
+        )
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    text = sender.messages[0][1]
+    assert text.count("**") % 2 == 0
+    assert "Proposal prepared with malformed emphasis." in text
+
+
 async def test_reversal_success_and_linked_replacement_are_delivered_together() -> None:
     repository = FakeRepository(
         outcome(

@@ -34,6 +34,7 @@ from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.image_events import TelegramImageEventProcessor
 from inventory_agent.processing.models import (
     OutboxDeliveryStatus,
+    TelegramCallbackEventContext,
     TelegramTextEventContext,
     TextEventProcessingStatus,
 )
@@ -91,6 +92,53 @@ class RecordingTelegramSender:
 
     async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
         self.removed_keyboards.append((chat_id, message_id))
+
+
+class SpecificCallbackEventRepository:
+    """Claim only the callback created by this component test."""
+
+    def __init__(
+        self,
+        *,
+        event_id: UUID,
+        supabase_url: str,
+        secret_key: str,
+    ) -> None:
+        self._event_id = event_id
+        self._rest_url = f"{supabase_url.rstrip('/')}/rest/v1"
+        self._headers = {"apikey": secret_key, "Authorization": f"Bearer {secret_key}"}
+        self._events = SupabaseSourceEventWorkRepository(
+            supabase_url=supabase_url,
+            secret_key=secret_key,
+        )
+
+    async def claim_next_callback_event(self) -> TelegramCallbackEventContext | None:
+        async with httpx.AsyncClient(
+            base_url=self._rest_url,
+            headers=self._headers,
+        ) as client:
+            response = await client.post(
+                "/rpc/claim_telegram_callback_event",
+                json={"p_event_id": str(self._event_id)},
+            )
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return None
+        return TelegramCallbackEventContext.model_validate(rows[0])
+
+    async def finish_event(
+        self,
+        *,
+        event_id: UUID,
+        success: bool,
+        error_message: str | None = None,
+    ) -> bool:
+        return await self._events.finish_event(
+            event_id=event_id,
+            success=success,
+            error_message=error_message,
+        )
 
 
 class FixedCommandInterpreter:
@@ -1457,7 +1505,8 @@ async def test_callback_processing_crosses_python_and_local_supabase_boundaries(
 
             telegram = RecordingTelegramSender()
             processor = TelegramCallbackEventProcessor(
-                events=SupabaseSourceEventWorkRepository(
+                events=SpecificCallbackEventRepository(
+                    event_id=callback_event_id,
                     supabase_url=settings.supabase_url,
                     secret_key=secret_key,
                 ),

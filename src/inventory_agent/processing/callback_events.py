@@ -116,7 +116,16 @@ class TelegramCallbackEventProcessor:
                 chat_id=context.chat_id,
             )
             if outcome.status is CallbackOutcomeStatus.FAILED:
-                raise RuntimeError("Callback database action failed")
+                await self._outbox.enqueue(
+                    ProcessingOutcomeDraft(
+                        organization_id=context.organization_id,
+                        source_event_id=context.event_id,
+                        outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                        aggregate_id=None,
+                        chat_id=context.chat_id,
+                        payload={"message": (f"⚠️ **Action not completed**\n{outcome.message}")},
+                    )
+                )
 
             if outcome.status is CallbackOutcomeStatus.COMPLETED:
                 await self._publish_completed_action(

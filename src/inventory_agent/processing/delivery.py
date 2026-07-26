@@ -323,7 +323,31 @@ def _with_agent_reply(rendered_text: str, payload: dict[str, object]) -> str:
     agent_reply = payload.get("agent_reply")
     if not isinstance(agent_reply, str) or not agent_reply.strip():
         return rendered_text
-    return f"{rendered_text}\n\n💬 **Agent note**\n{agent_reply.strip()}"
+    safe_reply = _safe_pending_agent_reply(agent_reply)
+    return f"{rendered_text}\n\n💬 **Agent note**\n{safe_reply}"
+
+
+def _safe_pending_agent_reply(agent_reply: str) -> str:
+    """Keep model prose from contradicting an application-owned pending review."""
+
+    stripped = agent_reply.strip()
+    premature_claims = (
+        "inventory has been updated",
+        "inventory was updated",
+        "stock has been added",
+        "stock was added",
+        "stock has been deducted",
+        "stock was deducted",
+        "transaction was applied",
+        "done!",
+    )
+    if any(claim in stripped.casefold() for claim in premature_claims):
+        return "The inventory change is prepared for review and has not been applied."
+    if stripped.count("**") % 2:
+        stripped = stripped.replace("**", "")
+    if stripped.count("`") % 2:
+        stripped = stripped.replace("`", "")
+    return stripped
 
 
 def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> str:

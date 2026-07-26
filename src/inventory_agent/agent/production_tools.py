@@ -10,6 +10,7 @@ from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
+import httpx
 from pydantic import ValidationError
 
 from inventory_agent.agent.models import (
@@ -197,6 +198,14 @@ class ProductionInventoryAgentTools:
             result = await self._dispatch(call_id=call_id, name=name, arguments=arguments)
         except (ValueError, ValidationError) as error:
             result = {"ok": False, "error": str(error)}
+        except httpx.HTTPStatusError:
+            result = {
+                "ok": False,
+                "error": (
+                    "The inventory system rejected this action. It may require a manager "
+                    "or admin, or the target may no longer be available."
+                ),
+            }
         output = json.dumps(result, separators=(",", ":"), default=str)
         self._results_by_call_id[call_id] = output
         _log_runtime(

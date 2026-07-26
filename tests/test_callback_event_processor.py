@@ -474,6 +474,46 @@ async def test_invalid_callback_is_completed_without_editing_message() -> None:
     assert events.finishes == [(EVENT_ID, True, None)]
 
 
+async def test_rejected_callback_sends_new_notice_without_removing_buttons() -> None:
+    events = FakeEvents(context())
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=events,
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.FAILED,
+                CallbackAction.ADD_NEW_ITEM,
+                None,
+                "This action may require a manager or admin.",
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+    )
+
+    result = await processor.process_next()
+
+    assert result is not None
+    assert result.outcome.status is CallbackOutcomeStatus.FAILED
+    assert editor.removed_keyboards == []
+    assert events.finishes == [(EVENT_ID, True, None)]
+    assert outbox.drafts == [
+        ProcessingOutcomeDraft(
+            organization_id=ORGANIZATION_ID,
+            source_event_id=EVENT_ID,
+            outcome_type="callback_notice",
+            aggregate_id=None,
+            chat_id=-100123,
+            payload={
+                "message": (
+                    "⚠️ **Action not completed**\nThis action may require a manager or admin."
+                )
+            },
+        )
+    ]
+
+
 async def test_edit_failure_is_sanitized_and_returned_to_event_retry_queue() -> None:
     events = FakeEvents(context())
     processor = TelegramCallbackEventProcessor(

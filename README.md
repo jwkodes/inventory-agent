@@ -875,6 +875,39 @@ Live OpenAI and Telegram end-to-end tests have not been automated yet. Those wil
 dedicated test bot, test organization, and explicit opt-in so ordinary test runs cannot
 spend API credits or message real users.
 
+### Randomized full-pipeline stress evaluation
+
+The local stress harness runs at least 101 randomized user journeys through authenticated
+Telegram webhook ingestion, durable event processing, the inventory-agent boundary,
+catalog matching and creation, confirmations, cancellations, reversals, outbox delivery,
+and the real local Supabase ledger. It simulates several users, group/private chats,
+model responses, Telegram delivery, typos, duplicate updates, unsafe model output,
+duplicate and already-used catalog SKUs, and transaction lookup by rough time, product,
+actor identity, and relative position such as “four transactions ago.” Unsupported
+capabilities are recorded as failures instead of being silently skipped. It does not call
+OpenAI or Telegram, so the run costs no API credits and sends no real messages.
+
+Stop the live worker before the run so it cannot claim the simulated source events, then
+run:
+
+```bash
+uv run python -m inventory_agent.evaluation.pipeline_stress \
+  --scenarios 150 \
+  --users 24 \
+  --seed 20260728
+```
+
+The harness deliberately retains its clearly named `Inventory Pipeline Stress <seed>`
+organization and inventory for inspection in the development dashboard. Use a new seed
+for an independent repeat. The Markdown report is written to
+`docs/testing/PIPELINE_STRESS_REPORT.md`; use `--report PATH` to change it. Restart the
+worker after the run. The report distinguishes application/database safety, correctness,
+Telegram UX, injected model failures, and p50/p95/max stage timings.
+
+This is a local text-pipeline evaluation, not a live-model language benchmark. Invoice
+images remain covered by the application component tests, while speech transcription is
+not implemented yet.
+
 ### Experimental LLM-led agent evaluation
 
 The isolated agent spike has deterministic unit tests that use fake model responses:
@@ -1466,6 +1499,20 @@ lot-function tests. It is development data only and must never be loaded into pr
       organization;
     - expose safe invite generation, approval, rejection, and role selection in the local
       admin dashboard — complete; authenticated production admin accounts remain; and
+    - resolve the worker experience for unmatched products: the database correctly
+      prevents a `worker` from creating catalog items, but Telegram can currently offer
+      the new-item action and then fail without a useful explanation. Keep the policy
+      decision open while evaluating these options:
+      - hide or disable catalog-creation actions for workers and clearly ask them to
+        contact a manager or admin;
+      - create a durable manager-approval request and notify eligible approvers;
+      - let workers prepare a pending catalog draft that a manager or admin must review
+        before either the product or stock is created; or
+      - make worker catalog creation an organization-level permission, with an appropriate
+        approval and audit policy;
+      regardless of the selected policy, never fail silently, never change inventory
+      before authorization and confirmation, and provide workers with **Choose existing**
+      and **Cancel** paths where applicable;
     - enforce role-specific read, proposal, confirmation, catalog, and reversal policies
       consistently in both application and database boundaries.
 14. Component-level pipeline health and observability:

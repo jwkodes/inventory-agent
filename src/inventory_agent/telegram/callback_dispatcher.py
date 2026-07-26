@@ -229,6 +229,16 @@ class TelegramCallbackDispatcher:
                 message=str(error),
                 catalog_batch_status="awaiting_details",
             )
+        except httpx.HTTPStatusError:
+            return CallbackOutcome(
+                CallbackOutcomeStatus.FAILED,
+                command.action,
+                None,
+                (
+                    "This action may require a manager or admin, or the request may "
+                    "no longer be pending."
+                ),
+            )
         except (ValueError, RuntimeError, httpx.HTTPError) as error:
             return CallbackOutcome(
                 CallbackOutcomeStatus.FAILED,
