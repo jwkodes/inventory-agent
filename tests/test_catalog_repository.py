@@ -22,6 +22,7 @@ REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
 EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
 BATCH_ID = UUID("72000000-0000-0000-0000-000000000001")
+TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 
 
 async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
@@ -56,11 +57,12 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
             "items": [],
         },
         "save_catalog_batch_creation_draft": str(BATCH_ID),
-        "confirm_catalog_batch_creation": {
+        "confirm_catalog_batch_and_apply_inventory": {
             "ready": True,
             "proposal_id": str(PROPOSAL_ID),
+            "transaction_id": str(TRANSACTION_ID),
         },
-        "cancel_catalog_batch_creation": str(BATCH_ID),
+        "cancel_catalog_batch_and_proposal": str(BATCH_ID),
     }
 
     def handle_request(request: httpx.Request) -> httpx.Response:
@@ -151,7 +153,7 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
             batch_id=BATCH_ID,
             actor_id=ACTOR_ID,
         )
-        == PROPOSAL_ID
+        == TRANSACTION_ID
     )
     assert (
         await repository.cancel_batch(

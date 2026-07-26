@@ -211,7 +211,7 @@ class TelegramCallbackEventProcessor:
                 aggregate_id = result_id
                 payload = {"message": callback_message}
             else:
-                outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+                outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
                 aggregate_id = result_id
                 payload = {}
         elif action is CallbackAction.CANCEL_CATALOG_BATCH:

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(18);
+select plan(23);
 
 select has_table(
   'public',
@@ -24,6 +24,14 @@ select has_function(
 select has_function(
   'public', 'confirm_catalog_batch_creation', array['uuid', 'uuid'],
   'bulk catalog confirmation exists'
+);
+select has_function(
+  'public', 'confirm_catalog_batch_and_apply_inventory', array['uuid', 'uuid'],
+  'catalog creation and stock application share one atomic confirmation'
+);
+select has_function(
+  'public', 'cancel_catalog_batch_and_proposal', array['uuid', 'uuid'],
+  'one cancellation rejects both the catalog batch and stock proposal'
 );
 
 insert into public.source_events (
@@ -273,6 +281,42 @@ select is(
   ),
   'completed',
   'the batch is completed atomically'
+);
+
+create temporary table atomic_batch_application as
+select public.confirm_catalog_batch_and_apply_inventory(
+  (select batch_id from catalog_batch),
+  '11000000-0000-0000-0000-000000000001'
+) as result;
+
+select isnt(
+  (
+    select result ->> 'transaction_id'
+    from atomic_batch_application
+  ),
+  null::text,
+  'the combined confirmation returns the applied transaction ID'
+);
+select is(
+  (
+    select status::text
+    from public.transaction_proposals
+    where id = (select proposal_id from batch_proposal)
+  ),
+  'applied',
+  'the same confirmation applies the original stock proposal'
+);
+select is(
+  (
+    select count(*)
+    from public.transaction_lines
+    where transaction_id = (
+      select (result ->> 'transaction_id')::uuid
+      from atomic_batch_application
+    )
+  ),
+  2::bigint,
+  'the applied transaction contains both newly created products'
 );
 
 select * from finish();

@@ -89,7 +89,7 @@ class CatalogItemCreationRepository(Protocol):
         """Merge one natural reply across all items in the batch."""
 
     async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
-        """Atomically create all batch items and return the resumed proposal ID."""
+        """Atomically create all batch items, apply stock, and return the transaction ID."""
 
     async def cancel_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         """Cancel a bulk catalog request."""
@@ -285,7 +285,7 @@ class SupabaseCatalogItemCreationRepository:
 
     async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         result = await self._call(
-            "confirm_catalog_batch_creation",
+            "confirm_catalog_batch_and_apply_inventory",
             {"p_batch_id": str(batch_id), "p_actor_id": str(actor_id)},
         )
         if isinstance(result, dict) and result.get("ready") is False:
@@ -300,12 +300,12 @@ class SupabaseCatalogItemCreationRepository:
             )
         if not isinstance(result, dict) or result.get("ready") is not True:
             raise ValueError("Supabase returned an invalid catalog batch confirmation")
-        return _required_uuid(result.get("proposal_id"), "resumed catalog batch proposal")
+        return _required_uuid(result.get("transaction_id"), "applied catalog batch transaction")
 
     async def cancel_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         return _required_uuid(
             await self._call(
-                "cancel_catalog_batch_creation",
+                "cancel_catalog_batch_and_proposal",
                 {"p_batch_id": str(batch_id), "p_actor_id": str(actor_id)},
             ),
             "cancelled catalog batch request",

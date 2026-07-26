@@ -382,9 +382,9 @@ async def test_catalog_actions_send_new_outbox_messages(
         ),
         (
             CallbackAction.CONFIRM_CATALOG_BATCH,
-            PROPOSAL_ID,
+            TRANSACTION_ID,
             None,
-            "proposal_ready",
+            "transaction_applied",
         ),
         (
             CallbackAction.CANCEL_CATALOG_BATCH,

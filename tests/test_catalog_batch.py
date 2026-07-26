@@ -94,7 +94,8 @@ def test_batch_prompt_retains_quantities_and_requests_identifiers_once() -> None
 def test_batch_confirmation_creates_every_item_behind_one_button() -> None:
     message = render_catalog_batch_confirmation(batch_view(complete=True))
 
-    assert "Create 2 new products" in message.text
+    assert "Create and receive 2 new products" in message.text
+    assert "CREATE + ADD" in message.text
     assert "2W10-24-NC-38" in message.text
     assert "2W25-24-NC-G1" in message.text
     actions = [

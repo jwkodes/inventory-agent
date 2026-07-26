@@ -198,7 +198,7 @@ class RecordingCatalog:
 
     async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("confirm_catalog_batch")
-        return PROPOSAL_ID
+        return TRANSACTION_ID
 
     async def cancel_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("cancel_catalog_batch")
@@ -378,7 +378,7 @@ async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:
     callback_dispatcher = dispatcher(events)
     cases = [
         (CallbackAction.ADD_ALL_NEW_ITEMS, PROPOSAL_ID, CATALOG_REQUEST_ID),
-        (CallbackAction.CONFIRM_CATALOG_BATCH, CATALOG_REQUEST_ID, PROPOSAL_ID),
+        (CallbackAction.CONFIRM_CATALOG_BATCH, CATALOG_REQUEST_ID, TRANSACTION_ID),
         (CallbackAction.CANCEL_CATALOG_BATCH, CATALOG_REQUEST_ID, CATALOG_REQUEST_ID),
     ]
 

@@ -482,26 +482,52 @@ def render_catalog_batch_details_prompt(view: CatalogBatchCreationView) -> Confi
     )
 
 
-def render_catalog_batch_confirmation(view: CatalogBatchCreationView) -> ConfirmationMessage:
-    """Review every new catalog item behind one atomic confirmation."""
+def render_catalog_batch_confirmation(
+    view: CatalogBatchCreationView,
+    *,
+    proposal: ProposalConfirmationView | None = None,
+) -> ConfirmationMessage:
+    """Review catalog creation and the receipt behind one atomic confirmation."""
 
-    text_lines = [
-        "⏳ **Pending catalog batch**",
-        f"Create {len(view.items)} new products:",
-    ]
-    for item in view.items:
-        quantity = format(item.requested_quantity.normalize(), "f")
-        unit = f" {item.requested_unit}" if item.requested_unit else ""
-        name = item.name or item.suggested_name or "Unnamed item"
-        sku = item.sku or item.suggested_sku or "missing"
-        text_lines.append(f"{item.line_number}. {quantity}{unit} — {name} · {sku}")
-    text_lines.append("Please review, then create all items or cancel.")
+    text_lines = ["⏳ **Pending catalog and stock addition**"]
+    if proposal is None:
+        text_lines.append(f"Create and receive {len(view.items)} new products:")
+        for item in view.items:
+            quantity = format(item.requested_quantity.normalize(), "f")
+            unit = f" {item.requested_unit}" if item.requested_unit else ""
+            name = item.name or item.suggested_name or "Unnamed item"
+            sku = item.sku or item.suggested_sku or "missing"
+            text_lines.append(
+                f"{item.line_number}. 🆕 CREATE + ADD {quantity}{unit} — {name} · {sku}"
+            )
+    else:
+        item_by_line = {item.line_number: item for item in view.items}
+        text_lines.append("Review every proposal line:")
+        for index, line in enumerate(proposal.lines, start=1):
+            quantity = format(line.quantity.normalize(), "f")
+            unit = f" {line.unit}" if line.unit else ""
+            new_item = item_by_line.get(index)
+            if new_item is not None:
+                name = new_item.name or new_item.suggested_name or line.description
+                sku = new_item.sku or new_item.suggested_sku or "missing"
+                text_lines.append(f"{index}. 🆕 CREATE + ADD {quantity}{unit} — {name} · {sku}")
+            elif line.user_resolution == "ignored":
+                text_lines.append(f"{index}. 🚫 IGNORE {quantity}{unit} — {line.description}")
+            elif line.matched_label is not None:
+                text_lines.append(
+                    f"{index}. ➕ ADD {quantity}{unit} — {line.description} → {line.matched_label}"
+                )
+            else:
+                raise ValueError("Catalog batch proposal still has an unresolved active line")
+    text_lines.append(
+        "Confirm once to create the new products and apply the complete stock addition."
+    )
     return ConfirmationMessage(
         text="\n".join(text_lines),
         inline_keyboard=[
             [
                 InlineButton(
-                    text=f"Create all {len(view.items)} items",
+                    text="Confirm all changes",
                     callback_data=encode_callback(
                         CallbackCommand(CallbackAction.CONFIRM_CATALOG_BATCH, view.batch_id)
                     ),

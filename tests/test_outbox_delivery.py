@@ -278,6 +278,26 @@ async def test_delivers_one_bulk_catalog_prompt_with_retained_quantity() -> None
     assert "Quantities will not be changed" in sender.messages[0][1]
 
 
+async def test_bulk_catalog_confirmation_reviews_creation_and_stock_together() -> None:
+    repository = FakeRepository(
+        outcome(ProcessingOutcomeType.CATALOG_BATCH_CONFIRMATION),
+        catalog_status="awaiting_confirmation",
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    text = sender.messages[0][1]
+    assert text.startswith("⏳ **Pending catalog and stock addition**")
+    assert "🆕 CREATE + ADD 3 each — Purple Widget · ZX-999" in text
+    assert "Confirm once" in text
+    assert repository.requested_proposals == [PROPOSAL_ID]
+
+
 async def test_simulated_user_label_is_visible_on_every_outbound_result() -> None:
     repository = FakeRepository(
         outcome(

@@ -1151,8 +1151,10 @@ new products enter one catalog batch that retains every extracted description, q
 and unit, then asks once for missing identifiers and optional attributes. The user can
 reply naturally, approve suggested SKUs, correct selected lines, or explicitly request
 unique internal SKUs generated from the product specifications. One combined catalog
-review creates the selected items atomically and returns to the original stock proposal.
-If the decisions leave only one new product, the ordinary single-item detail flow is used.
+and stock review creates the selected items and applies the complete receipt in one
+database transaction. If either operation fails, neither catalog nor inventory changes.
+Its Cancel action rejects both the catalog batch and stock proposal. If the decisions
+leave only one new product, the ordinary single-item detail flow is used.
 
 Proposal reviews and catalog drafts prefer the preserved source item phrase over a generic
 normalized label. Consequently, lines such as several products normalized to `SOLENOID

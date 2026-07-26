@@ -155,7 +155,11 @@ class TelegramOutboxDeliveryWorker:
                 ):
                     message = render_catalog_batch_details_prompt(batch_view)
                 else:
-                    message = render_catalog_batch_confirmation(batch_view)
+                    proposal_view = await self._repository.get_proposal_view(batch_view.proposal_id)
+                    message = render_catalog_batch_confirmation(
+                        batch_view,
+                        proposal=proposal_view,
+                    )
                 text = message.text
                 missing = outcome.payload.get("missing")
                 if isinstance(missing, list) and missing:

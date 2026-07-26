@@ -100,8 +100,8 @@ flowchart TD
     LINE_DECISION -->|All active lines matched| REVIEW
     BULK_START --> BULK_DETAILS["Collect all missing SKUs in one reply<br/>gpt-5.6-luna · effort none"]
     BULK_DETAILS --> BULK_REVIEW["One combined catalog review"]
-    BULK_REVIEW -->|Confirm once| BULK_CREATE["Create all catalog items atomically<br/>Resolve original proposal lines"]
-    BULK_CREATE --> REVIEW
+    BULK_REVIEW -->|Confirm once| BULK_CREATE["Create catalog items and apply receipt<br/>One database transaction"]
+    BULK_CREATE --> OUTBOX
 
     PROPOSAL --> REVIEW["Render proposal review and confirmation buttons"]
     ITEM_REVIEW --> OUTBOX[("Supabase processing_outbox")]
