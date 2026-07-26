@@ -15,7 +15,7 @@ agent.
 | Invoice image extraction | `gpt-5.6-luna` | `none` | Every supported Telegram invoice image |
 | Input clarification resolution | `gpt-5.6-luna` | `none` | A natural-language reply to an ambiguous saved invoice or legacy structured command |
 | Catalog detail extraction | `gpt-5.6-luna` | `none` | A natural-language reply while a new catalog item is waiting for required details |
-| Bulk catalog detail extraction | `gpt-5.6-luna` | `none` | One natural-language reply supplies or explicitly generates missing identifiers for every unmatched invoice line |
+| Bulk catalog detail extraction | `gpt-5.6-luna` | `none` | One natural-language reply supplies or explicitly generates missing identifiers for selected new products in any multi-line proposal |
 | Candidate judge | `gpt-5.6-luna` | `none` | Retrieved candidates in the invoice/structured pipeline need a constrained select, ask-user, or no-match decision |
 | Semantic retrieval | `text-embedding-3-small` | Not applicable | A name-based catalog search when the configured strategy is `semantic` or `hybrid`; exact SKU reads bypass it |
 
@@ -84,11 +84,20 @@ flowchart TD
     MATCH_TYPE -->|No| SEMANTIC["Semantic candidate retrieval<br/>text-embedding-3-small"]
     SEMANTIC --> CANDIDATES{"Candidates returned?"}
     CANDIDATES -->|Yes| JUDGE["Candidate judge<br/>gpt-5.6-luna · effort none"]
-    CANDIDATES -->|No| NO_MATCH["Offer add-new or choose-existing flow"]
+    CANDIDATES -->|No| NO_MATCH["Offer add-new, match-existing,<br/>or ignore flow"]
     JUDGE -->|Select with sufficient confidence| PROPOSAL
     JUDGE -->|Ask user| CLARIFY["Store clarification and ask one question"]
     JUDGE -->|No match| NO_MATCH
-    NO_MATCH -->|Several new products| BULK_START["Add all as new<br/>Preserve every quantity"]
+    NO_MATCH -->|Several unmatched lines| LINE_DECISION{"Resolve next line"}
+    LINE_DECISION -->|Add new| LINE_SAVE["Store add-new decision<br/>Send fresh review"]
+    LINE_DECISION -->|Match existing| CANDIDATE_PICK["Show grounded candidates"]
+    CANDIDATE_PICK -->|Select| LINE_SAVE
+    LINE_DECISION -->|Ignore extraction mistake| LINE_IGNORE["Keep audit evidence<br/>Exclude from stock"]
+    LINE_IGNORE --> LINE_DECISION
+    LINE_SAVE --> LINE_DECISION
+    LINE_DECISION -->|All decisions complete<br/>2+ new products| BULK_START["Start catalog batch<br/>Preserve every quantity"]
+    LINE_DECISION -->|All decisions complete<br/>1 new product| ITEM_REVIEW
+    LINE_DECISION -->|All active lines matched| REVIEW
     BULK_START --> BULK_DETAILS["Collect all missing SKUs in one reply<br/>gpt-5.6-luna · effort none"]
     BULK_DETAILS --> BULK_REVIEW["One combined catalog review"]
     BULK_REVIEW -->|Confirm once| BULK_CREATE["Create all catalog items atomically<br/>Resolve original proposal lines"]

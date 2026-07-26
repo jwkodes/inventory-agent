@@ -48,6 +48,21 @@ class RecordingActions:
         self.events.append("select")
         return PROPOSAL_ID
 
+    async def mark_new_item(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        assert (line_id, actor_id) == (LINE_ID, ACTOR_ID)
+        self.events.append("mark_new")
+        return PROPOSAL_ID
+
+    async def ignore_line(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        assert (line_id, actor_id) == (LINE_ID, ACTOR_ID)
+        self.events.append("ignore_line")
+        return PROPOSAL_ID
+
+    async def mark_all_new_items(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        assert (proposal_id, actor_id) == (PROPOSAL_ID, ACTOR_ID)
+        self.events.append("mark_all_new")
+        return proposal_id
+
     async def confirm(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("confirm")
         return UUID("60000000-0000-0000-0000-000000000001")
@@ -346,6 +361,7 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
 
     assert events == [
         "ack",
+        "mark_new",
         "begin_catalog",
         "get_catalog_view",
         "ack",
@@ -378,6 +394,7 @@ async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:
 
     assert events == [
         "ack",
+        "mark_all_new",
         "begin_catalog_batch",
         "get_catalog_batch_view",
         "ack",
@@ -385,6 +402,23 @@ async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:
         "ack",
         "cancel_catalog_batch",
     ]
+
+
+async def test_multi_line_decisions_return_the_proposal_for_a_fresh_review() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+
+    for action in (CallbackAction.MARK_NEW_ITEM, CallbackAction.IGNORE_PROPOSAL_LINE):
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, LINE_ID)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == PROPOSAL_ID
+
+    assert events == ["ack", "mark_new", "ack", "ignore_line"]
 
 
 async def test_duplicate_catalog_sku_reopens_details_and_alerts_immediately() -> None:

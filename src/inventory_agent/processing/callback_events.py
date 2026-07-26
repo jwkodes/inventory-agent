@@ -167,14 +167,15 @@ class TelegramCallbackEventProcessor:
         if action is None or result_id is None:
             raise ValueError("Completed callback is missing its action result")
 
-        if action is CallbackAction.SELECT_VARIANT:
+        if action in {
+            CallbackAction.SELECT_VARIANT,
+            CallbackAction.MARK_NEW_ITEM,
+            CallbackAction.IGNORE_PROPOSAL_LINE,
+            CallbackAction.SHOW_EXISTING_ITEMS,
+        }:
             outcome_type = ProcessingOutcomeType.PROPOSAL_READY
             aggregate_id = result_id
             payload: dict[str, object] = {}
-        elif action is CallbackAction.SHOW_EXISTING_ITEMS:
-            outcome_type = ProcessingOutcomeType.PROPOSAL_READY
-            aggregate_id = result_id
-            payload = {}
         elif action is CallbackAction.ADD_NEW_ITEM:
             if catalog_status == "awaiting_confirmation":
                 outcome_type = ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION

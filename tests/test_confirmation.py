@@ -135,7 +135,7 @@ def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() ->
     assert "🔎 **No confident match:**" in message.text
 
 
-def test_multiple_unmatched_lines_offer_one_bulk_action_and_one_individual_start() -> None:
+def test_multiple_unmatched_lines_offer_bulk_or_one_line_decision() -> None:
     second_line_id = UUID("41000000-0000-0000-0000-000000000002")
     message = render_proposal_confirmation(
         proposal_id=PROPOSAL_ID,
@@ -159,17 +159,18 @@ def test_multiple_unmatched_lines_offer_one_bulk_action_and_one_individual_start
     )
 
     assert [button.text for button in message.inline_keyboard[0]] == [
-        "Add all 2 as new",
+        "Add remaining 2 as new",
     ]
     assert [button.text for button in message.inline_keyboard[1]] == [
-        "Add line 1 as new",
+        "Add line 1",
         "Match line 1",
     ]
+    assert [button.text for button in message.inline_keyboard[2]] == ["Ignore line 1"]
     assert (
         decode_callback(message.inline_keyboard[0][0].callback_data).action
         is CallbackAction.ADD_ALL_NEW_ITEMS
     )
-    assert "starting with the first line" in message.text
+    assert "Resolve line 1 next" in message.text
 
 
 def test_only_unmatched_line_uses_plain_buttons_even_when_proposal_has_two_lines() -> None:
@@ -198,10 +199,128 @@ def test_only_unmatched_line_uses_plain_buttons_even_when_proposal_has_two_lines
     assert [button.text for button in message.inline_keyboard[0]] == [
         "Add new item",
         "Choose existing",
+        "Ignore line 2",
     ]
     assert {
         decode_callback(button.callback_data).target_id for button in message.inline_keyboard[0]
     } == {second_line_id}
+
+
+def test_marking_one_new_line_advances_to_the_next_line() -> None:
+    second_line_id = UUID("41000000-0000-0000-0000-000000000002")
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description='2W-10 DC24V N/C G3/8"',
+                quantity=Decimal("1"),
+                unit="PCS",
+                match_decision="not_found",
+                user_resolution="add_new",
+            ),
+            ProposalLineView(
+                proposal_line_id=second_line_id,
+                description='2W-25 DC24V N/C G1"',
+                quantity=Decimal("4"),
+                unit="PCS",
+                match_decision="not_found",
+            ),
+        ],
+    )
+
+    assert "1. 🆕 ADD AS NEW 1 PCS" in message.text
+    assert "Resolve line 2 next" in message.text
+    assert [button.text for button in message.inline_keyboard[1]] == [
+        "Add line 2",
+        "Match line 2",
+    ]
+
+
+def test_ignored_line_is_a_visible_noop_and_does_not_block_confirmation() -> None:
+    second_line_id = UUID("41000000-0000-0000-0000-000000000002")
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Incorrect invoice line",
+                quantity=Decimal("4"),
+                unit="PCS",
+                match_decision="ignored",
+                user_resolution="ignored",
+            ),
+            ProposalLineView(
+                proposal_line_id=second_line_id,
+                description="Anchor Butter",
+                quantity=Decimal("2"),
+                unit="each",
+                matched_label="Anchor Butter · BUTTER-500",
+            ),
+        ],
+    )
+
+    assert "1. 🚫 IGNORE 4 PCS — Incorrect invoice line → excluded" in message.text
+    assert message.text.startswith("⏳ **Pending stock addition**")
+    assert decode_callback(message.inline_keyboard[-1][0].callback_data).action is (
+        CallbackAction.CONFIRM_PROPOSAL
+    )
+
+
+def test_completed_multi_new_selection_batches_detail_collection() -> None:
+    second_line_id = UUID("41000000-0000-0000-0000-000000000002")
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Valve 24V",
+                quantity=Decimal("1"),
+                unit="each",
+                match_decision="not_found",
+                user_resolution="add_new",
+            ),
+            ProposalLineView(
+                proposal_line_id=second_line_id,
+                description="Valve 220V",
+                quantity=Decimal("2"),
+                unit="each",
+                match_decision="not_found",
+                user_resolution="add_new",
+            ),
+        ],
+    )
+
+    assert "Line decisions complete" in message.text
+    assert message.inline_keyboard[0][0].text == "Continue with 2 new items"
+    assert decode_callback(message.inline_keyboard[0][0].callback_data).action is (
+        CallbackAction.ADD_ALL_NEW_ITEMS
+    )
+
+
+def test_created_catalog_item_is_resolved_even_with_add_new_audit_marker() -> None:
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Valve 24V",
+                quantity=Decimal("1"),
+                unit="each",
+                matched_label="Valve 24V · VALVE-24V",
+                match_decision="not_found",
+                user_resolution="add_new",
+            )
+        ],
+    )
+
+    assert message.text.startswith("⏳ **Pending stock addition**")
+    assert "details pending" not in message.text
+    assert "Valve 24V · VALVE-24V" in message.text
 
 
 def test_match_clarification_asks_for_one_natural_reply_without_candidate_buttons() -> None:

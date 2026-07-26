@@ -76,7 +76,7 @@ class CatalogItemCreationRepository(Protocol):
         """Find one bulk catalog request awaiting a natural-language reply."""
 
     async def get_batch_view(self, *, batch_id: UUID) -> CatalogBatchCreationView:
-        """Load every retained invoice line and its catalog draft."""
+        """Load every retained proposal line and its catalog draft."""
 
     async def save_batch_draft(
         self,

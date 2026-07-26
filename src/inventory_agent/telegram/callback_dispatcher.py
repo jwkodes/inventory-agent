@@ -98,6 +98,18 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Item selected"
+            elif command.action is CallbackAction.MARK_NEW_ITEM:
+                result_id = await self._repository.mark_new_item(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Line will be added as a new item"
+            elif command.action is CallbackAction.IGNORE_PROPOSAL_LINE:
+                result_id = await self._repository.ignore_line(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Line ignored"
             elif command.action is CallbackAction.CONFIRM_PROPOSAL:
                 result_id = await self._repository.confirm(
                     proposal_id=command.target_id,
@@ -111,6 +123,10 @@ class TelegramCallbackDispatcher:
                 )
                 message = "Proposal cancelled"
             elif command.action is CallbackAction.ADD_NEW_ITEM:
+                await self._repository.mark_new_item(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
                 result_id = await self._catalog.begin(
                     line_id=command.target_id,
                     actor_id=actor_id,
@@ -137,6 +153,10 @@ class TelegramCallbackDispatcher:
                 )
                 message = "Catalog item creation cancelled"
             elif command.action is CallbackAction.ADD_ALL_NEW_ITEMS:
+                await self._repository.mark_all_new_items(
+                    proposal_id=command.target_id,
+                    actor_id=actor_id,
+                )
                 result_id = await self._catalog.begin_batch(
                     proposal_id=command.target_id,
                     actor_id=actor_id,

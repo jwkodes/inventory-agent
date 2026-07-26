@@ -1134,15 +1134,30 @@ order. Adding an item starts the conversational detail flow described above. Aft
 creation, the original proposal line is linked to the new variant and a fresh proposal
 review message is sent.
 
-When a proposal contains multiple no-match invoice lines, Telegram shows one
-**Add all N as new** action instead of presenting several detail forms that cannot be
-completed concurrently. The bulk flow retains every extracted description, quantity, and
-unit, then asks once for only the missing catalog identifiers. The worker accepts all SKUs
-in one natural reply; if the invoice has no unique codes, the user may explicitly ask it
-to generate distinguishable internal SKUs from the product specifications. One combined
-catalog review and confirmation creates all items atomically and returns to the original
-stock-receipt proposal. Individual add/match controls remain available for mixed invoices,
-starting with the first unresolved line.
+When any proposal—not only an invoice—contains several no-match lines, Telegram runs one
+durable line-selection workflow before asking for catalog details. The worker resolves one
+line at a time as **Add**, **Match**, or **Ignore**. Each callback removes the controls
+from its source message without replacing the text, then sends a fresh review for the next
+line. **Add remaining N as new** is the shortcut when every remaining unmatched line is
+valid.
+
+Ignored lines remain in the proposal and keep the actor and timestamp in
+`match_evidence`, but `apply_inventory_proposal` excludes them from transaction lines,
+movements, and balances. Ignore is never interpreted as a catalog match, and the final
+active line cannot be ignored.
+
+Only after the line decisions are complete does the bot collect missing details. Multiple
+new products enter one catalog batch that retains every extracted description, quantity,
+and unit, then asks once for missing identifiers and optional attributes. The user can
+reply naturally, approve suggested SKUs, correct selected lines, or explicitly request
+unique internal SKUs generated from the product specifications. One combined catalog
+review creates the selected items atomically and returns to the original stock proposal.
+If the decisions leave only one new product, the ordinary single-item detail flow is used.
+
+Proposal reviews and catalog drafts prefer the preserved source item phrase over a generic
+normalized label. Consequently, lines such as several products normalized to `SOLENOID
+VALVE` still show their voltage, open/closed state, connection size, or other
+distinguishing source specifications.
 
 ## Transaction proposals and confirmation
 

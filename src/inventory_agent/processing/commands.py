@@ -191,7 +191,10 @@ def _proposal_line(
     return ProposalLineDraft(
         line_number=line_number,
         source_text=line.source_text,
-        extracted_description=line.description,
+        # The shorter normalized description can collapse distinct product lines
+        # (for example, four valves all becoming "SOLENOID VALVE"). The source
+        # phrase excludes the action/quantity and retains differentiating specs.
+        extracted_description=line.source_text,
         requested_quantity=Decimal(line.quantity),
         requested_unit=line.unit,
         item_variant_id=selected.item_variant_id if selected else None,

@@ -14,6 +14,15 @@ class ProposalActionRepository(Protocol):
     async def select_variant(self, *, line_id: UUID, variant_id: UUID, actor_id: UUID) -> UUID:
         """Resolve one proposal line and return its proposal ID."""
 
+    async def mark_new_item(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        """Mark one unmatched line for later batched catalog creation."""
+
+    async def ignore_line(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        """Exclude one mistaken line while retaining it in the proposal audit."""
+
+    async def mark_all_new_items(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        """Mark every remaining unmatched line for catalog creation."""
+
     async def confirm(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
         """Apply a proposal and return its inventory transaction ID."""
 
@@ -43,6 +52,33 @@ class SupabaseProposalActionRepository:
             {
                 "p_proposal_line_id": str(line_id),
                 "p_item_variant_id": str(variant_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+
+    async def mark_new_item(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        return await self._call(
+            "mark_proposal_line_as_new_item",
+            {
+                "p_proposal_line_id": str(line_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+
+    async def ignore_line(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        return await self._call(
+            "ignore_inventory_proposal_line",
+            {
+                "p_proposal_line_id": str(line_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+
+    async def mark_all_new_items(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        return await self._call(
+            "mark_all_unmatched_proposal_lines_as_new",
+            {
+                "p_proposal_id": str(proposal_id),
                 "p_actor_id": str(actor_id),
             },
         )

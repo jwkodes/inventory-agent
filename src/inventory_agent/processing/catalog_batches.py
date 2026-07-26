@@ -31,7 +31,7 @@ class CatalogBatchDetailsInterpreter(Protocol):
 
 
 class CatalogBatchReplyHandler:
-    """Keep a multi-line invoice out of the ordinary conversational agent."""
+    """Keep a pending multi-line catalog form out of the conversational agent."""
 
     def __init__(
         self,

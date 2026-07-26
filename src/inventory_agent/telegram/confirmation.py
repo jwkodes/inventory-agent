@@ -30,6 +30,7 @@ class ProposalLineView(BaseModel):
     match_decision: str | None = None
     clarification_question: str | None = None
     show_candidates: bool = False
+    user_resolution: str | None = None
 
 
 class InlineButton(BaseModel):
@@ -63,24 +64,49 @@ def render_proposal_confirmation(
     keyboard: list[list[InlineButton]] = []
     unresolved = False
     clarification_prompt_shown = False
-    has_multiple_lines = len(lines) > 1
-    has_multiple_unresolved_lines = sum(line.matched_label is None for line in lines) > 1
-    not_found_lines = [
+    active_lines = [line for line in lines if line.user_resolution != "ignored"]
+    has_multiple_unresolved_lines = (
+        sum(line.matched_label is None and line.user_resolution != "ignored" for line in lines) > 1
+    )
+    pending_new_lines = [
         line
         for line in lines
         if line.matched_label is None
         and line.match_decision == "not_found"
         and not line.show_candidates
+        and line.user_resolution is None
     ]
-    bulk_new_items = len(not_found_lines) > 1
-    first_not_found_id = not_found_lines[0].proposal_line_id if not_found_lines else None
-    not_found_indices = [
-        index for index, line in enumerate(lines, start=1) if line in not_found_lines
+    selected_new_lines = [
+        line for line in lines if line.matched_label is None and line.user_resolution == "add_new"
     ]
+    new_item_workflow_lines = [*selected_new_lines, *pending_new_lines]
+    bulk_new_items = len(new_item_workflow_lines) > 1
+    first_pending_new_id = pending_new_lines[0].proposal_line_id if pending_new_lines else None
+    pending_new_indices = [
+        index for index, line in enumerate(lines, start=1) if line in pending_new_lines
+    ]
+    selected_new_indices = [
+        index for index, line in enumerate(lines, start=1) if line in selected_new_lines
+    ]
+    candidate_resolution_pending = any(
+        line.matched_label is None and line.show_candidates and line.user_resolution != "ignored"
+        for line in lines
+    )
 
     for index, line in enumerate(lines, start=1):
         unit = f" {line.unit}" if line.unit else ""
         quantity = format(line.quantity.normalize(), "f")
+        if line.user_resolution == "ignored":
+            text_lines.append(
+                f"{index}. 🚫 IGNORE {quantity}{unit} — {line.description} → excluded"
+            )
+            continue
+        if line.user_resolution == "add_new" and line.matched_label is None:
+            text_lines.append(
+                f"{index}. 🆕 ADD AS NEW {quantity}{unit} — {line.description} → details pending"
+            )
+            unresolved = True
+            continue
         match = line.matched_label or _unresolved_status(line)
         text_lines.append(f"{index}. {line_action} {quantity}{unit} — {line.description} → {match}")
         if line.matched_label is None:
@@ -93,18 +119,16 @@ def render_proposal_confirmation(
                     )
                     clarification_prompt_shown = True
             elif line.match_decision == "not_found" and not line.show_candidates:
-                subject = f"line {index}" if has_multiple_lines else "this item"
+                subject = f"line {index}" if len(lines) > 1 else "this item"
                 if not bulk_new_items:
                     text_lines.append(
                         f"🔎 **No confident match:** No catalog match was found for {subject}."
                     )
-                if not bulk_new_items or line.proposal_line_id == first_not_found_id:
+                if not bulk_new_items:
                     keyboard.append(
                         [
                             InlineButton(
-                                text=(
-                                    f"Add line {index} as new" if bulk_new_items else "Add new item"
-                                ),
+                                text="Add new item",
                                 callback_data=encode_callback(
                                     CallbackCommand(
                                         CallbackAction.ADD_NEW_ITEM,
@@ -123,8 +147,63 @@ def render_proposal_confirmation(
                                     )
                                 ),
                             ),
+                            *(
+                                [
+                                    InlineButton(
+                                        text=f"Ignore line {index}",
+                                        callback_data=encode_callback(
+                                            CallbackCommand(
+                                                CallbackAction.IGNORE_PROPOSAL_LINE,
+                                                line.proposal_line_id,
+                                            )
+                                        ),
+                                    )
+                                ]
+                                if len(active_lines) > 1
+                                else []
+                            ),
                         ]
                     )
+                elif (
+                    line.proposal_line_id == first_pending_new_id
+                    and not candidate_resolution_pending
+                ):
+                    keyboard.append(
+                        [
+                            InlineButton(
+                                text=f"Add line {index}",
+                                callback_data=encode_callback(
+                                    CallbackCommand(
+                                        CallbackAction.MARK_NEW_ITEM,
+                                        line.proposal_line_id,
+                                    )
+                                ),
+                            ),
+                            InlineButton(
+                                text=f"Match line {index}",
+                                callback_data=encode_callback(
+                                    CallbackCommand(
+                                        CallbackAction.SHOW_EXISTING_ITEMS,
+                                        line.proposal_line_id,
+                                    )
+                                ),
+                            ),
+                        ]
+                    )
+                    if len(active_lines) > 1:
+                        keyboard.append(
+                            [
+                                InlineButton(
+                                    text=f"Ignore line {index}",
+                                    callback_data=encode_callback(
+                                        CallbackCommand(
+                                            CallbackAction.IGNORE_PROPOSAL_LINE,
+                                            line.proposal_line_id,
+                                        )
+                                    ),
+                                )
+                            ]
+                        )
             else:
                 for choice in line.candidate_choices:
                     keyboard.append(
@@ -140,6 +219,20 @@ def render_proposal_confirmation(
                                         action=CallbackAction.SELECT_VARIANT,
                                         target_id=line.proposal_line_id,
                                         choice_id=choice.item_variant_id,
+                                    )
+                                ),
+                            )
+                        ]
+                    )
+                if line.show_candidates and len(active_lines) > 1:
+                    keyboard.append(
+                        [
+                            InlineButton(
+                                text=f"Ignore line {index}",
+                                callback_data=encode_callback(
+                                    CallbackCommand(
+                                        CallbackAction.IGNORE_PROPOSAL_LINE,
+                                        line.proposal_line_id,
                                     )
                                 ),
                             )
@@ -167,26 +260,67 @@ def render_proposal_confirmation(
         )
     else:
         text_lines.insert(0, "⚠️ **Action needed**")
-        if bulk_new_items:
+        if bulk_new_items and pending_new_lines and not candidate_resolution_pending:
             text_lines.append(
                 "🔎 **No catalog matches:** "
-                f"Lines {', '.join(str(index) for index in not_found_indices)} are new."
+                f"Lines {', '.join(str(index) for index in pending_new_indices)} "
+                "still need a decision."
             )
             text_lines.append(
-                "Create all unmatched products together, or resolve them individually "
-                "starting with the first line."
+                f"Resolve line {pending_new_indices[0]} next, or add every remaining "
+                "unmatched line as new."
             )
             keyboard.insert(
                 0,
                 [
                     InlineButton(
-                        text=f"Add all {len(not_found_lines)} as new",
+                        text=f"Add remaining {len(pending_new_lines)} as new",
                         callback_data=encode_callback(
                             CallbackCommand(CallbackAction.ADD_ALL_NEW_ITEMS, proposal_id)
                         ),
                     )
                 ],
             )
+        elif selected_new_lines and not pending_new_lines:
+            if len(selected_new_lines) > 1:
+                text_lines.append(
+                    "✅ **Line decisions complete:** "
+                    f"Lines {', '.join(str(index) for index in selected_new_indices)} "
+                    "will be created as new products."
+                )
+                keyboard.insert(
+                    0,
+                    [
+                        InlineButton(
+                            text=f"Continue with {len(selected_new_lines)} new items",
+                            callback_data=encode_callback(
+                                CallbackCommand(
+                                    CallbackAction.ADD_ALL_NEW_ITEMS,
+                                    proposal_id,
+                                )
+                            ),
+                        )
+                    ],
+                )
+            else:
+                selected_line = selected_new_lines[0]
+                text_lines.append(
+                    "✅ **Line decisions complete:** Enter the missing details for the new product."
+                )
+                keyboard.insert(
+                    0,
+                    [
+                        InlineButton(
+                            text=f"Enter details for line {selected_new_indices[0]}",
+                            callback_data=encode_callback(
+                                CallbackCommand(
+                                    CallbackAction.ADD_NEW_ITEM,
+                                    selected_line.proposal_line_id,
+                                )
+                            ),
+                        )
+                    ],
+                )
         else:
             text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
         keyboard.append(
@@ -312,11 +446,11 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
 
 
 def render_catalog_batch_details_prompt(view: CatalogBatchCreationView) -> ConfirmationMessage:
-    """Ask once for missing identifiers across every unmatched invoice line."""
+    """Ask once for missing identifiers across every selected new product."""
 
     text_lines = [
         f"📝 **{len(view.items)} new catalog items**",
-        "The invoice quantities are retained:",
+        "The receipt quantities are retained:",
     ]
     for item in view.items:
         quantity = format(item.requested_quantity.normalize(), "f")

@@ -142,6 +142,15 @@ class FakeProposalActions:
     ) -> UUID:
         raise AssertionError("not expected")
 
+    async def mark_new_item(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("not expected")
+
+    async def ignore_line(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("not expected")
+
+    async def mark_all_new_items(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        raise AssertionError("not expected")
+
     async def confirm(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
         self.confirmed.append((proposal_id, actor_id))
         if self.reject:

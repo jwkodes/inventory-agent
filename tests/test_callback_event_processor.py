@@ -332,6 +332,8 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
             "catalog_item_confirmation",
         ),
         (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.MARK_NEW_ITEM, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.IGNORE_PROPOSAL_LINE, PROPOSAL_ID, None, "proposal_ready"),
         (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, None, "proposal_ready"),
         (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, None, "callback_notice"),
     ],

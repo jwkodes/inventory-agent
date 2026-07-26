@@ -23,6 +23,8 @@ class CallbackAction(StrEnum):
     ADD_ALL_NEW_ITEMS = "b"
     CONFIRM_CATALOG_BATCH = "g"
     CANCEL_CATALOG_BATCH = "j"
+    MARK_NEW_ITEM = "m"
+    IGNORE_PROPOSAL_LINE = "i"
 
 
 @dataclass(frozen=True, slots=True)
