@@ -25,6 +25,7 @@ from inventory_agent.agent.models import (
 )
 from inventory_agent.agent.prompt import PROMPT_VERSION
 from inventory_agent.agent.repository import AgentReadRepository
+from inventory_agent.agent.tools import new_item_sku_required_result
 from inventory_agent.extraction.schema import ItemReferenceType
 from inventory_agent.matching.models import InventoryCandidate
 from inventory_agent.matching.repository import InventoryCandidateRepository
@@ -294,6 +295,18 @@ class ProductionInventoryAgentTools:
     ) -> dict[str, object]:
         if self.stock_proposal_id is not None or self.reversal_request_id is not None:
             raise ValueError("only one mutation proposal is allowed per user message")
+        for line in arguments.lines:
+            if intent is ProposalIntent.ISSUE_STOCK and line.new_item is not None:
+                raise ValueError("deductions cannot create catalog items")
+            if line.new_item is not None and line.new_item.tracking_mode is not TrackingMode.SIMPLE:
+                raise ValueError("the prototype currently supports simple tracking only")
+        missing_sku_items = [
+            line.new_item.name
+            for line in arguments.lines
+            if line.new_item is not None and not (line.new_item.sku and line.new_item.sku.strip())
+        ]
+        if missing_sku_items:
+            return new_item_sku_required_result(missing_sku_items)
         self.stock_proposal_id = await self._create_stock_proposal(
             call_id=call_id,
             intent=intent,

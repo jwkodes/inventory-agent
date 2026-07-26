@@ -147,6 +147,51 @@ async def test_agent_runs_reads_then_proposal_then_user_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_new_item_sku_uses_deterministic_question_without_second_model_call() -> None:
+    model = FakeModel(
+        turns=[
+            turn(
+                1,
+                call=FunctionCall(
+                    call_id="call-add-macbook",
+                    name="propose_add_inventory",
+                    arguments={
+                        "lines": [
+                            {
+                                "variant_id": None,
+                                "new_item": {
+                                    "name": "MacBook Air M5",
+                                    "sku": None,
+                                    "base_unit": "each",
+                                    "tracking_mode": "simple",
+                                    "attributes": [],
+                                },
+                                "quantity": 10,
+                                "unit": "each",
+                                "attributes": [],
+                            }
+                        ],
+                        "reason": "Apple delivery",
+                    },
+                ),
+            )
+        ]
+    )
+    tools = SimulatedInventoryTools(catalog=[])
+    session = InventoryAgentSession(model=model, tools=tools)
+
+    reply = await session.handle("No need to record SKU")
+
+    assert reply.text == (
+        "I can't create MacBook Air M5 without an SKU or internal product code yet. "
+        "What code should I use?"
+    )
+    assert len(model.requests) == 1
+    assert tools.proposals == []
+    assert session.history[-1] == {"role": "assistant", "content": reply.text}
+
+
+@pytest.mark.asyncio
 async def test_agent_preserves_history_across_natural_follow_up() -> None:
     model = FakeModel(
         turns=[

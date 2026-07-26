@@ -255,6 +255,26 @@ class InventoryAgentSession:
                         "output": output,
                     }
                 )
+                blocking_message = _required_user_message(output)
+                if blocking_message is not None:
+                    self._history.append({"role": "assistant", "content": blocking_message})
+                    logger.info(
+                        "component_runtime component=agent_session_total duration_ms=%.2f "
+                        "model_rounds=%s tool_calls=%s deterministic_user_input=true",
+                        (perf_counter() - started) * 1000,
+                        round_number,
+                        len(traces),
+                    )
+                    return AgentReply(
+                        text=blocking_message,
+                        response_id=latest.response_id,
+                        model=latest.model,
+                        prompt_version=PROMPT_VERSION,
+                        tool_traces=traces,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                    )
 
         model_name = latest.model if latest is not None else "unknown"
         response_id = latest.response_id if latest is not None else "none"
@@ -285,6 +305,21 @@ def _model_input_items(history: list[dict[str, object]]) -> list[dict[str, objec
         {key: value for key, value in item.items() if key != "_ephemeral_agent_context"}
         for item in history
     ]
+
+
+def _required_user_message(tool_output: str) -> str | None:
+    try:
+        payload = json.loads(tool_output)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("ok") is not False or payload.get("requires_user_input") is not True:
+        return None
+    message = payload.get("user_message")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    return message.strip()
 
 
 def _instructions_with_summary(summary: str | None) -> str:

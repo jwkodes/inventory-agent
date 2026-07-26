@@ -39,7 +39,14 @@ NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
     "type": "object",
     "properties": {
         "name": {"type": "string", "minLength": 1},
-        "sku": {"type": _nullable("string")},
+        "sku": {
+            "type": _nullable("string"),
+            "description": (
+                "SKU or internal product code. It is mandatory for a new catalog item in "
+                "the current prototype. A null value is rejected before a proposal is saved "
+                "and causes the application to ask the user for the missing code."
+            ),
+        },
         "base_unit": {
             "type": "string",
             "minLength": 1,
@@ -108,7 +115,9 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "description": (
             "Create a no-write proposal to receive stock. Existing variant IDs must come "
             "from read_inventory. A new_item is allowed only after the user explicitly "
-            "agrees to add a new catalog item. Preserve user-provided custom fields in "
+            "agrees to add a new catalog item, and its SKU/internal code is currently "
+            "mandatory. Never tell the user that a SKU-less item was accepted. Preserve "
+            "user-provided custom fields in "
             "new_item.attributes; attributes are optional unless a tool explicitly says "
             "the organization requires them. This tool never changes inventory."
         ),
@@ -322,6 +331,14 @@ class SimulatedInventoryTools:
                 raise ValueError("deductions cannot create catalog items")
             if line.new_item is not None and line.new_item.tracking_mode is not TrackingMode.SIMPLE:
                 raise ValueError("the prototype currently supports simple tracking only")
+        missing_sku_items = [
+            line.new_item.name
+            for line in arguments.lines
+            if line.new_item is not None and not _present(line.new_item.sku)
+        ]
+        if missing_sku_items:
+            return new_item_sku_required_result(missing_sku_items)
+        for line in arguments.lines:
             if line.variant_id is not None and line.variant_id not in self._seen_variant_ids:
                 raise ValueError(
                     f"variant_id {line.variant_id!r} was not returned by read_inventory"
@@ -412,6 +429,34 @@ class SimulatedInventoryTools:
         self._transaction_ids_by_ref[transaction_ref] = transaction_id
         self._transaction_refs_by_id[transaction_id] = transaction_ref
         return transaction_ref
+
+
+def new_item_sku_required_result(item_names: list[str]) -> dict[str, object]:
+    """Return a deterministic, user-facing block for the current catalog contract."""
+
+    names = [name.strip() for name in item_names if name.strip()]
+    if len(names) == 1:
+        user_message = (
+            f"I can't create {names[0]} without an SKU or internal product code yet. "
+            "What code should I use?"
+        )
+    else:
+        listed_names = ", ".join(names)
+        user_message = (
+            "I can't create these new catalog items without SKUs or internal product codes "
+            f"yet: {listed_names}. What code should I use for each?"
+        )
+    return {
+        "ok": False,
+        "error_code": "new_item_sku_required",
+        "error": "New catalog items currently require an SKU or internal product code.",
+        "requires_user_input": True,
+        "user_message": user_message,
+    }
+
+
+def _present(value: str | None) -> bool:
+    return bool(value and value.strip())
 
 
 def _attributes_include(

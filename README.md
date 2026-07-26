@@ -1484,6 +1484,9 @@ lot-function tests. It is development data only and must never be loaded into pr
     - preserve a company-controlled SKU for each variant while allowing organization
       policy to require, derive, or automatically generate it when only an external
       identifier is provided;
+    - allow an organization policy where SKU is optional, after catalog variants,
+      matching, Telegram reviews, exports, and database uniqueness constraints can all
+      safely identify and display SKU-less products;
     - let workers provide whichever real-world code appears on the product, delivery order,
       or invoice without needing to understand the identifier taxonomy; and
     - migrate or review catalog records whose current SKU was originally supplied as an

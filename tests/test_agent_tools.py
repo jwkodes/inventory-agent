@@ -62,6 +62,18 @@ def test_new_catalog_item_schema_tells_model_not_to_clarify_generic_count_words(
     assert "unit, units, item, and items mean the same thing" in base_unit_schema["description"]
 
 
+def test_new_catalog_item_schema_states_current_sku_requirement() -> None:
+    add_tool = next(
+        tool for tool in INVENTORY_TOOL_DEFINITIONS if tool["name"] == "propose_add_inventory"
+    )
+    new_item_schema = add_tool["parameters"]["properties"]["lines"]["items"]["properties"][
+        "new_item"
+    ]["anyOf"][0]
+
+    assert "mandatory" in new_item_schema["properties"]["sku"]["description"]
+    assert "SKU/internal code is currently mandatory" in add_tool["description"]
+
+
 @pytest.mark.asyncio
 async def test_read_makes_returned_variant_available_to_proposal() -> None:
     tools = SimulatedInventoryTools(catalog=catalog())
@@ -103,6 +115,45 @@ async def test_read_makes_returned_variant_available_to_proposal() -> None:
     assert proposal["inventory_changed"] is False
     assert tools.proposals[0].status == "awaiting_confirmation"
     assert catalog()[0].on_hand == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_new_item_without_sku_requests_input_without_saving_proposal() -> None:
+    tools = SimulatedInventoryTools(catalog=[])
+
+    result = json.loads(
+        await tools.execute(
+            call_id="add-macbook",
+            name="propose_add_inventory",
+            arguments={
+                "lines": [
+                    {
+                        "variant_id": None,
+                        "new_item": {
+                            "name": "MacBook Air M5",
+                            "sku": None,
+                            "base_unit": "each",
+                            "tracking_mode": "simple",
+                            "attributes": [],
+                        },
+                        "quantity": 10,
+                        "unit": "each",
+                        "attributes": [],
+                    }
+                ],
+                "reason": "Apple delivery",
+            },
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "new_item_sku_required"
+    assert result["requires_user_input"] is True
+    assert result["user_message"] == (
+        "I can't create MacBook Air M5 without an SKU or internal product code yet. "
+        "What code should I use?"
+    )
+    assert tools.proposals == []
 
 
 @pytest.mark.asyncio

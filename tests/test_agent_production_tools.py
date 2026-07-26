@@ -343,6 +343,41 @@ async def test_read_then_add_creates_existing_atomic_proposal_draft() -> None:
     assert proposals.drafts[0].idempotency_key == "telegram:telegram-1:inventory-agent"
 
 
+async def test_new_item_without_sku_is_blocked_before_proposal_persistence() -> None:
+    proposals = FakeProposals()
+    tools = production_tools(proposals)
+
+    result = json.loads(
+        await tools.execute(
+            call_id="add-macbook",
+            name="propose_add_inventory",
+            arguments={
+                "lines": [
+                    {
+                        "variant_id": None,
+                        "new_item": {
+                            "name": "MacBook Air M5",
+                            "sku": None,
+                            "base_unit": "each",
+                            "tracking_mode": "simple",
+                            "attributes": [],
+                        },
+                        "quantity": 10,
+                        "unit": "each",
+                        "attributes": [],
+                    }
+                ],
+                "reason": "Apple delivery",
+            },
+        )
+    )
+
+    assert result["error_code"] == "new_item_sku_required"
+    assert result["requires_user_input"] is True
+    assert tools.stock_proposal_id is None
+    assert proposals.drafts == []
+
+
 async def test_inventory_read_exposes_ranked_relevance_and_aggregation_guidance() -> None:
     tools = production_tools(FakeProposals())
 
