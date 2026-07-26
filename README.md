@@ -1592,3 +1592,23 @@ lot-function tests. It is development data only and must never be loaded into pr
     - test reordered words, brand phrasing, spelling errors, abbreviations, multiple
       discriminator attributes, true product-family differences, and renaming an existing
       family without breaking transaction history.
+17. OpenAI prompt-cache optimization and observability:
+    - assign a stable, privacy-scoped `prompt_cache_key` to each organization, member, and
+      Telegram chat conversation so unrelated tenants or users never share an application
+      cache identity;
+    - keep stable system instructions, tool definitions, and other reusable prompt content
+      at the beginning of requests, while preventing mutable inventory evidence from
+      invalidating the stable prefix unnecessarily;
+    - evaluate implicit caching against explicit cache breakpoints for the configured
+      OpenAI models, without relying on response storage or treating cached prompts as
+      durable conversation memory;
+    - record input, cached-input, cache-write, output, and total token usage per model call,
+      together with latency and estimated cost where provider pricing is configured;
+    - show cache-hit rate, cached-token savings, cache-write overhead, and misses caused by
+      prompt changes or conversation compaction in the development dashboard;
+    - keep cache identities free of Telegram IDs, names, invite codes, secrets, and other
+      direct personal data by deriving opaque keyed identifiers;
+    - verify that `store=False`, context retention, background summarization, retries,
+      model switching, and prompt-version changes interact safely with caching; and
+    - test cache isolation across companies, members, chats, models, and prompt versions,
+      plus cold starts, cache expiry, compaction boundaries, and identical-prefix reuse.
