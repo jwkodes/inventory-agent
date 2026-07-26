@@ -5,10 +5,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from inventory_agent.agent.context import (
+    SUMMARY_INSTRUCTIONS,
+    SUMMARY_PROMPT_VERSION,
     AgentContextManager,
     ContextRetentionPolicy,
     ContextRetentionSettings,
     durable_history_items,
+    estimate_history_tokens,
     model_history_items,
 )
 from inventory_agent.agent.repository import AgentConversation, AgentConversationTurn
@@ -239,3 +242,41 @@ def test_model_history_removes_stale_transaction_results_but_keeps_user_intent()
     assert sanitized[-1] == history[-1]
     assert all("wrong-old-id" not in str(item) for item in sanitized)
     assert "must read the transaction ledger again" in str(sanitized[1])
+
+
+def test_summary_preserves_quantities_for_unresolved_requests() -> None:
+    normalized = " ".join(SUMMARY_INSTRUCTIONS.split())
+
+    assert SUMMARY_PROMPT_VERSION == "inventory-agent-context-summary-v2"
+    assert "including requested operation, product identity, quantity" in normalized
+    assert "unresolved receipt for 50 McChickens" in normalized
+    assert "This restriction does not apply to quantities" in normalized
+    assert '"the user requested/provided X"' in normalized
+
+
+def test_model_history_drops_stale_inventory_results_but_keeps_request_continuity() -> None:
+    history = [
+        {"role": "user", "content": "I bought 50 McChickens"},
+        {
+            "type": "function_call",
+            "call_id": "read-inventory-1",
+            "name": "read_inventory",
+            "arguments": '{"query":"McChicken","sku":null,"limit":20}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "read-inventory-1",
+            "output": '{"items":[{"name":"Samurai Burger"},{"name":"large stale catalog"}]}',
+        },
+        {
+            "role": "assistant",
+            "content": "Should I create McChicken and record the 50 units?",
+        },
+    ]
+
+    sanitized = model_history_items(history)
+
+    assert sanitized == [history[0], history[3]]
+    assert estimate_history_tokens(sanitized) < estimate_history_tokens(
+        durable_history_items(history)
+    )

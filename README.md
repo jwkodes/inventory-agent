@@ -837,6 +837,15 @@ applies to the pending request. An unrelated joke, code request, casual message,
 independent inventory request closes the stale clarification and proceeds through the
 normal inventory agent instead of being repeatedly forced into the old question.
 
+Conversation compaction preserves user-supplied facts needed to finish unresolved work,
+including quantities, units, product identity, identifiers, attributes, corrections, and
+decisions. It does not treat a summarized balance, transaction status, database ID, or
+claimed completed mutation as authoritative; those are re-read from inventory tools.
+Reusable model history removes old `read_inventory` and `read_transactions` payloads so a
+large or stale tool result does not crowd out the worker's short request and the bot's
+follow-up question. Retention token estimates use that sanitized model-visible history
+rather than the larger immutable audit record.
+
 On the first non-exact name match, the worker creates embeddings for catalog variants
 whose searchable content has not been indexed yet. It batches and caches those vectors in
 local PostgreSQL. Later requests normally embed only the user's query. Changing an item

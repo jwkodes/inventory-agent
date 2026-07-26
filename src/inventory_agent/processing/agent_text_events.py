@@ -259,7 +259,7 @@ class TelegramAgentTextEventProcessor:
                 organization_user_id=context.organization_user_id,
                 history=persisted_history,
                 turn_history=raw_turn_history,
-                estimated_tokens=estimate_history_tokens(turn_history),
+                estimated_tokens=estimate_history_tokens(model_history_items(turn_history)),
                 allowed_variant_ids=tools.allowed_variant_ids,
                 allowed_transaction_ids=tools.allowed_transaction_ids,
                 reply_text=reply.text,
