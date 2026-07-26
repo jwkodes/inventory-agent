@@ -135,7 +135,7 @@ def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() ->
     assert "🔎 **No confident match:**" in message.text
 
 
-def test_multiple_unmatched_lines_use_descriptions_instead_of_internal_numbers() -> None:
+def test_multiple_unmatched_lines_offer_one_bulk_action_and_one_individual_start() -> None:
     second_line_id = UUID("41000000-0000-0000-0000-000000000002")
     message = render_proposal_confirmation(
         proposal_id=PROPOSAL_ID,
@@ -159,13 +159,17 @@ def test_multiple_unmatched_lines_use_descriptions_instead_of_internal_numbers()
     )
 
     assert [button.text for button in message.inline_keyboard[0]] == [
-        "Add new item: Purple Widget",
-        "Choose existing: Purple Widget",
+        "Add all 2 as new",
     ]
     assert [button.text for button in message.inline_keyboard[1]] == [
-        "Add new item: Orange Widget",
-        "Choose existing: Orange Widget",
+        "Add line 1 as new",
+        "Match line 1",
     ]
+    assert (
+        decode_callback(message.inline_keyboard[0][0].callback_data).action
+        is CallbackAction.ADD_ALL_NEW_ITEMS
+    )
+    assert "starting with the first line" in message.text
 
 
 def test_only_unmatched_line_uses_plain_buttons_even_when_proposal_has_two_lines() -> None:
@@ -239,9 +243,8 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
     prompt = render_catalog_item_details_prompt(details_view)
     cancel = decode_callback(prompt.inline_keyboard[0][0].callback_data)
     assert cancel.action is CallbackAction.CANCEL_NEW_ITEM
-    assert "item name as “Purple Widget”" in prompt.text
+    assert "Catalog details retained: Purple Widget · ZX-999" in prompt.text
     assert "Reply naturally" in prompt.text
-    assert "Reply naturally in any format." in prompt.text
     assert "Name:" not in prompt.text
 
     conflict_prompt = render_catalog_item_details_prompt(
@@ -279,6 +282,27 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
     assert "Attributes: colour: purple" in confirmation.text
     assert "{'colour': 'purple'}" not in confirmation.text
     assert "Tracking:" not in confirmation.text
+
+
+def test_single_new_item_prompt_retains_quantity_and_asks_only_for_sku() -> None:
+    prompt = render_catalog_item_details_prompt(
+        CatalogItemCreationView(
+            request_id=CATALOG_REQUEST_ID,
+            status="awaiting_details",
+            suggested_name="2W-10 DC24V valve",
+            suggested_sku=None,
+            suggested_base_unit="each",
+            suggested_tracking_mode="simple",
+            line_number=1,
+            requested_quantity="4",
+            requested_unit="PCS",
+        )
+    )
+
+    assert "Receipt line retained: 4 PCS — 2W-10 DC24V valve" in prompt.text
+    assert "• its SKU, part number, or internal product code" in prompt.text
+    assert "• the item name" not in prompt.text
+    assert "quantity is already saved" in prompt.text
 
 
 def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None:

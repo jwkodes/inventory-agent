@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
 from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
 
 
@@ -65,6 +65,18 @@ def render_proposal_confirmation(
     clarification_prompt_shown = False
     has_multiple_lines = len(lines) > 1
     has_multiple_unresolved_lines = sum(line.matched_label is None for line in lines) > 1
+    not_found_lines = [
+        line
+        for line in lines
+        if line.matched_label is None
+        and line.match_decision == "not_found"
+        and not line.show_candidates
+    ]
+    bulk_new_items = len(not_found_lines) > 1
+    first_not_found_id = not_found_lines[0].proposal_line_id if not_found_lines else None
+    not_found_indices = [
+        index for index, line in enumerate(lines, start=1) if line in not_found_lines
+    ]
 
     for index, line in enumerate(lines, start=1):
         unit = f" {line.unit}" if line.unit else ""
@@ -82,40 +94,37 @@ def render_proposal_confirmation(
                     clarification_prompt_shown = True
             elif line.match_decision == "not_found" and not line.show_candidates:
                 subject = f"line {index}" if has_multiple_lines else "this item"
-                text_lines.append(
-                    f"🔎 **No confident match:** No catalog match was found for {subject}. "
-                    "Add it as a new item or choose an existing item."
-                )
-                keyboard.append(
-                    [
-                        InlineButton(
-                            text=_line_action_label(
-                                "Add new item",
-                                line.description,
-                                disambiguate=has_multiple_unresolved_lines,
+                if not bulk_new_items:
+                    text_lines.append(
+                        f"🔎 **No confident match:** No catalog match was found for {subject}."
+                    )
+                if not bulk_new_items or line.proposal_line_id == first_not_found_id:
+                    keyboard.append(
+                        [
+                            InlineButton(
+                                text=(
+                                    f"Add line {index} as new" if bulk_new_items else "Add new item"
+                                ),
+                                callback_data=encode_callback(
+                                    CallbackCommand(
+                                        CallbackAction.ADD_NEW_ITEM,
+                                        line.proposal_line_id,
+                                    )
+                                ),
                             ),
-                            callback_data=encode_callback(
-                                CallbackCommand(
-                                    CallbackAction.ADD_NEW_ITEM,
-                                    line.proposal_line_id,
-                                )
+                            InlineButton(
+                                text=(
+                                    f"Match line {index}" if bulk_new_items else "Choose existing"
+                                ),
+                                callback_data=encode_callback(
+                                    CallbackCommand(
+                                        CallbackAction.SHOW_EXISTING_ITEMS,
+                                        line.proposal_line_id,
+                                    )
+                                ),
                             ),
-                        ),
-                        InlineButton(
-                            text=_line_action_label(
-                                "Choose existing",
-                                line.description,
-                                disambiguate=has_multiple_unresolved_lines,
-                            ),
-                            callback_data=encode_callback(
-                                CallbackCommand(
-                                    CallbackAction.SHOW_EXISTING_ITEMS,
-                                    line.proposal_line_id,
-                                )
-                            ),
-                        ),
-                    ]
-                )
+                        ]
+                    )
             else:
                 for choice in line.candidate_choices:
                     keyboard.append(
@@ -158,7 +167,28 @@ def render_proposal_confirmation(
         )
     else:
         text_lines.insert(0, "⚠️ **Action needed**")
-        text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
+        if bulk_new_items:
+            text_lines.append(
+                "🔎 **No catalog matches:** "
+                f"Lines {', '.join(str(index) for index in not_found_indices)} are new."
+            )
+            text_lines.append(
+                "Create all unmatched products together, or resolve them individually "
+                "starting with the first line."
+            )
+            keyboard.insert(
+                0,
+                [
+                    InlineButton(
+                        text=f"Add all {len(not_found_lines)} as new",
+                        callback_data=encode_callback(
+                            CallbackCommand(CallbackAction.ADD_ALL_NEW_ITEMS, proposal_id)
+                        ),
+                    )
+                ],
+            )
+        else:
+            text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
         keyboard.append(
             [
                 InlineButton(
@@ -236,21 +266,38 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
             ],
         )
 
-    understood = (
-        f"I understood the item name as “{view.suggested_name}”. " if view.suggested_name else ""
-    )
+    known_name = view.name or view.suggested_name
+    known_sku = view.sku or view.suggested_sku
+    known_unit = view.base_unit or view.suggested_base_unit
+    missing: list[str] = []
+    if not known_name:
+        missing.append("the item name")
+    if not known_sku:
+        missing.append("its SKU, part number, or internal product code")
+    if not known_unit:
+        missing.append("its package or measurement unit")
+    retained = ""
+    if view.requested_quantity is not None:
+        unit = f" {view.requested_unit}" if view.requested_unit else ""
+        retained = (
+            f"Receipt line retained: {format(view.requested_quantity.normalize(), 'f')}"
+            f"{unit} — {known_name or 'unnamed item'}.\n"
+        )
+    requested = "\n".join(f"• {field}" for field in missing)
+    if missing:
+        request_text = (
+            "The quantity is already saved. Please send only the missing catalog "
+            f"information:\n{requested}\n\n"
+            "You may also include useful attributes. Reply naturally in any format."
+        )
+    else:
+        request_text = (
+            f"Catalog details retained: {known_name or 'unnamed item'}"
+            f"{f' · {known_sku}' if known_sku else ''}. "
+            "Reply naturally only if you want to correct or add details."
+        )
     return ConfirmationMessage(
-        text=(
-            "📝 **New item details needed**\n"
-            "I couldn't match this item. "
-            f"{understood}"
-            "Please send:\n"
-            "• the item name\n"
-            "• its SKU, part number, or internal product code\n"
-            "• its package or measurement unit, if it isn't counted individually\n"
-            "• any useful attributes, such as colour or size (optional)\n\n"
-            "Reply naturally in any format."
-        ),
+        text=(f"📝 **New item details needed**\n{retained}{request_text}"),
         inline_keyboard=[
             [
                 InlineButton(
@@ -259,6 +306,78 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
                         CallbackCommand(CallbackAction.CANCEL_NEW_ITEM, view.request_id)
                     ),
                 )
+            ]
+        ],
+    )
+
+
+def render_catalog_batch_details_prompt(view: CatalogBatchCreationView) -> ConfirmationMessage:
+    """Ask once for missing identifiers across every unmatched invoice line."""
+
+    text_lines = [
+        f"📝 **{len(view.items)} new catalog items**",
+        "The invoice quantities are retained:",
+    ]
+    for item in view.items:
+        quantity = format(item.requested_quantity.normalize(), "f")
+        unit = f" {item.requested_unit}" if item.requested_unit else ""
+        name = item.name or item.suggested_name or "Unnamed item"
+        sku = item.sku or item.suggested_sku
+        suffix = f" — SKU {sku}" if sku else " — SKU needed"
+        text_lines.append(f"{item.line_number}. {quantity}{unit} — {name}{suffix}")
+    text_lines.extend(
+        [
+            "",
+            "Send missing or corrected SKUs in one natural reply. You can refer to line "
+            "numbers, or say **generate unique internal SKUs from the descriptions**.",
+            "Quantities will not be changed.",
+        ]
+    )
+    return ConfirmationMessage(
+        text="\n".join(text_lines),
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text="Cancel batch",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CANCEL_CATALOG_BATCH, view.batch_id)
+                    ),
+                )
+            ]
+        ],
+    )
+
+
+def render_catalog_batch_confirmation(view: CatalogBatchCreationView) -> ConfirmationMessage:
+    """Review every new catalog item behind one atomic confirmation."""
+
+    text_lines = [
+        "⏳ **Pending catalog batch**",
+        f"Create {len(view.items)} new products:",
+    ]
+    for item in view.items:
+        quantity = format(item.requested_quantity.normalize(), "f")
+        unit = f" {item.requested_unit}" if item.requested_unit else ""
+        name = item.name or item.suggested_name or "Unnamed item"
+        sku = item.sku or item.suggested_sku or "missing"
+        text_lines.append(f"{item.line_number}. {quantity}{unit} — {name} · {sku}")
+    text_lines.append("Please review, then create all items or cancel.")
+    return ConfirmationMessage(
+        text="\n".join(text_lines),
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text=f"Create all {len(view.items)} items",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CONFIRM_CATALOG_BATCH, view.batch_id)
+                    ),
+                ),
+                InlineButton(
+                    text="Cancel",
+                    callback_data=encode_callback(
+                        CallbackCommand(CallbackAction.CANCEL_CATALOG_BATCH, view.batch_id)
+                    ),
+                ),
             ]
         ],
     )

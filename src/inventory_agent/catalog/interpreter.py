@@ -30,6 +30,9 @@ does not apply to a pending request for a network switch.
 Extract only facts stated in the worker's reply. Suggestions are context for interpreting
 references and may be merged later by application code, but do not copy them into extracted
 fields. Do not invent an SKU, item name, unit, tracking mode, or attribute.
+When the context explicitly says that only one field is missing, interpret a short
+unlabelled reply as the value of that field. For example, if only the SKU is missing,
+"Gggasd" supplies the SKU rather than changing the subject.
 
 An SKU may be described as a stock code, internal code, product code, part number, or
 catalog number. The base unit is how stock is counted, such as each, box, bottle, kg, or
@@ -84,6 +87,10 @@ class OpenAICatalogDetailsInterpreter:
             f"- suggested SKU: {view.suggested_sku or '(missing)'}\n"
             f"- suggested base unit: {view.suggested_base_unit}\n"
             f"- suggested tracking mode: {view.suggested_tracking_mode.value}\n\n"
+            f"- receipt quantity already retained: "
+            f"{view.requested_quantity if view.requested_quantity is not None else '(unknown)'}\n"
+            f"- receipt unit already retained: {view.requested_unit or '(unknown)'}\n"
+            f"- fields still missing: {', '.join(_missing_fields(view)) or '(none)'}\n\n"
             "Worker reply:\n"
             f"{user_text}"
         )
@@ -112,3 +119,14 @@ class OpenAICatalogDetailsInterpreter:
             response_id=response.id,
             model=response.model,
         )
+
+
+def _missing_fields(view: CatalogItemCreationView) -> list[str]:
+    missing: list[str] = []
+    if not (view.name or view.suggested_name):
+        missing.append("name")
+    if not (view.sku or view.suggested_sku):
+        missing.append("SKU")
+    if not (view.base_unit or view.suggested_base_unit):
+        missing.append("base unit")
+    return missing

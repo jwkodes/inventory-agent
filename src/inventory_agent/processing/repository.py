@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 
-from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
 from inventory_agent.processing.models import (
     ClaimedProcessingOutcome,
     OutboxCompletionStatus,
@@ -73,6 +73,9 @@ class ProcessingOutboxDeliveryRepository(Protocol):
 
     async def get_catalog_item_creation_view(self, request_id: UUID) -> CatalogItemCreationView:
         """Load suggestions or submitted details for a catalog creation request."""
+
+    async def get_catalog_batch_creation_view(self, batch_id: UUID) -> CatalogBatchCreationView:
+        """Load all item drafts for a bulk catalog request."""
 
     async def get_applied_transaction(
         self,
@@ -282,6 +285,13 @@ class SupabaseProcessingOutboxDeliveryRepository:
             {"p_request_id": str(request_id)},
         )
         return CatalogItemCreationView.model_validate(response.json())
+
+    async def get_catalog_batch_creation_view(self, batch_id: UUID) -> CatalogBatchCreationView:
+        response = await self._post_rpc(
+            "get_catalog_batch_creation_view",
+            {"p_batch_id": str(batch_id)},
+        )
+        return CatalogBatchCreationView.model_validate(response.json())
 
     async def get_applied_transaction(
         self,

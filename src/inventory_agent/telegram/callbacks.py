@@ -20,6 +20,9 @@ class CallbackAction(StrEnum):
     REVERSE_TRANSACTION = "r"
     CONFIRM_REVERSAL = "v"
     CANCEL_REVERSAL = "z"
+    ADD_ALL_NEW_ITEMS = "b"
+    CONFIRM_CATALOG_BATCH = "g"
+    CANCEL_CATALOG_BATCH = "j"
 
 
 @dataclass(frozen=True, slots=True)

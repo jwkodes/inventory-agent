@@ -363,6 +363,62 @@ async def test_catalog_actions_send_new_outbox_messages(
     assert outbox.drafts[0].outcome_type.value == outcome_type
 
 
+@pytest.mark.parametrize(
+    ("action", "result_id", "batch_status", "outcome_type"),
+    [
+        (
+            CallbackAction.ADD_ALL_NEW_ITEMS,
+            PROPOSAL_ID,
+            "awaiting_details",
+            "catalog_batch_details_required",
+        ),
+        (
+            CallbackAction.ADD_ALL_NEW_ITEMS,
+            PROPOSAL_ID,
+            "awaiting_confirmation",
+            "catalog_batch_confirmation",
+        ),
+        (
+            CallbackAction.CONFIRM_CATALOG_BATCH,
+            PROPOSAL_ID,
+            None,
+            "proposal_ready",
+        ),
+        (
+            CallbackAction.CANCEL_CATALOG_BATCH,
+            PROPOSAL_ID,
+            None,
+            "callback_notice",
+        ),
+    ],
+)
+async def test_bulk_catalog_actions_send_one_batch_outcome(
+    action: CallbackAction,
+    result_id: UUID,
+    batch_status: str | None,
+    outcome_type: str,
+) -> None:
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                status=CallbackOutcomeStatus.COMPLETED,
+                action=action,
+                result_id=result_id,
+                message="Bulk catalog action completed",
+                catalog_batch_status=batch_status,
+            )
+        ),
+        message_editor=RecordingEditor(),
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == outcome_type
+
+
 async def test_duplicate_catalog_sku_sends_new_detail_prompt_without_retrying() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()

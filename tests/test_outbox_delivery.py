@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.models import (
     ClaimedProcessingOutcome,
@@ -22,6 +22,7 @@ TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000006")
 LINE_ID = UUID("41000000-0000-0000-0000-000000000005")
 VARIANT_ID = UUID("21000000-0000-0000-0000-000000000002")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000005")
+CATALOG_BATCH_ID = UUID("72000000-0000-0000-0000-000000000005")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000005")
 APPLIED_AT = datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
 
@@ -98,6 +99,31 @@ class FakeRepository:
             ),
         )
 
+    async def get_catalog_batch_creation_view(self, batch_id: UUID) -> CatalogBatchCreationView:
+        assert batch_id == CATALOG_BATCH_ID
+        return CatalogBatchCreationView(
+            batch_id=batch_id,
+            proposal_id=PROPOSAL_ID,
+            status=self.catalog_status,
+            items=[
+                {
+                    "request_id": str(CATALOG_REQUEST_ID),
+                    "line_number": 1,
+                    "requested_quantity": "4",
+                    "requested_unit": "PCS",
+                    "suggested_name": "Purple Widget",
+                    "suggested_sku": None,
+                    "suggested_base_unit": "each",
+                    "suggested_tracking_mode": "simple",
+                    "name": "Purple Widget",
+                    "sku": ("ZX-999" if self.catalog_status == "awaiting_confirmation" else None),
+                    "base_unit": "each",
+                    "tracking_mode": "simple",
+                    "attributes": {},
+                }
+            ],
+        )
+
     async def get_applied_transaction(
         self,
         *,
@@ -158,6 +184,8 @@ def outcome(
             ProcessingOutcomeType.TRANSACTION_APPLIED: TRANSACTION_ID,
             ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED: CATALOG_REQUEST_ID,
             ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION: CATALOG_REQUEST_ID,
+            ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED: CATALOG_BATCH_ID,
+            ProcessingOutcomeType.CATALOG_BATCH_CONFIRMATION: CATALOG_BATCH_ID,
             ProcessingOutcomeType.REVERSAL_REASON_REQUIRED: PROPOSAL_ID,
             ProcessingOutcomeType.REVERSAL_CONFIRMATION: REVERSAL_REQUEST_ID,
         }.get(outcome_type),
@@ -231,6 +259,23 @@ async def test_delivers_plain_clarification_message() -> None:
 
     assert result.status is OutboxDeliveryStatus.SENT
     assert sender.messages == [(-100123, "❓ **More information needed**\nWhich item?", None)]
+
+
+async def test_delivers_one_bulk_catalog_prompt_with_retained_quantity() -> None:
+    repository = FakeRepository(
+        outcome(ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED),
+        catalog_status="awaiting_details",
+    )
+    sender = FakeSender()
+
+    result = await TelegramOutboxDeliveryWorker(
+        repository=repository,
+        sender=sender,
+    ).deliver_one()
+
+    assert result.status is OutboxDeliveryStatus.SENT
+    assert "1. 4 PCS — Purple Widget — SKU needed" in sender.messages[0][1]
+    assert "Quantities will not be changed" in sender.messages[0][1]
 
 
 async def test_simulated_user_label_is_visible_on_every_outbound_result() -> None:

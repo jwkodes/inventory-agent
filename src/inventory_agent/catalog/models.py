@@ -1,5 +1,6 @@
 """Typed catalog creation views and submitted details."""
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -67,3 +68,73 @@ class CatalogItemCreationView(BaseModel):
     tracking_mode: CatalogTrackingMode | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
     details_reason: str | None = None
+    line_number: int | None = None
+    requested_quantity: Decimal | None = None
+    requested_unit: str | None = None
+
+
+class CatalogBatchItemView(BaseModel):
+    """One unmatched proposal line inside a bulk catalog-creation request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    line_number: int = Field(ge=1)
+    requested_quantity: Decimal
+    requested_unit: str | None = None
+    suggested_name: str | None = None
+    suggested_sku: str | None = None
+    suggested_base_unit: str
+    suggested_tracking_mode: CatalogTrackingMode
+    name: str | None = None
+    sku: str | None = None
+    base_unit: str | None = None
+    tracking_mode: CatalogTrackingMode | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    details_reason: str | None = None
+
+
+class CatalogBatchCreationView(BaseModel):
+    """All new catalog items being reviewed for one inventory proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch_id: UUID
+    proposal_id: UUID
+    status: str
+    items: list[CatalogBatchItemView]
+
+
+class ExtractedCatalogBatchItemDetails(BaseModel):
+    """Natural-language catalog facts for one numbered batch line."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line_number: int = Field(ge=1)
+    name: str | None
+    sku: str | None
+    base_unit: str | None
+    tracking_mode: CatalogTrackingMode | None
+    attributes: list[ExtractedCatalogAttribute]
+
+
+class ExtractedCatalogBatchDetails(BaseModel):
+    """Structured result for one reply covering a catalog batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applies_to_pending_request: bool
+    items: list[ExtractedCatalogBatchItemDetails]
+
+
+class CatalogBatchItemDraft(BaseModel):
+    """Merged, possibly incomplete details saved for one batch item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    name: str | None = None
+    sku: str | None = None
+    base_unit: str | None = None
+    tracking_mode: CatalogTrackingMode | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)

@@ -8,6 +8,7 @@ from uuid import UUID
 import httpx
 
 from inventory_agent.catalog.repository import (
+    CatalogBatchConfirmationConflict,
     CatalogItemConfirmationConflict,
     CatalogItemCreationRepository,
 )
@@ -40,6 +41,7 @@ class CallbackOutcome:
     message: str
     catalog_status: str | None = None
     replacement_proposal_id: UUID | None = None
+    catalog_batch_status: str | None = None
 
 
 class TelegramCallbackDispatcher:
@@ -67,6 +69,7 @@ class TelegramCallbackDispatcher:
         """Acknowledge first, then execute exactly one decoded database action."""
 
         catalog_status: str | None = None
+        catalog_batch_status: str | None = None
         replacement_proposal_id: UUID | None = None
         try:
             command = decode_callback(callback_data)
@@ -133,6 +136,28 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Catalog item creation cancelled"
+            elif command.action is CallbackAction.ADD_ALL_NEW_ITEMS:
+                result_id = await self._catalog.begin_batch(
+                    proposal_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
+                )
+                catalog_batch_status = (
+                    await self._catalog.get_batch_view(batch_id=result_id)
+                ).status
+                message = "Bulk catalog details required"
+            elif command.action is CallbackAction.CONFIRM_CATALOG_BATCH:
+                result_id = await self._catalog.confirm_batch(
+                    batch_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog items created"
+            elif command.action is CallbackAction.CANCEL_CATALOG_BATCH:
+                result_id = await self._catalog.cancel_batch(
+                    batch_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog batch cancelled"
             elif command.action is CallbackAction.REVERSE_TRANSACTION:
                 result_id = await self._reversals.begin(
                     transaction_id=command.target_id,
@@ -171,6 +196,19 @@ class TelegramCallbackDispatcher:
                 str(error),
                 "awaiting_details",
             )
+        except CatalogBatchConfirmationConflict as error:
+            await self._try_answer(
+                callback_query_id=callback_query_id,
+                text="One or more SKUs need correction. I sent the details.",
+                show_alert=True,
+            )
+            return CallbackOutcome(
+                status=CallbackOutcomeStatus.COMPLETED,
+                action=command.action,
+                result_id=error.batch_id,
+                message=str(error),
+                catalog_batch_status="awaiting_details",
+            )
         except (ValueError, RuntimeError, httpx.HTTPError) as error:
             return CallbackOutcome(
                 CallbackOutcomeStatus.FAILED,
@@ -186,6 +224,7 @@ class TelegramCallbackDispatcher:
             message,
             catalog_status,
             replacement_proposal_id,
+            catalog_batch_status,
         )
 
     async def _try_answer(

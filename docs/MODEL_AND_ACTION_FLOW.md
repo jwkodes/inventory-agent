@@ -15,6 +15,7 @@ agent.
 | Invoice image extraction | `gpt-5.6-luna` | `none` | Every supported Telegram invoice image |
 | Input clarification resolution | `gpt-5.6-luna` | `none` | A natural-language reply to an ambiguous saved invoice or legacy structured command |
 | Catalog detail extraction | `gpt-5.6-luna` | `none` | A natural-language reply while a new catalog item is waiting for required details |
+| Bulk catalog detail extraction | `gpt-5.6-luna` | `none` | One natural-language reply supplies or explicitly generates missing identifiers for every unmatched invoice line |
 | Candidate judge | `gpt-5.6-luna` | `none` | Retrieved candidates in the invoice/structured pipeline need a constrained select, ask-user, or no-match decision |
 | Semantic retrieval | `text-embedding-3-small` | Not applicable | A name-based catalog search when the configured strategy is `semantic` or `hybrid`; exact SKU reads bypass it |
 
@@ -87,9 +88,15 @@ flowchart TD
     JUDGE -->|Select with sufficient confidence| PROPOSAL
     JUDGE -->|Ask user| CLARIFY["Store clarification and ask one question"]
     JUDGE -->|No match| NO_MATCH
+    NO_MATCH -->|Several new products| BULK_START["Add all as new<br/>Preserve every quantity"]
+    BULK_START --> BULK_DETAILS["Collect all missing SKUs in one reply<br/>gpt-5.6-luna · effort none"]
+    BULK_DETAILS --> BULK_REVIEW["One combined catalog review"]
+    BULK_REVIEW -->|Confirm once| BULK_CREATE["Create all catalog items atomically<br/>Resolve original proposal lines"]
+    BULK_CREATE --> REVIEW
 
     PROPOSAL --> REVIEW["Render proposal review and confirmation buttons"]
     ITEM_REVIEW --> OUTBOX[("Supabase processing_outbox")]
+    BULK_REVIEW --> OUTBOX
     REVERSAL_REVIEW --> OUTBOX
     RESPONSE --> OUTBOX
     REVIEW --> OUTBOX
@@ -116,10 +123,10 @@ flowchart TD
     classDef storage fill:#28243a,stroke:#8d7dd1,color:#f8f4ff;
 
     class AGENT,SUMMARY,BG_SUMMARY primary;
-    class CATALOG,TEXT_EXTRACT,IMAGE,INPUT_RESOLVE,JUDGE routine;
+    class CATALOG,BULK_DETAILS,TEXT_EXTRACT,IMAGE,INPUT_RESOLVE,JUDGE routine;
     class EMBED,SEMANTIC embed;
     class EVENT,OUTBOX,CONTEXT_EVENT storage;
-    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,INPUT_VALID,INPUT_SAVE,INPUT_CLARIFY,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,LIMITS,POST_LIMITS,BG_DONE,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
+    class API,CALLBACK,APPLY,CANCEL,RESUME,REVERSE,REASON,INPUT_VALID,INPUT_SAVE,INPUT_CLARIFY,CATALOG_VALID,ASK_MORE,ITEM_REVIEW,BULK_START,BULK_REVIEW,BULK_CREATE,LIMITS,POST_LIMITS,BG_DONE,EXACT,SEARCH,LEDGER,PROPOSAL,REVERSAL_REVIEW,RESPONSE,DOWNLOAD,STRUCTURED_MATCH,MATCH_TYPE,CANDIDATES,NO_MATCH,CLARIFY,REVIEW,SEND deterministic;
 ```
 
 The input-clarification record is deliberately separate from ordinary conversation

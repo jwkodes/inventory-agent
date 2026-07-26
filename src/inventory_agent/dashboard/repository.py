@@ -157,6 +157,23 @@ class DashboardRepository:
             "proposal_line_id",
             line_ids,
         )
+        catalog_batches = await self._get_for_ids(
+            "catalog_batch_creation_requests",
+            "proposal_id",
+            proposal_ids,
+        )
+        direct_catalog_batches = await self._get(
+            "catalog_batch_creation_requests",
+            {
+                "select": "*",
+                "details_source_event_id": f"eq.{event_id}",
+                "order": "created_at.asc",
+            },
+        )
+        known_batch_ids = {str(batch["id"]) for batch in catalog_batches}
+        catalog_batches.extend(
+            batch for batch in direct_catalog_batches if str(batch["id"]) not in known_batch_ids
+        )
         catalog_request_ids = [
             str(outcome["aggregate_id"])
             for outcome in outbox
@@ -233,6 +250,7 @@ class DashboardRepository:
             "outbox": outbox,
             "artifacts": artifacts,
             "catalog_requests": catalog_requests,
+            "catalog_batches": catalog_batches,
             "clarifications": clarifications,
             "command_clarifications": command_clarifications,
             "transactions": transactions,

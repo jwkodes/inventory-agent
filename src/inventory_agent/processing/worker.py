@@ -19,6 +19,7 @@ from inventory_agent.agent.production_tools import GroundedAgentCatalogReader
 from inventory_agent.agent.repository import SupabaseAgentRepository
 from inventory_agent.agent.runtime import OpenAIResponsesAgentModel
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
+from inventory_agent.catalog.batch import OpenAICatalogBatchDetailsInterpreter
 from inventory_agent.catalog.interpreter import OpenAICatalogDetailsInterpreter
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
@@ -47,6 +48,7 @@ from inventory_agent.processing.callback_events import (
     CallbackEventProcessingResult,
     TelegramCallbackEventProcessor,
 )
+from inventory_agent.processing.catalog_batches import CatalogBatchReplyHandler
 from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.image_events import (
@@ -290,6 +292,15 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             model=settings.openai_model,
             reasoning_effort=settings.openai_reasoning_effort,
         )
+        catalog_batch_handler = CatalogBatchReplyHandler(
+            catalog=catalog_repository,
+            interpreter=OpenAICatalogBatchDetailsInterpreter(
+                client=openai_client,
+                model=settings.openai_model,
+                reasoning_effort=settings.openai_reasoning_effort,
+            ),
+            outbox=outbox,
+        )
         if settings.inventory_agent_enabled:
             if agent_repository is None:  # pragma: no cover - construction invariant
                 raise RuntimeError("Inventory agent repository is unavailable")
@@ -322,6 +333,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                     reasoning_effort=settings.openai_reasoning_effort,
                 ),
                 command_handler=command_handler,
+                catalog_batches=catalog_batch_handler,
                 bot_username=settings.telegram_bot_username,
                 context_manager=AgentContextManager(
                     conversations=agent_repository,
@@ -352,6 +364,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 catalog=catalog_repository,
                 clarifications=clarification_repository,
                 candidate_judge=candidate_judge,
+                catalog_batches=catalog_batch_handler,
                 bot_username=settings.telegram_bot_username,
             )
         image_processor = TelegramImageEventProcessor(

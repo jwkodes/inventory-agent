@@ -697,6 +697,11 @@
         <dt>SKU</dt><dd>${esc(request.sku || request.suggested_sku)}</dd><dt>Base unit</dt><dd>${esc(request.base_unit || request.suggested_base_unit)}</dd>
         <dt>Tracking</dt><dd>${esc(request.tracking_mode || request.suggested_tracking_mode)}</dd></div>${attrs(request.attributes)}${raw("Catalog request", request)}`, "write")));
 
+      (flow.catalog_batches || []).forEach(batch => steps.push(step("catalog", "Bulk catalog workflow", `
+        <div class="kv"><dt>Status</dt><dd>${badge(batch.status)}</dd><dt>Batch</dt><dd>${esc(batch.id)}</dd>
+        <dt>Proposal</dt><dd>${esc(batch.proposal_id)}</dd><dt>Requested by</dt><dd>${esc(batch.requested_by)}</dd></div>
+        ${raw("Batch state", batch)}`, "write")));
+
       (flow.outbox || []).forEach(outcome => steps.push(step("outbox", "Telegram outbox", `
         <div class="kv"><dt>Outcome</dt><dd>${esc(outcome.outcome_type)}</dd><dt>Status</dt><dd>${badge(outcome.status)}</dd>
         <dt>Attempts</dt><dd>${esc(outcome.attempts)}</dd><dt>Sent</dt><dd>${time(outcome.sent_at)}</dd>

@@ -15,6 +15,8 @@ from inventory_agent.processing.models import (
 from inventory_agent.processing.repository import ProcessingOutboxDeliveryRepository
 from inventory_agent.telegram.confirmation import (
     render_applied_transaction,
+    render_catalog_batch_confirmation,
+    render_catalog_batch_details_prompt,
     render_catalog_item_confirmation,
     render_catalog_item_details_prompt,
     render_proposal_confirmation,
@@ -134,6 +136,37 @@ class TelegramOutboxDeliveryWorker:
                 else:
                     message = render_catalog_item_confirmation(catalog_view)
                 text = message.text
+                keyboard = [
+                    [button.model_dump(mode="json") for button in row]
+                    for row in message.inline_keyboard
+                ]
+            elif outcome.outcome_type in {
+                ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED,
+                ProcessingOutcomeType.CATALOG_BATCH_CONFIRMATION,
+            }:
+                if outcome.aggregate_id is None:
+                    raise ValueError("Catalog batch outcome is missing its batch ID")
+                batch_view = await self._repository.get_catalog_batch_creation_view(
+                    outcome.aggregate_id
+                )
+                if (
+                    outcome.outcome_type is ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED
+                    and batch_view.status == "awaiting_details"
+                ):
+                    message = render_catalog_batch_details_prompt(batch_view)
+                else:
+                    message = render_catalog_batch_confirmation(batch_view)
+                text = message.text
+                missing = outcome.payload.get("missing")
+                if isinstance(missing, list) and missing:
+                    missing_lines = "\n".join(
+                        f"• {value}" for value in missing if isinstance(value, str)
+                    )
+                    if missing_lines:
+                        text = f"{text}\n\nStill needed:\n{missing_lines}"
+                payload_message = outcome.payload.get("message")
+                if isinstance(payload_message, str) and payload_message.strip():
+                    text = f"{text}\n\n⚠️ {payload_message.strip()}"
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard

@@ -76,3 +76,5 @@ async def test_catalog_interpreter_accepts_natural_language_and_context() -> Non
     assert client.responses.arguments["text_format"] is ExtractedCatalogItemDetails
     assert client.responses.arguments["store"] is False
     assert "switch2 controller" in client.responses.arguments["input"]
+    assert "fields still missing: SKU" in client.responses.arguments["input"]
+    assert "short\nunlabelled reply" in CATALOG_DETAILS_INSTRUCTIONS

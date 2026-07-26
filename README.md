@@ -1134,6 +1134,16 @@ order. Adding an item starts the conversational detail flow described above. Aft
 creation, the original proposal line is linked to the new variant and a fresh proposal
 review message is sent.
 
+When a proposal contains multiple no-match invoice lines, Telegram shows one
+**Add all N as new** action instead of presenting several detail forms that cannot be
+completed concurrently. The bulk flow retains every extracted description, quantity, and
+unit, then asks once for only the missing catalog identifiers. The worker accepts all SKUs
+in one natural reply; if the invoice has no unique codes, the user may explicitly ask it
+to generate distinguishable internal SKUs from the product specifications. One combined
+catalog review and confirmation creates all items atomically and returns to the original
+stock-receipt proposal. Individual add/match controls remain available for mixed invoices,
+starting with the first unresolved line.
+
 ## Transaction proposals and confirmation
 
 `create_inventory_proposal` atomically stores a proposal and all of its lines. Repeated
@@ -1142,10 +1152,11 @@ For resolved lines, PostgreSQL validates the variant and derives the signed base
 quantity using the configured unit conversion. Unresolved lines retain their candidate
 evidence but have no stock delta, so they cannot be applied accidentally.
 
-The explicitly generic words `each`, `unit`, `units`, `item`, and `items` mean one unit of
-the matched SKU and receive a factor-one conversion. For a new individually counted item,
-all five are stored canonically as `each` so equivalent vocabulary cannot fragment the
-catalog. Package words such as `box`, `carton`, and `case` still require an
+The explicitly generic words `each`, `unit`, `units`, `item`, `items`, `pc`, `pcs`,
+`piece`, and `pieces` mean one unit of the matched SKU and receive a factor-one conversion.
+For a new individually counted item, these words are stored canonically as `each` so
+equivalent vocabulary cannot fragment the catalog. Package words such as `box`, `carton`,
+and `case` still require an
 organization-and-variant-specific conversion; the system does not guess package sizes.
 
 Telegram confirmation rendering uses compact opaque callback data containing only action
@@ -1440,3 +1451,19 @@ lot-function tests. It is development data only and must never be loaded into pr
       admin dashboard — complete; authenticated production admin accounts remain; and
     - enforce role-specific read, proposal, confirmation, catalog, and reversal policies
       consistently in both application and database boundaries.
+14. Component-level pipeline health and observability:
+    - show the background worker separately from the overall system status, including
+      whether it is running, its last successful cycle, last error, and queue backlog;
+    - show health for each event processor—button callbacks, invoice images, text messages,
+      registration notices, context compaction, and outbound Telegram delivery—with its
+      last attempt, last success, last failure, recent latency, and oldest pending event;
+    - report important dependency stages separately, including OpenAI extraction/agent
+      calls, semantic embeddings, Supabase operations, and Telegram downloads/sends;
+    - derive green, warning, and red states from recent successful work, failures, backlog
+      age, and latency rather than treating process liveness as proof that the pipeline
+      works end to end;
+    - include concise hover help describing what each worker and processor does and what
+      evidence determined its current status; and
+    - retain recent sanitized failures and correlation IDs in the dashboard so a source
+      event can be traced through extraction, matching, proposal creation, and delivery
+      without exposing secrets or invoice contents unnecessarily.

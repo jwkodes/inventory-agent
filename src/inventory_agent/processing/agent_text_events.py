@@ -39,6 +39,7 @@ from inventory_agent.extraction.clarification import (
 )
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.extraction.schema import InventoryIntent
+from inventory_agent.processing.catalog_batches import CatalogBatchReplyHandler
 from inventory_agent.processing.models import (
     InventoryEventProcessingResult,
     ProcessingOutcomeDraft,
@@ -113,6 +114,7 @@ class TelegramAgentTextEventProcessor:
         command_clarifications: CommandClarificationRepository | None = None,
         command_clarification_interpreter: CommandClarificationInterpreter | None = None,
         command_handler: ExtractedCommandHandler | None = None,
+        catalog_batches: CatalogBatchReplyHandler | None = None,
         bot_username: str | None = None,
     ) -> None:
         command_flow_dependencies = (
@@ -141,6 +143,7 @@ class TelegramAgentTextEventProcessor:
         self._command_clarifications = command_clarifications
         self._command_clarification_interpreter = command_clarification_interpreter
         self._command_handler = command_handler
+        self._catalog_batches = catalog_batches
         self._bot_username = bot_username
         self._background_compactions: dict[tuple[UUID, UUID, int], asyncio.Task[None]] = {}
 
@@ -494,6 +497,12 @@ class TelegramAgentTextEventProcessor:
                 reversal_request_id=reversal_request_id,
                 outbox_id=outbox_id,
             )
+
+        if self._catalog_batches is not None:
+            batch_result = await self._catalog_batches.handle_pending(context=context)
+            if batch_result is not None:
+                await self._require_finish(context.event_id)
+                return batch_result
 
         if (
             self._command_clarifications is not None

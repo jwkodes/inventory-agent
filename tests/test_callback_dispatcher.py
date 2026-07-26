@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from inventory_agent.catalog.models import CatalogItemCreationView
+from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
 from inventory_agent.catalog.repository import CatalogItemConfirmationConflict
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
@@ -167,6 +167,27 @@ class RecordingCatalog:
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("cancel_catalog")
         return CATALOG_REQUEST_ID
+
+    async def begin_batch(self, *, proposal_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
+        self.events.append("begin_catalog_batch")
+        return CATALOG_REQUEST_ID
+
+    async def get_batch_view(self, *, batch_id: UUID) -> CatalogBatchCreationView:
+        self.events.append("get_catalog_batch_view")
+        return CatalogBatchCreationView(
+            batch_id=batch_id,
+            proposal_id=PROPOSAL_ID,
+            status=self.status,
+            items=[],
+        )
+
+    async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
+        self.events.append("confirm_catalog_batch")
+        return PROPOSAL_ID
+
+    async def cancel_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
+        self.events.append("cancel_catalog_batch")
+        return batch_id
 
 
 def dispatcher(
@@ -333,6 +354,36 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         "confirm_catalog",
         "ack",
         "cancel_catalog",
+    ]
+
+
+async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+    cases = [
+        (CallbackAction.ADD_ALL_NEW_ITEMS, PROPOSAL_ID, CATALOG_REQUEST_ID),
+        (CallbackAction.CONFIRM_CATALOG_BATCH, CATALOG_REQUEST_ID, PROPOSAL_ID),
+        (CallbackAction.CANCEL_CATALOG_BATCH, CATALOG_REQUEST_ID, CATALOG_REQUEST_ID),
+    ]
+
+    for action, target_id, expected_result in cases:
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, target_id)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == expected_result
+
+    assert events == [
+        "ack",
+        "begin_catalog_batch",
+        "get_catalog_batch_view",
+        "ack",
+        "confirm_catalog_batch",
+        "ack",
+        "cancel_catalog_batch",
     ]
 
 

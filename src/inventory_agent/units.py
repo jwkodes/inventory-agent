@@ -1,6 +1,8 @@
 """Canonical inventory-unit helpers shared by agent and catalog boundaries."""
 
-GENERIC_COUNT_UNITS = frozenset({"each", "unit", "units", "item", "items"})
+GENERIC_COUNT_UNITS = frozenset(
+    {"each", "unit", "units", "item", "items", "pc", "pcs", "piece", "pieces"}
+)
 
 
 def canonicalize_base_unit(value: str) -> str:

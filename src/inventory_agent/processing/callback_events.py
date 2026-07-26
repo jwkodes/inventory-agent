@@ -20,6 +20,8 @@ _CONTEXT_LIFECYCLE_ACTIONS = {
     CallbackAction.CANCEL_PROPOSAL,
     CallbackAction.CONFIRM_NEW_ITEM,
     CallbackAction.CANCEL_NEW_ITEM,
+    CallbackAction.CONFIRM_CATALOG_BATCH,
+    CallbackAction.CANCEL_CATALOG_BATCH,
     CallbackAction.CONFIRM_REVERSAL,
     CallbackAction.CANCEL_REVERSAL,
 }
@@ -125,7 +127,9 @@ class TelegramCallbackEventProcessor:
                     actor_id=context.organization_user_id,
                     chat_id=context.chat_id,
                     message_id=context.telegram_message_id,
+                    callback_message=outcome.message,
                     catalog_status=outcome.catalog_status,
+                    catalog_batch_status=outcome.catalog_batch_status,
                     replacement_proposal_id=outcome.replacement_proposal_id,
                 )
             if not await self._events.finish_event(event_id=context.event_id, success=True):
@@ -155,7 +159,9 @@ class TelegramCallbackEventProcessor:
         actor_id: UUID,
         chat_id: int,
         message_id: int,
+        callback_message: str,
         catalog_status: str | None,
+        catalog_batch_status: str | None,
         replacement_proposal_id: UUID | None,
     ) -> None:
         if action is None or result_id is None:
@@ -189,6 +195,28 @@ class TelegramCallbackEventProcessor:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "🚫 **Catalog item creation cancelled**"}
+        elif action is CallbackAction.ADD_ALL_NEW_ITEMS:
+            if catalog_batch_status == "awaiting_confirmation":
+                outcome_type = ProcessingOutcomeType.CATALOG_BATCH_CONFIRMATION
+            elif catalog_batch_status in (None, "awaiting_details"):
+                outcome_type = ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED
+            else:
+                raise ValueError("Catalog batch is not awaiting user action")
+            aggregate_id = result_id
+            payload = {}
+        elif action is CallbackAction.CONFIRM_CATALOG_BATCH:
+            if catalog_batch_status == "awaiting_details":
+                outcome_type = ProcessingOutcomeType.CATALOG_BATCH_DETAILS_REQUIRED
+                aggregate_id = result_id
+                payload = {"message": callback_message}
+            else:
+                outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+                aggregate_id = result_id
+                payload = {}
+        elif action is CallbackAction.CANCEL_CATALOG_BATCH:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "🚫 **Catalog batch cancelled**"}
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id
@@ -234,6 +262,9 @@ class TelegramCallbackEventProcessor:
         )
         conflict_reopened = (
             action is CallbackAction.CONFIRM_NEW_ITEM and catalog_status == "awaiting_details"
+        ) or (
+            action is CallbackAction.CONFIRM_CATALOG_BATCH
+            and catalog_batch_status == "awaiting_details"
         )
         if (
             self._conversation_recorder is not None
