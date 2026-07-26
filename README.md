@@ -601,6 +601,12 @@ turn, the worker loads that conversation's active history from Supabase, appends
 user/model/tool items, sends the resulting item list to the Responses API, and saves an
 immutable timestamped turn in `inventory_agent_turns`.
 
+That active history includes the member's retained user messages, the agent's replies,
+relevant tool calls and results, and deterministic lifecycle events such as proposal
+confirmation, cancellation, and reversal. It does not load another member's conversation
+history merely because both members are in the same Telegram group. Current message text
+that explicitly quotes or copies someone else is still part of the sender's current turn.
+
 Context limits are checked twice:
 
 1. Immediately before an LLM call, so an oversized context is never knowingly sent.
@@ -822,6 +828,14 @@ Send an invoice either as a normal Telegram photo or as a JPEG, PNG, or WebP doc
 The hosted Telegram Bot API limits bot downloads to 20 MB, which the worker checks before
 downloading. The prototype deliberately leaves PDFs and voice notes for later slices;
 their webhooks are retained but are not sent through the image interpreter.
+
+When an image or text extraction needs clarification, the pending question is scoped to
+the originating organization member and chat. Standalone commands such as `Cancel`,
+`Cancel that`, `Forget that image`, or `Reset` abandon it immediately without an LLM call.
+For other replies, the clarification model first states whether the message genuinely
+applies to the pending request. An unrelated joke, code request, casual message, or new
+independent inventory request closes the stale clarification and proceeds through the
+normal inventory agent instead of being repeatedly forced into the old question.
 
 On the first non-exact name match, the worker creates embeddings for catalog variants
 whose searchable content has not been indexed yet. It batches and caches those vectors in
@@ -1531,3 +1545,38 @@ lot-function tests. It is development data only and must never be loaded into pr
     - retain recent sanitized failures and correlation IDs in the dashboard so a source
       event can be traced through extraction, matching, proposal creation, and delivery
       without exposing secrets or invoice contents unnecessarily.
+15. Scalable inventory reads and aggregates:
+    - add cursor-based pagination to the authoritative `read_inventory` agent tool so the
+      agent can traverse inventories larger than one result page without increasing the
+      per-request result limit;
+    - return an opaque `next_cursor` and `has_more` value, keep ordering stable between
+      pages, and scope every cursor to its organization, location, filters, and sort order;
+    - add a database-backed inventory aggregate tool so the model never has to retrieve
+      and count every inventory row itself;
+    - distinguish unique item families, unique variants/SKUs, variants currently in stock,
+      and zero-stock variants in aggregate results;
+    - support useful grouped aggregates such as totals by item family, category, location,
+      or configured variant attribute without summing incompatible measurement units; and
+    - test large catalogs, concurrent inventory updates between pages, expired or reused
+      cursors, tenant isolation, aggregate accuracy, and Telegram responses for complete
+      inventory and count requests.
+16. Canonical item-family and variant naming:
+    - store the shared product identity once as the item-family name, such as
+      `Cotton On Mario T-Shirt`, rather than allowing every size or colour variant to use
+      unrelated free-text wording;
+    - store variant differences such as size and colour as structured discriminator
+      attributes, then derive a consistent display name such as
+      `Cotton On Mario T-Shirt — Size M` or `Cotton On Mario T-Shirt — Size S`;
+    - when a new description such as `Mario T-shirt from Cotton On S` arrives, extract and
+      normalize its brand, product type, design, and discriminator attributes before
+      deciding whether to add a variant to an existing family or create a new family;
+    - preserve the user's, invoice's, or supplier's original wording as source evidence
+      and searchable aliases without using it as the canonical variant name;
+    - prevent a variant-only difference from silently creating a duplicate item family,
+      while still asking for confirmation when family matching is ambiguous;
+    - define organization-configurable attribute ordering and formatting so every variant
+      in a family renders consistently across Telegram, the dashboard, transactions, and
+      exports; and
+    - test reordered words, brand phrasing, spelling errors, abbreviations, multiple
+      discriminator attributes, true product-family differences, and renaming an existing
+      family without breaking transaction history.

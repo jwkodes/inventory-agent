@@ -514,62 +514,100 @@ class TelegramAgentTextEventProcessor:
                 chat_id=context.chat_id,
             )
             if command_request_id is not None:
-                command_view = await self._command_clarifications.get_view(
-                    request_id=command_request_id
-                )
-                command_extraction = await self._command_clarification_interpreter.resolve(
-                    view=command_view,
-                    user_reply=context.message_text,
-                )
-                command = command_extraction.command
-                if command.needs_clarification or command.intent in {
-                    InventoryIntent.UNKNOWN,
-                    InventoryIntent.ADJUST_STOCK,
-                }:
-                    question = command.clarification_question or (
-                        "Should I add or remove these quantities?"
-                        if command.intent is InventoryIntent.ADJUST_STOCK
-                        else "What inventory change should I make?"
-                    )
-                    await self._command_clarifications.continue_request(
+                if _is_standalone_clarification_cancel(context.message_text):
+                    await self._command_clarifications.cancel(
                         request_id=command_request_id,
                         event_id=context.event_id,
                         actor_id=context.organization_user_id,
-                        user_reply=context.message_text,
-                        question=question,
-                        extraction=command_extraction,
                     )
                     outbox_id = await self._outbox.enqueue(
                         ProcessingOutcomeDraft(
                             organization_id=context.organization_id,
                             source_event_id=context.event_id,
-                            outcome_type=ProcessingOutcomeType.CLARIFICATION_REQUIRED,
+                            outcome_type=ProcessingOutcomeType.AGENT_MESSAGE,
                             chat_id=context.chat_id,
-                            payload={"message": f"❓ **More information needed**\n{question}"},
+                            payload={
+                                "message": (
+                                    "🚫 **Request cancelled**\n"
+                                    "I stopped asking about the earlier image or command."
+                                )
+                            },
                         )
                     )
                     await self._require_finish(context.event_id)
                     return TextEventProcessingResult(
                         event_id=context.event_id,
-                        status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                        status=TextEventProcessingStatus.AGENT_MESSAGE,
                         chat_id=context.chat_id,
                         outbox_id=outbox_id,
                     )
-
-                result = await self._command_handler.handle(
-                    context=context,
-                    extraction=command_extraction,
+                command_view = await self._command_clarifications.get_view(
+                    request_id=command_request_id
                 )
-                await self._command_clarifications.resolve(
-                    request_id=command_request_id,
-                    event_id=context.event_id,
-                    actor_id=context.organization_user_id,
+                clarification = await self._command_clarification_interpreter.resolve(
+                    view=command_view,
                     user_reply=context.message_text,
-                    extraction=command_extraction,
-                    proposal_id=result.proposal_id,
                 )
-                await self._require_finish(context.event_id)
-                return result
+                if (
+                    clarification.cancel_pending_request
+                    or not clarification.applies_to_pending_request
+                ):
+                    await self._command_clarifications.cancel(
+                        request_id=command_request_id,
+                        event_id=context.event_id,
+                        actor_id=context.organization_user_id,
+                    )
+                else:
+                    command_extraction = clarification.extraction
+                    command = command_extraction.command
+                    if command.needs_clarification or command.intent in {
+                        InventoryIntent.UNKNOWN,
+                        InventoryIntent.ADJUST_STOCK,
+                    }:
+                        question = command.clarification_question or (
+                            "Should I add or remove these quantities?"
+                            if command.intent is InventoryIntent.ADJUST_STOCK
+                            else "What inventory change should I make?"
+                        )
+                        await self._command_clarifications.continue_request(
+                            request_id=command_request_id,
+                            event_id=context.event_id,
+                            actor_id=context.organization_user_id,
+                            user_reply=context.message_text,
+                            question=question,
+                            extraction=command_extraction,
+                        )
+                        outbox_id = await self._outbox.enqueue(
+                            ProcessingOutcomeDraft(
+                                organization_id=context.organization_id,
+                                source_event_id=context.event_id,
+                                outcome_type=ProcessingOutcomeType.CLARIFICATION_REQUIRED,
+                                chat_id=context.chat_id,
+                                payload={"message": f"❓ **More information needed**\n{question}"},
+                            )
+                        )
+                        await self._require_finish(context.event_id)
+                        return TextEventProcessingResult(
+                            event_id=context.event_id,
+                            status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                            chat_id=context.chat_id,
+                            outbox_id=outbox_id,
+                        )
+
+                    result = await self._command_handler.handle(
+                        context=context,
+                        extraction=command_extraction,
+                    )
+                    await self._command_clarifications.resolve(
+                        request_id=command_request_id,
+                        event_id=context.event_id,
+                        actor_id=context.organization_user_id,
+                        user_reply=context.message_text,
+                        extraction=command_extraction,
+                        proposal_id=result.proposal_id,
+                    )
+                    await self._require_finish(context.event_id)
+                    return result
 
         catalog_request_id = await self._catalog.find_pending(
             actor_id=context.organization_user_id,
@@ -854,6 +892,28 @@ def _typed_proposal_control(message_text: str) -> str | None:
     if normalized in {"confirm", "cancel"}:
         return normalized
     return None
+
+
+def _is_standalone_clarification_cancel(message_text: str) -> bool:
+    normalized = re.sub(r"[^\w/]+", " ", message_text.casefold()).strip()
+    return normalized in {
+        "/cancel",
+        "/reset",
+        "cancel",
+        "cancel it",
+        "cancel that",
+        "cancel this",
+        "discard it",
+        "drop it",
+        "forget it",
+        "forget that",
+        "forget that image",
+        "never mind",
+        "nevermind",
+        "reset",
+        "stop",
+        "stop asking",
+    }
 
 
 def _transaction_ids_in_text(message_text: str) -> list[UUID]:

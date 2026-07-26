@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(15);
+select plan(20);
 
 select has_table(
   'public',
@@ -38,6 +38,12 @@ select has_function(
   'resolve_command_clarification',
   array['uuid', 'uuid', 'uuid', 'text', 'jsonb', 'uuid'],
   'command clarification resolution exists'
+);
+select has_function(
+  'public',
+  'cancel_command_clarification',
+  array['uuid', 'uuid', 'uuid'],
+  'command clarification cancellation exists'
 );
 
 insert into public.source_events (
@@ -236,6 +242,80 @@ select is(
   ),
   null::uuid,
   'resolved clarification no longer intercepts later chat'
+);
+
+insert into public.source_events (
+  id,
+  organization_id,
+  provider,
+  external_event_id,
+  event_type,
+  status,
+  payload,
+  processed_at
+)
+values
+(
+  '50000000-0000-0000-0000-000000000093',
+  '10000000-0000-0000-0000-000000000001',
+  'database_test',
+  'command-clarification-cancel-source',
+  'invoice_image',
+  'processed',
+  '{}'::jsonb,
+  now()
+),
+(
+  '50000000-0000-0000-0000-000000000094',
+  '10000000-0000-0000-0000-000000000001',
+  'database_test',
+  'command-clarification-cancel-reply',
+  'message',
+  'processing',
+  '{}'::jsonb,
+  null
+);
+
+create temporary table cancelled_command_clarification_fixture as
+select public.begin_command_clarification(
+  '50000000-0000-0000-0000-000000000093',
+  '11000000-0000-0000-0000-000000000001',
+  124,
+  'Should this image be recorded as received stock?',
+  (select extraction
+   from public.command_clarification_requests
+   where id = (select request_id from command_clarification_fixture))
+) as request_id;
+
+select ok(
+  (select request_id is not null from cancelled_command_clarification_fixture),
+  'a second clarification can be created for cancellation'
+);
+select is(
+  public.cancel_command_clarification(
+    (select request_id from cancelled_command_clarification_fixture),
+    '50000000-0000-0000-0000-000000000094',
+    '11000000-0000-0000-0000-000000000001'
+  ),
+  (select request_id from cancelled_command_clarification_fixture),
+  'the requesting actor can abandon a pending clarification'
+);
+select is(
+  (
+    select status::text
+    from public.command_clarification_requests
+    where id = (select request_id from cancelled_command_clarification_fixture)
+  ),
+  'cancelled',
+  'abandoning a clarification records a cancelled terminal state'
+);
+select is(
+  public.find_pending_command_clarification(
+    '11000000-0000-0000-0000-000000000001',
+    124
+  ),
+  null::uuid,
+  'a cancelled clarification no longer intercepts later chat'
 );
 
 select * from finish();

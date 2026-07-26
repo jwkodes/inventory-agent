@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol
 from uuid import UUID
@@ -37,6 +38,13 @@ needs_clarification=false and clarification_question=null. For example, an affir
 reply that all invoice lines are received stock sets intent=RECEIVE_STOCK while preserving
 all original invoice lines. If required information remains ambiguous, retain the complete
 known command, set needs_clarification=true, and ask one concise remaining question.
+
+Set applies_to_pending_request=false when the current message is unrelated, casual chat,
+a new independent request, or an attempt to make the inventory system store code or
+arbitrary image data. Set cancel_pending_request=true when the user explicitly asks to
+cancel, forget, reset, stop, or abandon the pending clarification. An unrelated or
+cancelled message must not be forced into the preserved inventory command. Keep command as
+the preserved original command when applies_to_pending_request=false.
 """
 
 
@@ -92,6 +100,25 @@ class CommandClarificationView(BaseModel):
     clarification_replies: list[str] = Field(default_factory=list)
 
 
+class CommandClarificationResolution(BaseModel):
+    """Structured relevance decision plus the safely preserved/resolved command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    applies_to_pending_request: bool
+    cancel_pending_request: bool
+    command: ExtractedInventoryCommand
+
+
+@dataclass(frozen=True, slots=True)
+class CommandClarificationResolutionResult:
+    """Clarification relevance and extraction metadata retained for audit."""
+
+    applies_to_pending_request: bool
+    cancel_pending_request: bool
+    extraction: CommandExtractionResult
+
+
 class CommandClarificationRepository(Protocol):
     async def begin(
         self,
@@ -134,6 +161,15 @@ class CommandClarificationRepository(Protocol):
     ) -> UUID:
         """Close the clarification after its resumed command is handled."""
 
+    async def cancel(
+        self,
+        *,
+        request_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        """Abandon a pending clarification so later messages are not intercepted."""
+
 
 class CommandClarificationInterpreter(Protocol):
     async def resolve(
@@ -141,8 +177,8 @@ class CommandClarificationInterpreter(Protocol):
         *,
         view: CommandClarificationView,
         user_reply: str,
-    ) -> CommandExtractionResult:
-        """Merge a natural reply into the preserved extracted command."""
+    ) -> CommandClarificationResolutionResult:
+        """Classify relevance and safely merge a reply when it applies."""
 
 
 class OpenAICommandClarificationInterpreter:
@@ -164,7 +200,7 @@ class OpenAICommandClarificationInterpreter:
         *,
         view: CommandClarificationView,
         user_reply: str,
-    ) -> CommandExtractionResult:
+    ) -> CommandClarificationResolutionResult:
         if not user_reply.strip():
             raise ValueError("user_reply must not be empty")
         payload = {
@@ -179,7 +215,7 @@ class OpenAICommandClarificationInterpreter:
             reasoning={"effort": self._reasoning_effort},
             instructions=COMMAND_CLARIFICATION_INSTRUCTIONS,
             input=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
-            text_format=ExtractedInventoryCommand,
+            text_format=CommandClarificationResolution,
             store=False,
         )
         logger.info(
@@ -188,21 +224,25 @@ class OpenAICommandClarificationInterpreter:
             (perf_counter() - started) * 1000,
             getattr(response, "model", self._model),
         )
-        command = response.output_parsed
-        if command is None:
+        resolution = response.output_parsed
+        if resolution is None:
             refusal = _find_refusal(response.output)
             if refusal is not None:
                 raise CommandExtractionRefused(refusal)
             raise CommandExtractionError("OpenAI response did not contain a clarified command")
         usage = response.usage
-        return CommandExtractionResult(
-            command=command,
-            response_id=response.id,
-            model=getattr(response, "model", self._model),
-            prompt_version=COMMAND_CLARIFICATION_PROMPT_VERSION,
-            input_tokens=usage.input_tokens if usage is not None else None,
-            output_tokens=usage.output_tokens if usage is not None else None,
-            total_tokens=usage.total_tokens if usage is not None else None,
+        return CommandClarificationResolutionResult(
+            applies_to_pending_request=resolution.applies_to_pending_request,
+            cancel_pending_request=resolution.cancel_pending_request,
+            extraction=CommandExtractionResult(
+                command=resolution.command,
+                response_id=response.id,
+                model=getattr(response, "model", self._model),
+                prompt_version=COMMAND_CLARIFICATION_PROMPT_VERSION,
+                input_tokens=usage.input_tokens if usage is not None else None,
+                output_tokens=usage.output_tokens if usage is not None else None,
+                total_tokens=usage.total_tokens if usage is not None else None,
+            ),
         )
 
 
@@ -308,6 +348,23 @@ class SupabaseCommandClarificationRepository:
             },
         )
         return _required_uuid(result, "resolved command clarification")
+
+    async def cancel(
+        self,
+        *,
+        request_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        result = await self._call(
+            "cancel_command_clarification",
+            {
+                "p_request_id": str(request_id),
+                "p_event_id": str(event_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+        return _required_uuid(result, "cancelled command clarification")
 
     async def _call(self, function_name: str, body: dict[str, object]) -> object:
         async with httpx.AsyncClient(

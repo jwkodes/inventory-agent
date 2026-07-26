@@ -10,6 +10,7 @@ import httpx
 from inventory_agent.extraction.clarification import (
     COMMAND_CLARIFICATION_INSTRUCTIONS,
     COMMAND_CLARIFICATION_PROMPT_VERSION,
+    CommandClarificationResolution,
     CommandClarificationView,
     OpenAICommandClarificationInterpreter,
     StoredCommandExtraction,
@@ -92,7 +93,11 @@ class FakeOpenAI:
 async def test_command_clarification_preserves_invoice_lines_and_resolves_intent() -> None:
     resolved = extraction(resolved=True).command
     response = SimpleNamespace(
-        output_parsed=resolved,
+        output_parsed=CommandClarificationResolution(
+            applies_to_pending_request=True,
+            cancel_pending_request=False,
+            command=resolved,
+        ),
         output=[],
         id="response-resolved",
         model="gpt-test",
@@ -109,14 +114,17 @@ async def test_command_clarification_preserves_invoice_lines_and_resolves_intent
         user_reply="Yes, all received stock.",
     )
 
-    assert result.command.intent is InventoryIntent.RECEIVE_STOCK
-    assert result.command.lines[0].item_reference.value == "ABC-123"
-    assert result.command.lines[0].quantity == "3"
-    assert result.prompt_version == COMMAND_CLARIFICATION_PROMPT_VERSION
+    assert result.applies_to_pending_request is True
+    assert result.cancel_pending_request is False
+    assert result.extraction.command.intent is InventoryIntent.RECEIVE_STOCK
+    assert result.extraction.command.lines[0].item_reference.value == "ABC-123"
+    assert result.extraction.command.lines[0].quantity == "3"
+    assert result.extraction.prompt_version == COMMAND_CLARIFICATION_PROMPT_VERSION
     payload = json.loads(client.responses.arguments["input"])
     assert payload["original_extraction"]["lines"][0]["description"] == "Invoice Widget"
     assert payload["current_reply"] == "Yes, all received stock."
     assert "Never replace the original lines" in COMMAND_CLARIFICATION_INSTRUCTIONS
+    assert "applies_to_pending_request=false" in COMMAND_CLARIFICATION_INSTRUCTIONS
 
 
 async def test_supabase_command_clarification_repository_contract() -> None:
@@ -172,6 +180,14 @@ async def test_supabase_command_clarification_repository_contract() -> None:
         )
         == REQUEST_ID
     )
+    assert (
+        await repository.cancel(
+            request_id=REQUEST_ID,
+            event_id=REPLY_EVENT_ID,
+            actor_id=ACTOR_ID,
+        )
+        == REQUEST_ID
+    )
 
     assert requests[0].url.path.endswith("/begin_command_clarification")
     begin_body = json.loads(requests[0].read())
@@ -182,3 +198,4 @@ async def test_supabase_command_clarification_repository_contract() -> None:
     assert requests[4].url.path.endswith("/resolve_command_clarification")
     resolve_body = json.loads(requests[4].read())
     assert resolve_body["p_proposal_id"] == str(PROPOSAL_ID)
+    assert requests[5].url.path.endswith("/cancel_command_clarification")

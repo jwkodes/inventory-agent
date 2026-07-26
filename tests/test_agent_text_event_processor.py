@@ -13,6 +13,7 @@ from inventory_agent.catalog.models import (
     ExtractedCatalogItemDetails,
 )
 from inventory_agent.extraction.clarification import (
+    CommandClarificationResolutionResult,
     CommandClarificationView,
     StoredCommandExtraction,
 )
@@ -262,6 +263,7 @@ class FakeCommandClarifications:
             extraction=StoredCommandExtraction.from_result(extraction),
         )
         self.resolved: list[dict[str, object]] = []
+        self.cancelled: list[dict[str, object]] = []
 
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         assert actor_id == ACTOR_ID
@@ -279,6 +281,10 @@ class FakeCommandClarifications:
         self.resolved.append(kwargs)
         return COMMAND_CLARIFICATION_ID
 
+    async def cancel(self, **kwargs: object) -> UUID:
+        self.cancelled.append(kwargs)
+        return COMMAND_CLARIFICATION_ID
+
 
 class ReceivingCommandClarificationInterpreter:
     async def resolve(
@@ -286,20 +292,39 @@ class ReceivingCommandClarificationInterpreter:
         *,
         view: CommandClarificationView,
         user_reply: str,
-    ) -> CommandExtractionResult:
+    ) -> CommandClarificationResolutionResult:
         assert user_reply == "Yes all received stock"
         original = view.extraction.command
-        return CommandExtractionResult(
-            command=original.model_copy(
-                update={
-                    "intent": InventoryIntent.RECEIVE_STOCK,
-                    "needs_clarification": False,
-                    "clarification_question": None,
-                }
+        return CommandClarificationResolutionResult(
+            applies_to_pending_request=True,
+            cancel_pending_request=False,
+            extraction=CommandExtractionResult(
+                command=original.model_copy(
+                    update={
+                        "intent": InventoryIntent.RECEIVE_STOCK,
+                        "needs_clarification": False,
+                        "clarification_question": None,
+                    }
+                ),
+                response_id="clarification-response",
+                model="gpt-test",
+                prompt_version="inventory-command-clarification-v1",
             ),
-            response_id="clarification-response",
-            model="gpt-test",
-            prompt_version="inventory-command-clarification-v1",
+        )
+
+
+class UnrelatedCommandClarificationInterpreter:
+    async def resolve(
+        self,
+        *,
+        view: CommandClarificationView,
+        user_reply: str,
+    ) -> CommandClarificationResolutionResult:
+        assert user_reply == "write a Python linked-list script"
+        return CommandClarificationResolutionResult(
+            applies_to_pending_request=False,
+            cancel_pending_request=False,
+            extraction=view.extraction.to_result(),
         )
 
 
@@ -561,6 +586,58 @@ async def test_invoice_clarification_reply_resumes_saved_lines_before_agent_cont
     assert resolved.lines[0].item_reference.value == "ABC-123"
     assert resolved.lines[0].quantity == "3"
     assert clarifications.resolved[0]["proposal_id"] == PROPOSAL_ID
+
+
+async def test_standalone_cancel_abandons_pending_invoice_without_calling_models() -> None:
+    model = FakeModel()
+    clarifications = FakeCommandClarifications()
+    outbox = FakeOutbox()
+
+    result = await processor(
+        model=model,
+        conversations=FakeConversations(conversation()),
+        outbox=outbox,
+        events=FakeEvents("@capybababot cancel that"),
+        command_clarifications=clarifications,
+        command_clarification_interpreter=ReceivingCommandClarificationInterpreter(),
+        command_handler=RecordingCommandHandler(),
+        bot_username="capybababot",
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert model.calls == 0
+    assert clarifications.cancelled[0]["request_id"] == COMMAND_CLARIFICATION_ID
+    assert clarifications.resolved == []
+    assert "Request cancelled" in outbox.drafts[0].payload["message"]
+
+
+async def test_unrelated_reply_abandons_pending_invoice_and_reaches_agent() -> None:
+    model = FakeModel()
+    clarifications = FakeCommandClarifications()
+    conversations = FakeConversations(conversation())
+    outbox = FakeOutbox()
+
+    result = await processor(
+        model=model,
+        conversations=conversations,
+        outbox=outbox,
+        events=FakeEvents("write a Python linked-list script"),
+        command_clarifications=clarifications,
+        command_clarification_interpreter=UnrelatedCommandClarificationInterpreter(),
+        command_handler=RecordingCommandHandler(),
+    ).process_next()
+
+    assert result is not None
+    assert result.status is TextEventProcessingStatus.AGENT_MESSAGE
+    assert model.calls == 1
+    assert clarifications.cancelled[0]["request_id"] == COMMAND_CLARIFICATION_ID
+    assert clarifications.resolved == []
+    assert conversations.saved[0]["turn_history"][0] == {
+        "role": "user",
+        "content": "write a Python linked-list script",
+    }
+    assert "inventory assistant" in outbox.drafts[0].payload["message"]
 
 
 async def test_group_bot_mention_is_removed_before_model_and_history() -> None:
