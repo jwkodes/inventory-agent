@@ -28,7 +28,11 @@ from inventory_agent.agent.repository import (
     AgentConversationRepository,
     AgentReadRepository,
 )
-from inventory_agent.agent.runtime import AgentModel, InventoryAgentSession
+from inventory_agent.agent.runtime import (
+    AgentModel,
+    InventoryAgentSession,
+    build_prompt_cache_key,
+)
 from inventory_agent.catalog.details import complete_catalog_item_details
 from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
 from inventory_agent.catalog.models import CatalogItemCreationView
@@ -246,6 +250,7 @@ class TelegramAgentTextEventProcessor:
                 tools=tools,
                 history=active_history,
                 summary=conversation.summary,
+                prompt_cache_key=build_prompt_cache_key(conversation.conversation_id),
             )
             history_start = len(active_history)
             reply = await session.handle(context.message_text, turn_context=turn_context)
@@ -269,6 +274,8 @@ class TelegramAgentTextEventProcessor:
                 response_id=reply.response_id,
                 model_name=reply.model,
                 input_tokens=reply.input_tokens,
+                cached_input_tokens=reply.cached_input_tokens,
+                cache_write_tokens=reply.cache_write_tokens,
                 output_tokens=reply.output_tokens,
                 total_tokens=reply.total_tokens,
             )
@@ -808,6 +815,8 @@ class TelegramAgentTextEventProcessor:
             response_id=f"deterministic-proposal-{action}-{context.event_id}",
             model_name="deterministic-proposal-control",
             input_tokens=0,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
             output_tokens=0,
             total_tokens=0,
         )

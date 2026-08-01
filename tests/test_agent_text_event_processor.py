@@ -74,6 +74,8 @@ class FakeEvents:
 class FakeModel:
     calls: int = 0
     last_input_items: list[dict[str, object]] | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_prefix_item_count: int | None = None
 
     async def respond(
         self,
@@ -81,9 +83,13 @@ class FakeModel:
         input_items: list[dict[str, object]],
         instructions: str,
         tools: list[dict[str, object]],
+        prompt_cache_key: str | None = None,
+        prompt_cache_prefix_item_count: int | None = None,
     ) -> ModelTurn:
         self.calls += 1
         self.last_input_items = input_items
+        self.prompt_cache_key = prompt_cache_key
+        self.prompt_cache_prefix_item_count = prompt_cache_prefix_item_count
         return ModelTurn(
             response_id="response-1",
             model="gpt-test",
@@ -557,6 +563,12 @@ async def test_unrelated_telegram_message_saves_conversation_and_enqueues_new_me
         "content": "tell me a joke",
     }
     assert conversations.saved[0]["estimated_tokens"] > 0
+    assert conversations.saved[0]["cached_input_tokens"] == 0
+    assert conversations.saved[0]["cache_write_tokens"] == 0
+    assert model.prompt_cache_key is not None
+    assert len(model.prompt_cache_key) == 64
+    assert str(CONVERSATION_ID) not in model.prompt_cache_key
+    assert model.prompt_cache_prefix_item_count == 1
     assert outbox.drafts[0].outcome_type is ProcessingOutcomeType.AGENT_MESSAGE
     assert "inventory assistant" in outbox.drafts[0].payload["message"]
     assert events.finished == [(EVENT_ID, True)]

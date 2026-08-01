@@ -79,6 +79,8 @@ async def test_load_and_save_agent_conversation_contract() -> None:
         response_id="resp-1",
         model_name="gpt-test",
         input_tokens=10,
+        cached_input_tokens=6,
+        cache_write_tokens=2,
         output_tokens=5,
         total_tokens=15,
     )
@@ -108,6 +110,8 @@ async def test_load_and_save_agent_conversation_contract() -> None:
     assert str(VARIANT_ID) in save_body
     assert "Here is the stock." in save_body
     assert '"p_estimated_tokens":12' in save_body
+    assert '"p_cached_input_tokens":6' in save_body
+    assert '"p_cache_write_tokens":2' in save_body
     assert requests[2].url.path.endswith("/compact_inventory_agent_conversation")
     compact_body = requests[2].read().decode()
     assert '"p_policy":"discard"' in compact_body

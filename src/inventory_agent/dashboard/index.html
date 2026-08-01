@@ -1047,16 +1047,22 @@
       const activeTurns = state.conversations.reduce((total, row) => total + row.active_turns, 0);
       const compactedTurns = state.conversations.reduce((total, row) => total + row.compacted_turns, 0);
       const tokens = state.conversations.reduce((total, row) => total + row.active_estimated_tokens, 0);
+      const inputTokens = state.conversations.reduce((total, row) => total + row.input_tokens, 0);
+      const cachedTokens = state.conversations.reduce((total, row) => total + row.cached_input_tokens, 0);
+      const cacheWriteTokens = state.conversations.reduce((total, row) => total + row.cache_write_tokens, 0);
+      const cacheHitRate = inputTokens ? `${(cachedTokens * 100 / inputTokens).toFixed(1)}%` : "0.0%";
       $("#conversation-metrics").innerHTML = [
         ["Conversations", state.conversations.length], ["Active turns", activeTurns],
         ["Compacted turns", compactedTurns], ["Active token estimate", number(tokens)],
+        ["Cache hit rate", cacheHitRate], ["Cached input", number(cachedTokens)],
+        ["Cache writes", number(cacheWriteTokens)],
       ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
       $("#conversation-count").textContent = `${state.conversations.length} chats`;
       $("#conversation-list").innerHTML = state.conversations.length ? state.conversations.map(row => `
         <button class="event conversation-event ${state.selectedConversationId === row.id ? "active" : ""}" data-conversation-id="${esc(row.id)}">
           <div class="event-top"><span class="badge">${esc(row.user?.role || "unknown")}</span><span class="event-time">${time(row.updated_at)}</span></div>
           <div class="event-summary">${esc(row.user?.display_name || "Unknown user")}</div>
-          <div class="event-meta">chat ${esc(row.chat_id)} · ${row.history_items} items · ${row.active_estimated_tokens} tokens · ${row.compacted_turns} compacted</div>
+          <div class="event-meta">chat ${esc(row.chat_id)} · ${row.history_items} items · ${row.active_estimated_tokens} context tokens · ${row.cached_input_tokens}/${row.input_tokens} input tokens cached · ${row.cache_write_tokens} cache-write tokens · ${row.compacted_turns} compacted</div>
         </button>`).join("") : `<div class="empty">No conversations yet.</div>`;
       $$(".conversation-event").forEach(button => button.addEventListener("click", () => selectConversation(button.dataset.conversationId)));
     }
@@ -1091,7 +1097,7 @@
         <h4 class="section-title">Current stored history</h4>
         <pre>${esc(pretty(history))}</pre>
         <h4 class="section-title">Active immutable turns</h4>
-        ${data.active_turns.length ? data.active_turns.map(turn => raw(`${time(turn.created_at)} · ${turn.estimated_tokens} estimated tokens`, turn)).join("") : `<p class="hint">No active turn rows.</p>`}
+        ${data.active_turns.length ? data.active_turns.map(turn => raw(`${time(turn.created_at)} · ${turn.estimated_tokens} context tokens · ${turn.cached_input_tokens}/${turn.input_tokens} input cached · ${turn.cache_write_tokens} cache-write tokens`, turn)).join("") : `<p class="hint">No active turn rows.</p>`}
         <h4 class="section-title">Compacted immutable turns</h4>
         ${data.compacted_turns.length ? data.compacted_turns.map(turn => raw(`${time(turn.created_at)} · ${esc(turn.compaction_policy)}`, turn)).join("") : `<p class="hint">No compacted turn rows.</p>`}`;
     }

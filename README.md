@@ -1592,26 +1592,20 @@ lot-function tests. It is development data only and must never be loaded into pr
     - test reordered words, brand phrasing, spelling errors, abbreviations, multiple
       discriminator attributes, true product-family differences, and renaming an existing
       family without breaking transaction history.
-17. OpenAI prompt-cache optimization and observability:
-    - assign a stable, privacy-scoped `prompt_cache_key` to each organization, member, and
-      Telegram chat conversation so unrelated tenants or users never share an application
-      cache identity;
-    - keep stable system instructions, tool definitions, and other reusable prompt content
-      at the beginning of requests, while preventing mutable inventory evidence from
-      invalidating the stable prefix unnecessarily;
-    - evaluate implicit caching against explicit cache breakpoints for the configured
-      OpenAI models, without relying on response storage or treating cached prompts as
-      durable conversation memory;
-    - record input, cached-input, cache-write, output, and total token usage per model call,
-      together with latency and estimated cost where provider pricing is configured;
-    - show cache-hit rate, cached-token savings, cache-write overhead, and misses caused by
-      prompt changes or conversation compaction in the development dashboard;
-    - keep cache identities free of Telegram IDs, names, invite codes, secrets, and other
-      direct personal data by deriving opaque keyed identifiers;
-    - verify that `store=False`, context retention, background summarization, retries,
-      model switching, and prompt-version changes interact safely with caching; and
-    - test cache isolation across companies, members, chats, models, and prompt versions,
-      plus cold starts, cache expiry, compaction boundaries, and identical-prefix reuse.
+17. OpenAI prompt-cache optimization and observability — complete for the main agent:
+    - derive a stable opaque `prompt_cache_key` from the durable conversation and prompt
+      version, without exposing company, Telegram, member, or chat identifiers;
+    - keep instructions and ordered tool definitions in a stable prefix, move the mutable
+      compacted summary into model input, and place an explicit GPT-5.6 cache breakpoint
+      after the stable configuration;
+    - place a second explicit breakpoint on the current user message so later tool rounds
+      can reuse the complete current-turn input prefix while `store=False` remains enabled;
+    - fall back to key-assisted automatic caching when an older configured model does not
+      support explicit breakpoints;
+    - log cache reads and writes per model call, persist their per-turn totals, and display
+      cache-hit and cache-write metrics in the development dashboard; and
+    - retain live cost calibration, expiry testing, and wider cache-hit evaluation across
+      representative production conversation patterns as operational follow-up work.
 18. Authorized catalog maintenance:
     - let authorized users modify existing catalog details from Telegram and the dashboard,
       including adding, correcting, or removing custom attributes and aliases;
