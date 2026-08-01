@@ -64,6 +64,7 @@ class CatalogItemCreationView(BaseModel):
     suggested_tracking_mode: CatalogTrackingMode
     name: str | None = None
     sku: str | None = None
+    sku_deferred: bool = False
     base_unit: str | None = None
     tracking_mode: CatalogTrackingMode | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -98,6 +99,7 @@ class CatalogBatchItemView(BaseModel):
     suggested_tracking_mode: CatalogTrackingMode
     name: str | None = None
     sku: str | None = None
+    sku_deferred: bool = False
     base_unit: str | None = None
     tracking_mode: CatalogTrackingMode | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -148,3 +150,29 @@ class CatalogBatchItemDraft(BaseModel):
     base_unit: str | None = None
     tracking_mode: CatalogTrackingMode | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class CatalogItemEditValues(BaseModel):
+    """Complete catalog metadata snapshot retained for audit and stale-review checks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_name: str
+    variant_name: str | None = None
+    sku: str | None = None
+    description: str | None = None
+    item_attributes: dict[str, Any] = Field(default_factory=dict)
+    variant_attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class CatalogItemEditView(BaseModel):
+    """Before/after projection used by Telegram catalog edit review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: UUID
+    item_variant_id: UUID
+    status: str
+    reason: str
+    before_values: CatalogItemEditValues
+    after_values: CatalogItemEditValues

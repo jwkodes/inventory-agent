@@ -64,6 +64,7 @@ class ProcessingOutcomeType(StrEnum):
     CALLBACK_NOTICE = "callback_notice"
     CATALOG_ITEM_DETAILS_REQUIRED = "catalog_item_details_required"
     CATALOG_ITEM_CONFIRMATION = "catalog_item_confirmation"
+    CATALOG_ITEM_EDIT_CONFIRMATION = "catalog_item_edit_confirmation"
     CATALOG_BATCH_DETAILS_REQUIRED = "catalog_batch_details_required"
     CATALOG_BATCH_CONFIRMATION = "catalog_batch_confirmation"
     REVERSAL_REASON_REQUIRED = "reversal_reason_required"
@@ -81,6 +82,7 @@ class InventoryEventProcessingStatus(StrEnum):
     TRANSACTION_APPLIED = "transaction_applied"
     REVERSAL_CONFIRMATION = "reversal_confirmation"
     CATALOG_ITEM_CONFIRMATION = "catalog_item_confirmation"
+    CATALOG_ITEM_EDIT_CONFIRMATION = "catalog_item_edit_confirmation"
     CATALOG_BATCH_CONFIRMATION = "catalog_batch_confirmation"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNSUPPORTED_COMMAND = "unsupported_command"
@@ -97,6 +99,7 @@ class InventoryEventProcessingResult(BaseModel):
     reversal_request_id: UUID | None = None
     catalog_request_id: UUID | None = None
     catalog_batch_id: UUID | None = None
+    catalog_edit_request_id: UUID | None = None
     outbox_id: UUID | None = None
 
 

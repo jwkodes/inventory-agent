@@ -144,7 +144,7 @@ async def test_agent_runs_reads_then_proposal_then_user_response() -> None:
                 item_name="Widget",
                 sku="ABC-123",
                 on_hand=Decimal("2"),
-            )
+            ),
         ]
     )
 
@@ -162,7 +162,7 @@ async def test_agent_runs_reads_then_proposal_then_user_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_new_item_sku_uses_deterministic_question_without_second_model_call() -> None:
+async def test_explicit_sku_deferral_creates_proposal_and_returns_short_reply() -> None:
     model = FakeModel(
         turns=[
             turn(
@@ -177,6 +177,7 @@ async def test_missing_new_item_sku_uses_deterministic_question_without_second_m
                                 "new_item": {
                                     "name": "MacBook Air M5",
                                     "sku": None,
+                                    "sku_deferred": True,
                                     "base_unit": "each",
                                     "tracking_mode": "simple",
                                     "attributes": [],
@@ -189,7 +190,8 @@ async def test_missing_new_item_sku_uses_deterministic_question_without_second_m
                         "reason": "Apple delivery",
                     },
                 ),
-            )
+            ),
+            turn(2, text="The new product is ready for review without an SKU."),
         ]
     )
     tools = SimulatedInventoryTools(catalog=[])
@@ -197,13 +199,12 @@ async def test_missing_new_item_sku_uses_deterministic_question_without_second_m
 
     reply = await session.handle("No need to record SKU")
 
-    assert reply.text == (
-        "I can't create MacBook Air M5 without an SKU or internal product code yet. "
-        "What code should I use?"
-    )
-    assert len(model.requests) == 1
-    assert tools.proposals == []
-    assert session.history[-1] == {"role": "assistant", "content": reply.text}
+    assert reply.text == "The new product is ready for review without an SKU."
+    assert len(model.requests) == 2
+    assert len(tools.proposals) == 1
+    assert tools.proposals[0].payload["lines"][0]["new_item"]["sku"] is None
+    assert session.history[-1]["role"] == "assistant"
+    assert session.history[-1]["content"][0]["text"] == reply.text
 
 
 @pytest.mark.asyncio

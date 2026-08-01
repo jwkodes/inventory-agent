@@ -10,6 +10,7 @@ from typing import Final
 from pydantic import ValidationError
 
 from inventory_agent.agent.models import (
+    CatalogItemEditArguments,
     CatalogVariant,
     InventoryReadArguments,
     ReversalProposalArguments,
@@ -35,6 +36,16 @@ ATTRIBUTE_SCHEMA: Final[dict[str, object]] = {
     "additionalProperties": False,
 }
 
+ATTRIBUTE_CHANGE_SCHEMA: Final[dict[str, object]] = {
+    "type": "object",
+    "properties": {
+        "key": {"type": "string", "minLength": 1, "maxLength": 100},
+        "value": {"type": ["string", "null"], "maxLength": 1000},
+    },
+    "required": ["key", "value"],
+    "additionalProperties": False,
+}
+
 NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
     "type": "object",
     "properties": {
@@ -42,9 +53,16 @@ NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
         "sku": {
             "type": _nullable("string"),
             "description": (
-                "SKU or internal product code. It is mandatory for a new catalog item in "
-                "the current prototype. A null value is rejected before a proposal is saved "
-                "and causes the application to ask the user for the missing code."
+                "SKU or internal product code. Prompt for it once when missing. Use null "
+                "only after the user explicitly says to create the item without an SKU for "
+                "now; it can be assigned later through a catalog metadata update."
+            ),
+        },
+        "sku_deferred": {
+            "type": "boolean",
+            "description": (
+                "True only when the user explicitly said there is no SKU for now, to skip "
+                "or ignore it, or to assign it later. Otherwise false."
             ),
         },
         "base_unit": {
@@ -59,7 +77,14 @@ NEW_ITEM_SCHEMA: Final[dict[str, object]] = {
         "tracking_mode": {"type": "string", "enum": ["simple"]},
         "attributes": {"type": "array", "items": ATTRIBUTE_SCHEMA},
     },
-    "required": ["name", "sku", "base_unit", "tracking_mode", "attributes"],
+    "required": [
+        "name",
+        "sku",
+        "sku_deferred",
+        "base_unit",
+        "tracking_mode",
+        "attributes",
+    ],
     "additionalProperties": False,
 }
 
@@ -115,8 +140,8 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
         "description": (
             "Create a no-write proposal to receive stock. Existing variant IDs must come "
             "from read_inventory. A new_item is allowed only after the user explicitly "
-            "agrees to add a new catalog item, and its SKU/internal code is currently "
-            "mandatory. Never tell the user that a SKU-less item was accepted. Preserve "
+            "agrees to add a new catalog item. Prompt for its SKU/internal code once when "
+            "missing, but use null if the user explicitly defers it. Preserve "
             "user-provided custom fields in "
             "new_item.attributes; attributes are optional unless a tool explicitly says "
             "the organization requires them. This tool never changes inventory."
@@ -171,6 +196,54 @@ INVENTORY_TOOL_DEFINITIONS: Final[list[dict[str, object]]] = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
             },
             "required": ["query", "limit"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "propose_catalog_update",
+        "description": (
+            "Create a no-write, manager/admin-reviewed request to update catalog metadata "
+            "for one variant returned by read_inventory during this user message. Supported "
+            "fields are item name, variant name, SKU, description, item attributes, and "
+            "variant attributes. A null attribute value removes that attribute. Use "
+            "clear_fields only to clear variant_name or description. This tool never changes "
+            "stock, ledger rows, base unit, or tracking mode."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "variant_id": {"type": "string"},
+                "item_name": {"type": _nullable("string"), "maxLength": 200},
+                "variant_name": {"type": _nullable("string"), "maxLength": 200},
+                "sku": {"type": _nullable("string"), "maxLength": 100},
+                "description": {"type": _nullable("string"), "maxLength": 2000},
+                "clear_fields": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["variant_name", "description"]},
+                },
+                "item_attribute_changes": {
+                    "type": "array",
+                    "items": ATTRIBUTE_CHANGE_SCHEMA,
+                },
+                "variant_attribute_changes": {
+                    "type": "array",
+                    "items": ATTRIBUTE_CHANGE_SCHEMA,
+                },
+                "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            },
+            "required": [
+                "variant_id",
+                "item_name",
+                "variant_name",
+                "sku",
+                "description",
+                "clear_fields",
+                "item_attribute_changes",
+                "variant_attribute_changes",
+                "reason",
+            ],
             "additionalProperties": False,
         },
     },
@@ -238,6 +311,7 @@ class SimulatedInventoryTools:
         self._transaction_refs_by_id: dict[str, str] = {}
         self._results_by_call_id: dict[str, str] = {}
         self.proposals: list[SimulationProposal] = []
+        self.catalog_edits: list[SimulationProposal] = []
 
     async def execute(
         self,
@@ -273,9 +347,30 @@ class SimulatedInventoryTools:
             )
         if name == "read_transactions":
             return self._read_transactions(TransactionReadArguments.model_validate(arguments))
+        if name == "propose_catalog_update":
+            return self._propose_catalog_update(CatalogItemEditArguments.model_validate(arguments))
         if name == "propose_reversal":
             return self._propose_reversal(ReversalProposalArguments.model_validate(arguments))
         return {"ok": False, "error": f"unknown tool: {name}"}
+
+    def _propose_catalog_update(self, arguments: CatalogItemEditArguments) -> dict[str, object]:
+        if arguments.variant_id not in self._seen_variant_ids:
+            raise ValueError(
+                f"variant_id {arguments.variant_id!r} was not returned by read_inventory"
+            )
+        proposal = SimulationProposal(
+            proposal_id=f"sim-catalog-edit-{len(self.catalog_edits) + 1}",
+            operation="CATALOG_UPDATE",
+            payload=arguments.model_dump(mode="json"),
+        )
+        self.catalog_edits.append(proposal)
+        return {
+            "ok": True,
+            "catalog_edit_request_id": proposal.proposal_id,
+            "catalog_changed": False,
+            "inventory_changed": False,
+            "confirmation_required": True,
+        }
 
     def _read_inventory(self, arguments: InventoryReadArguments) -> dict[str, object]:
         requested_attributes = {
@@ -334,7 +429,9 @@ class SimulatedInventoryTools:
         missing_sku_items = [
             line.new_item.name
             for line in arguments.lines
-            if line.new_item is not None and not _present(line.new_item.sku)
+            if line.new_item is not None
+            and line.new_item.sku is None
+            and not line.new_item.sku_deferred
         ]
         if missing_sku_items:
             return new_item_sku_required_result(missing_sku_items)
@@ -432,31 +529,20 @@ class SimulatedInventoryTools:
 
 
 def new_item_sku_required_result(item_names: list[str]) -> dict[str, object]:
-    """Return a deterministic, user-facing block for the current catalog contract."""
+    """Prompt once unless the user explicitly chose to assign the SKU later."""
 
     names = [name.strip() for name in item_names if name.strip()]
-    if len(names) == 1:
-        user_message = (
-            f"I can't create {names[0]} without an SKU or internal product code yet. "
-            "What code should I use?"
-        )
-    else:
-        listed_names = ", ".join(names)
-        user_message = (
-            "I can't create these new catalog items without SKUs or internal product codes "
-            f"yet: {listed_names}. What code should I use for each?"
-        )
+    listed_names = ", ".join(names)
     return {
         "ok": False,
         "error_code": "new_item_sku_required",
-        "error": "New catalog items currently require an SKU or internal product code.",
+        "error": "Ask for an SKU once, or set sku_deferred after an explicit opt-out.",
         "requires_user_input": True,
-        "user_message": user_message,
+        "user_message": (
+            f"What SKU or internal product code should I use for {listed_names}? "
+            "If it does not have one yet, you can say **no SKU for now**."
+        ),
     }
-
-
-def _present(value: str | None) -> bool:
-    return bool(value and value.strip())
 
 
 def _attributes_include(

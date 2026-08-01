@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from inventory_agent.catalog.models import (
     CatalogBatchCreationView,
     CatalogItemCreationView,
+    CatalogItemEditView,
     CatalogTrackingMode,
     ExtractedCatalogAttribute,
 )
@@ -27,7 +28,8 @@ class NewCatalogItemPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    sku: str
+    sku: str | None = None
+    sku_deferred: bool = False
     base_unit: str
     tracking_mode: CatalogTrackingMode
     attributes: list[ExtractedCatalogAttribute] = Field(default_factory=list)
@@ -460,7 +462,7 @@ def _new_item_preview_lines(preview: NewCatalogItemPreview) -> list[str]:
     lines = [
         "🆕 **New catalog product preview**",
         f"Name: {preview.name}",
-        f"SKU: {preview.sku}",
+        f"SKU: {preview.sku or 'Not set yet'}",
         f"Unit: {preview.base_unit}",
     ]
     if preview.attributes:
@@ -518,6 +520,8 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
             f"information:\n{requested}\n\n"
             "You may also include useful attributes. Reply naturally in any format."
         )
+        if not known_sku:
+            request_text += " You can also reply **no SKU for now** to add it later."
     else:
         request_text = (
             f"Catalog details retained: {known_name or 'unnamed item'}"
@@ -558,6 +562,8 @@ def render_catalog_batch_details_prompt(view: CatalogBatchCreationView) -> Confi
             "",
             "Send missing or corrected SKUs in one natural reply. You can refer to line "
             "numbers, or say **generate unique internal SKUs from the descriptions**.",
+            "If these products do not have SKUs yet, reply **no SKUs for now** and add "
+            "them later through catalog updates.",
             "Quantities will not be changed.",
         ]
     )
@@ -590,7 +596,7 @@ def render_catalog_batch_confirmation(
             quantity = format(item.requested_quantity.normalize(), "f")
             unit = f" {item.requested_unit}" if item.requested_unit else ""
             name = item.name or item.suggested_name or "Unnamed item"
-            sku = item.sku or item.suggested_sku or "missing"
+            sku = item.sku or item.suggested_sku or "SKU not set yet"
             text_lines.append(
                 f"{item.line_number}. 🆕 CREATE + ADD {quantity}{unit} — {name} · {sku}"
             )
@@ -603,7 +609,7 @@ def render_catalog_batch_confirmation(
             new_item = item_by_line.get(index)
             if new_item is not None:
                 name = new_item.name or new_item.suggested_name or line.description
-                sku = new_item.sku or new_item.suggested_sku or "missing"
+                sku = new_item.sku or new_item.suggested_sku or "SKU not set yet"
                 text_lines.append(f"{index}. 🆕 CREATE + ADD {quantity}{unit} — {name} · {sku}")
             elif line.user_resolution == "ignored":
                 text_lines.append(f"{index}. 🚫 IGNORE {quantity}{unit} — {line.description}")
@@ -640,7 +646,9 @@ def render_catalog_batch_confirmation(
 def render_catalog_item_confirmation(view: CatalogItemCreationView) -> ConfirmationMessage:
     """Review a complete item draft before catalog creation."""
 
-    if not all((view.name, view.sku, view.base_unit, view.tracking_mode)):
+    if not all((view.name, view.base_unit, view.tracking_mode)) or not (
+        view.sku or view.sku_deferred
+    ):
         raise ValueError("Catalog item confirmation view is incomplete")
     tracking_mode = view.tracking_mode
     if tracking_mode is None:
@@ -648,7 +656,7 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
     text_lines = [
         "📋 **Review and create the new catalog product**",
         f"Name: {view.name}",
-        f"SKU: {view.sku}",
+        f"SKU: {view.sku or 'Not set yet (can be added later)'}",
         f"Unit: {view.base_unit}",
     ]
     if view.attributes:
@@ -674,6 +682,104 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
             ]
         ],
     )
+
+
+def render_catalog_item_edit_confirmation(view: CatalogItemEditView) -> ConfirmationMessage:
+    """Show only changed metadata before applying a catalog-only edit."""
+
+    before = view.before_values
+    after = view.after_values
+    changes: list[str] = []
+    for label, old_value, new_value in (
+        ("Product name", before.item_name, after.item_name),
+        ("Variant name", before.variant_name, after.variant_name),
+        ("SKU", before.sku, after.sku),
+        ("Description", before.description, after.description),
+    ):
+        if old_value != new_value:
+            changes.append(
+                f"• {label}: {_catalog_display_value(old_value)} → "
+                f"{_catalog_display_value(new_value)}"
+            )
+    changes.extend(
+        _catalog_attribute_change_lines(
+            "Item attribute",
+            before.item_attributes,
+            after.item_attributes,
+        )
+    )
+    changes.extend(
+        _catalog_attribute_change_lines(
+            "Variant attribute",
+            before.variant_attributes,
+            after.variant_attributes,
+        )
+    )
+    if not changes:
+        raise ValueError("Catalog item edit confirmation contains no changes")
+    return ConfirmationMessage(
+        text="\n".join(
+            [
+                "📝 **Review catalog product update**",
+                f"Product: {before.item_name} · {before.sku}",
+                "",
+                *changes,
+                "",
+                f"Reason: {view.reason}",
+                "Stock quantities, ledger entries, and original transaction evidence "
+                "will not change.",
+                "Choose **Update product** or **Cancel**.",
+            ]
+        ),
+        inline_keyboard=[
+            [
+                InlineButton(
+                    text="Update product",
+                    callback_data=encode_callback(
+                        CallbackCommand(
+                            CallbackAction.CONFIRM_CATALOG_ITEM_EDIT,
+                            view.request_id,
+                        )
+                    ),
+                ),
+                InlineButton(
+                    text="Cancel",
+                    callback_data=encode_callback(
+                        CallbackCommand(
+                            CallbackAction.CANCEL_CATALOG_ITEM_EDIT,
+                            view.request_id,
+                        )
+                    ),
+                ),
+            ]
+        ],
+    )
+
+
+def _catalog_attribute_change_lines(
+    label: str,
+    before: dict[str, object],
+    after: dict[str, object],
+) -> list[str]:
+    lines: list[str] = []
+    for key in sorted(set(before) | set(after), key=str.casefold):
+        old_value = before.get(key)
+        new_value = after.get(key)
+        if old_value != new_value:
+            lines.append(
+                f"• {label} {key}: {_catalog_display_value(old_value)} → "
+                f"{_catalog_display_value(new_value)}"
+            )
+    return lines
+
+
+def _catalog_display_value(value: object) -> str:
+    if value is None:
+        return "—"
+    rendered = str(value).replace("\n", " ").strip()
+    if len(rendered) > 500:
+        return f"{rendered[:497]}..."
+    return rendered or "—"
 
 
 def render_applied_transaction(

@@ -10,6 +10,7 @@ from inventory_agent.catalog.batch import (
 )
 from inventory_agent.catalog.models import CatalogBatchCreationView
 from inventory_agent.catalog.repository import CatalogItemCreationRepository
+from inventory_agent.catalog.sku import is_explicit_sku_deferral
 from inventory_agent.processing.models import (
     ProcessingOutcomeDraft,
     ProcessingOutcomeType,
@@ -56,6 +57,29 @@ class CatalogBatchReplyHandler:
         if batch_id is None:
             return None
         view = await self._catalog.get_batch_view(batch_id=batch_id)
+        if is_explicit_sku_deferral(context.message_text):
+            await self._catalog.defer_batch_skus(
+                batch_id=batch_id,
+                event_id=context.event_id,
+                actor_id=context.organization_user_id,
+            )
+            outbox_id = await self._outbox.enqueue(
+                ProcessingOutcomeDraft(
+                    organization_id=context.organization_id,
+                    source_event_id=context.event_id,
+                    outcome_type=ProcessingOutcomeType.CATALOG_BATCH_CONFIRMATION,
+                    aggregate_id=batch_id,
+                    chat_id=context.chat_id,
+                    payload={},
+                )
+            )
+            return TextEventProcessingResult(
+                event_id=context.event_id,
+                status=TextEventProcessingStatus.CATALOG_BATCH_CONFIRMATION,
+                chat_id=context.chat_id,
+                catalog_batch_id=batch_id,
+                outbox_id=outbox_id,
+            )
         extraction = await self._interpreter.interpret(
             user_text=context.message_text,
             view=view,

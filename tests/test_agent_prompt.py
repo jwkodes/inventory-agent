@@ -4,7 +4,7 @@ from inventory_agent.agent.prompt import INSTRUCTIONS, PROMPT_VERSION
 
 
 def test_new_item_attributes_are_optional_but_preserved() -> None:
-    assert PROMPT_VERSION == "inventory-agent-spike-v13"
+    assert PROMPT_VERSION == "inventory-agent-spike-v15"
     assert "Custom attributes" in INSTRUCTIONS
     assert "label it optional" in INSTRUCTIONS
     assert "allow the user to skip it" in INSTRUCTIONS
@@ -15,12 +15,14 @@ def test_new_item_attributes_are_optional_but_preserved() -> None:
     assert "similar catalog item" in INSTRUCTIONS
 
 
-def test_new_items_currently_require_sku_and_cannot_be_falsely_accepted() -> None:
+def test_new_item_sku_can_be_explicitly_deferred_but_not_invented() -> None:
     normalized = " ".join(INSTRUCTIONS.split())
-    assert "SKU or internal code is mandatory" in normalized
-    assert "If the user asks to omit it, do not agree" in normalized
-    assert "do not claim that a proposal is ready" in normalized
-    assert "ask what SKU or internal code to use" in normalized
+    assert "ask for it once" in normalized
+    assert "ignore/skip it for now" in normalized
+    assert "new_item.sku=null" in normalized
+    assert "new_item.sku_deferred=true" in normalized
+    assert "Do not repeatedly ask" in normalized
+    assert "Never invent an SKU" in normalized
 
 
 def test_generic_count_units_do_not_trigger_catalog_clarification() -> None:

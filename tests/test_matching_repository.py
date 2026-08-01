@@ -105,7 +105,7 @@ async def test_repository_calls_unfiltered_fallback_browse_rpc() -> None:
                     "item_id": "20000000-0000-0000-0000-000000000001",
                     "item_name": "Anchor Butter 500g",
                     "variant_name": None,
-                    "sku": "BUTTER-ANCHOR-500G",
+                    "sku": None,
                     "base_unit": "each",
                     "tracking_mode": "simple",
                     "match_method": "text_search",
@@ -127,3 +127,4 @@ async def test_repository_calls_unfiltered_fallback_browse_rpc() -> None:
     )
 
     assert candidates[0].match_score == Decimal("0.0100000")
+    assert candidates[0].sku is None

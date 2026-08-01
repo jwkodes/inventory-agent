@@ -31,7 +31,7 @@ class InventoryCandidate(BaseModel):
     item_id: UUID
     item_name: str
     variant_name: str | None
-    sku: str
+    sku: str | None
     base_unit: str
     tracking_mode: TrackingMode
     match_method: CandidateMatchMethod
