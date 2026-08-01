@@ -204,6 +204,7 @@ class FakeCatalog:
 class FakeCatalogInterpreter:
     def __init__(self, details: ExtractedCatalogItemDetails | None = None) -> None:
         self.details = details or ExtractedCatalogItemDetails(
+            applies_to_pending_request=True,
             name=None,
             sku="ZX-999",
             base_unit=None,
@@ -533,6 +534,7 @@ async def test_pending_catalog_request_asks_only_for_missing_information() -> No
         interpreted=AssertionError("command extraction must not run"),
         catalog_request_id=CATALOG_REQUEST_ID,
         catalog_details=ExtractedCatalogItemDetails(
+            applies_to_pending_request=True,
             name=None,
             sku=None,
             base_unit="each",
@@ -548,8 +550,8 @@ async def test_pending_catalog_request_asks_only_for_missing_information() -> No
     assert proposals.drafts == []
     assert outbox.drafts[0].payload == {
         "message": (
-            "I still need SKU or internal product code. "
-            "Reply naturally with the missing information."
+            "❓ **Reply with the missing catalog information**\n"
+            "Please send SKU or internal product code in any format."
         )
     }
 

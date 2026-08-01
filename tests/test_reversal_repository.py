@@ -12,6 +12,7 @@ EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
 REVERSAL_ID = UUID("60000000-0000-0000-0000-000000000002")
+PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
 
 
 async def test_reversal_repository_maps_conversation_and_action_rpcs() -> None:
@@ -20,6 +21,8 @@ async def test_reversal_repository_maps_conversation_and_action_rpcs() -> None:
         "/rest/v1/rpc/begin_transaction_reversal_request": str(REQUEST_ID),
         "/rest/v1/rpc/capture_transaction_reversal_reason": str(REQUEST_ID),
         "/rest/v1/rpc/confirm_transaction_reversal_request": str(REVERSAL_ID),
+        "/rest/v1/rpc/attach_transaction_reversal_replacement": str(PROPOSAL_ID),
+        "/rest/v1/rpc/get_completed_reversal_replacement": str(PROPOSAL_ID),
         "/rest/v1/rpc/cancel_transaction_reversal_request": str(REQUEST_ID),
     }
 
@@ -52,6 +55,21 @@ async def test_reversal_repository_maps_conversation_and_action_rpcs() -> None:
         == REQUEST_ID
     )
     assert await repository.confirm(request_id=REQUEST_ID, actor_id=ACTOR_ID) == REVERSAL_ID
+    assert (
+        await repository.attach_replacement(
+            request_id=REQUEST_ID,
+            proposal_id=PROPOSAL_ID,
+            actor_id=ACTOR_ID,
+        )
+        == PROPOSAL_ID
+    )
+    assert (
+        await repository.get_completed_replacement(
+            request_id=REQUEST_ID,
+            actor_id=ACTOR_ID,
+        )
+        == PROPOSAL_ID
+    )
     assert await repository.cancel(request_id=REQUEST_ID, actor_id=ACTOR_ID) == REQUEST_ID
 
     assert requests[0][1]["p_transaction_id"] == str(TRANSACTION_ID)

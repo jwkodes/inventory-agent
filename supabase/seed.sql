@@ -3,8 +3,8 @@
 insert into public.organizations (id, name, slug, inventory_profile)
 values (
   '10000000-0000-0000-0000-000000000001',
-  'Demo SME',
-  'demo-sme',
+  'Cabybaba Pte Ltd',
+  'cabybaba-pte-ltd',
   'general'
 )
 on conflict (id) do nothing;
@@ -20,8 +20,8 @@ values (
   '11000000-0000-0000-0000-000000000001',
   '10000000-0000-0000-0000-000000000001',
   100000001,
-  'Demo Manager',
-  'manager'
+  'Demo Admin',
+  'admin'
 )
 on conflict (id) do nothing;
 
@@ -113,7 +113,7 @@ values
     '10000000-0000-0000-0000-000000000001',
     'Amoxicillin 500mg',
     'box',
-    'lot'
+    'simple'
   ),
   (
     '20000000-0000-0000-0000-000000000004',
@@ -283,7 +283,7 @@ values
     '10000000-0000-0000-0000-000000000001',
     '12000000-0000-0000-0000-000000000001',
     '21000000-0000-0000-0000-000000000003',
-    '22000000-0000-0000-0000-000000000001',
+    null,
     50
   ),
   (

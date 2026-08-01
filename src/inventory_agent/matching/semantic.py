@@ -1,7 +1,9 @@
 """Embedding-backed semantic inventory candidate retrieval."""
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
+from time import perf_counter
 from typing import Protocol
 from uuid import UUID
 
@@ -10,6 +12,8 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict
 
 from inventory_agent.matching.models import InventoryCandidate
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryEmbeddingDocument(BaseModel):
@@ -54,11 +58,19 @@ class OpenAIEmbeddingProvider:
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
+        started = perf_counter()
         response = await self._client.embeddings.create(
             model=self._model,
             input=list(texts),
             dimensions=self._dimensions,
             encoding_format="float",
+        )
+        logger.info(
+            "component_runtime component=openai_embeddings duration_ms=%.2f model=%s "
+            "input_count=%s",
+            (perf_counter() - started) * 1000,
+            self._model,
+            len(texts),
         )
         ordered = sorted(response.data, key=lambda item: item.index)
         return [item.embedding for item in ordered]

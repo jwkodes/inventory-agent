@@ -31,6 +31,7 @@ async def test_send_message_serializes_inline_keyboard_and_returns_message_id() 
         assert json.loads(request.content) == {
             "chat_id": -100123,
             "text": "Review stock receipt",
+            "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [[{"text": "Confirm", "callback_data": "confirm-data"}]]
             },
@@ -58,6 +59,7 @@ async def test_edit_message_text_can_replace_and_remove_keyboard() -> None:
             "chat_id": -100123,
             "message_id": 77,
             "text": "Inventory updated.",
+            "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": []},
         }
         return httpx.Response(200, json={"ok": True, "result": {"message_id": 77}})
@@ -95,6 +97,173 @@ async def test_edit_message_text_treats_already_applied_edit_as_success() -> Non
         message_id=77,
         text="Inventory updated.",
     )
+
+
+async def test_send_message_safely_renders_bold_markdown_as_telegram_html() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": "Is <b>AMOX-502</b> new &amp; ready?",
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 78}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text="Is **AMOX-502** new & ready?",
+    )
+
+
+async def test_send_message_renders_inline_code_without_leaking_backticks() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "Add <code>SHIRT-BLUE-L</code> and keep <code>A&amp;B&lt;1&gt;</code> literal."
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 78}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text="Add `SHIRT-BLUE-L` and keep `A&B<1>` literal.",
+    )
+
+
+async def test_send_message_safely_renders_both_markdown_italic_styles() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<i>Check this</i> and <i>this too</i>; "
+                "keep item_reference and escaped &lt;data&gt; safe."
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 79}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text="*Check this* and _this too_; keep item_reference and escaped <data> safe.",
+    )
+
+
+async def test_send_message_renders_fenced_inventory_table_as_preformatted_html() -> None:
+    table = (
+        "```text\n"
+        "S/N | ITEM_NAME          | QTY\n"
+        "----|--------------------|----\n"
+        "1   | AMOX-502           |   3\n"
+        "2   | Anchor Butter 500g | 120\n"
+        "```"
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<pre>S/N | ITEM_NAME          | QTY\n"
+                "----|--------------------|----\n"
+                "1   | AMOX-502           |   3\n"
+                "2   | Anchor Butter 500g | 120</pre>"
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 79}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(chat_id=-100123, text=table)
+
+
+async def test_send_message_keeps_code_literal_and_formats_bold_outside_it() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<b>Current stock</b>\n"
+                "<pre>**literal** | A&amp;B | &lt;item&gt;</pre>\n"
+                "Ready &amp; checked"
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 80}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(
+        chat_id=-100123,
+        text=("**Current stock**\n```\n**literal** | A&B | <item>\n```\nReady & checked"),
+    )
+
+
+async def test_send_message_aligns_unsupported_markdown_pipe_tables() -> None:
+    markdown_table = (
+        "| S/N | ITEM_NAME | QTY |\n"
+        "|---:|---|---:|\n"
+        "| 1 | AMOX-502 | 3 boxes |\n"
+        "| 2 | Anchor Butter 500g | 120 each |"
+    )
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "text": (
+                "<pre>S/N | ITEM_NAME          | QTY\n"
+                "----+--------------------+---------\n"
+                "  1 | AMOX-502           |  3 boxes\n"
+                "  2 | Anchor Butter 500g | 120 each</pre>"
+            ),
+            "parse_mode": "HTML",
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 81}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.send_message(chat_id=-100123, text=markdown_table)
+
+
+async def test_remove_inline_keyboard_preserves_message_text() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/bottest-token/editMessageReplyMarkup"
+        assert json.loads(request.content) == {
+            "chat_id": -100123,
+            "message_id": 77,
+            "reply_markup": {"inline_keyboard": []},
+        }
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 77}})
+
+    client = TelegramBotClient(
+        bot_token="test-token",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    await client.remove_inline_keyboard(chat_id=-100123, message_id=77)
 
 
 async def test_download_file_resolves_path_and_returns_bounded_bytes() -> None:

@@ -1,0 +1,1128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inventory Agent · Dev Console</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f5f2e9;
+      --muted: #a8aaad;
+      --faint: #72767c;
+      --canvas: #101214;
+      --panel: #181b1e;
+      --panel-2: #202428;
+      --line: #30353a;
+      --lime: #c9f27b;
+      --cyan: #6dd6d0;
+      --amber: #f2c46d;
+      --red: #ff827d;
+      --blue: #82aaff;
+      --radius: 13px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 88% -12%, rgba(109,214,208,.09), transparent 35rem),
+        var(--canvas);
+      color: var(--ink);
+    }
+    button, select, input { font: inherit; }
+    button { color: inherit; }
+    .shell {
+      display: grid;
+      grid-template-columns: 252px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 25px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(15,17,19,.9);
+      backdrop-filter: blur(18px);
+    }
+    .brand { display: flex; gap: 11px; align-items: center; margin: 0 8px 33px; }
+    .brand-mark {
+      width: 37px; height: 37px; display: grid; place-items: center;
+      color: #101214; background: var(--lime); border-radius: 11px;
+      font-weight: 900; letter-spacing: -.08em;
+      box-shadow: 0 0 32px rgba(201,242,123,.15);
+    }
+    .brand h1 { font-size: 14px; margin: 0; letter-spacing: .02em; }
+    .brand small { display: block; color: var(--muted); margin-top: 2px; font-size: 11px; }
+    nav { display: grid; gap: 7px; }
+    .nav-button {
+      border: 0; background: transparent; color: var(--muted); padding: 11px 12px;
+      border-radius: 9px; text-align: left; cursor: pointer;
+      display: flex; gap: 10px; align-items: center;
+    }
+    .nav-button:hover { color: var(--ink); background: var(--panel); }
+    .nav-button.active { color: var(--ink); background: var(--panel-2); }
+    .nav-icon { width: 18px; color: var(--faint); }
+    .nav-button.active .nav-icon { color: var(--lime); }
+    .aside-foot {
+      position: absolute; left: 26px; right: 26px; bottom: 25px;
+      color: var(--faint); font-size: 11px; line-height: 1.55;
+    }
+    .live-dot {
+      display: inline-block; width: 7px; height: 7px; margin-right: 7px;
+      border-radius: 50%; background: var(--lime);
+      box-shadow: 0 0 0 4px rgba(201,242,123,.08);
+    }
+    main { min-width: 0; padding: 26px clamp(22px, 3vw, 48px) 60px; }
+    .topbar {
+      display: flex; align-items: flex-end; justify-content: space-between;
+      gap: 20px; margin-bottom: 25px;
+    }
+    .eyebrow {
+      margin: 0 0 8px; color: var(--lime); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    }
+    h2 { margin: 0; font-size: clamp(25px, 3vw, 39px); letter-spacing: -.045em; font-weight: 690; }
+    .top-controls { display: flex; gap: 9px; align-items: center; }
+    select, .icon-button, .search {
+      border: 1px solid var(--line); background: var(--panel); border-radius: 9px;
+      color: var(--ink); height: 39px;
+    }
+    select { min-width: 210px; padding: 0 35px 0 12px; }
+    .icon-button { padding: 0 13px; cursor: pointer; }
+    .icon-button:hover { border-color: #4b535a; background: var(--panel-2); }
+    .view { display: none; }
+    .view.active { display: block; }
+    .metric-grid {
+      display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr));
+      gap: 11px; margin-bottom: 17px;
+    }
+    .metric {
+      padding: 16px 17px; border: 1px solid var(--line); background: var(--panel);
+      border-radius: var(--radius);
+    }
+    .metric-label { color: var(--muted); font-size: 11px; }
+    .metric-value { margin-top: 8px; font-size: 25px; letter-spacing: -.04em; }
+    .flow-layout { display: grid; grid-template-columns: minmax(260px, 34%) minmax(0, 1fr); gap: 15px; }
+    .pane {
+      border: 1px solid var(--line); background: rgba(24,27,30,.84);
+      border-radius: var(--radius); min-width: 0; overflow: hidden;
+    }
+    .pane-head {
+      min-height: 54px; padding: 14px 16px; border-bottom: 1px solid var(--line);
+      display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    }
+    .pane-head h3 { margin: 0; font-size: 13px; font-weight: 630; }
+    .count { color: var(--faint); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .event-list { max-height: calc(100vh - 220px); overflow: auto; }
+    .event {
+      width: 100%; border: 0; border-bottom: 1px solid var(--line);
+      background: transparent; padding: 14px 15px; text-align: left; cursor: pointer;
+    }
+    .event:hover { background: rgba(255,255,255,.025); }
+    .event.active { background: rgba(109,214,208,.065); box-shadow: inset 2px 0 var(--cyan); }
+    .event-top { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+    .event-time { margin-left: auto; color: var(--faint); font-size: 10px; }
+    .event-summary {
+      color: #e0ddd5; font-size: 12px; line-height: 1.45;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .event-meta { color: var(--faint); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 7px; }
+    .badge {
+      display: inline-flex; align-items: center; height: 20px; padding: 0 7px;
+      border: 1px solid var(--line); border-radius: 99px;
+      color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+    }
+    .badge.processed, .badge.sent, .badge.applied { color: var(--lime); border-color: rgba(201,242,123,.25); }
+    .badge.processing, .badge.pending_confirmation, .badge.received { color: var(--amber); border-color: rgba(242,196,109,.28); }
+    .badge.failed, .badge.rejected { color: var(--red); border-color: rgba(255,130,125,.28); }
+    .trace { max-height: calc(100vh - 220px); overflow: auto; padding: 17px; }
+    .empty {
+      min-height: 330px; display: grid; place-items: center; padding: 40px;
+      color: var(--faint); text-align: center; line-height: 1.6;
+    }
+    .trace-intro { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+    .trace-intro h3 { margin: 0 0 7px; font-size: 18px; }
+    .trace-intro p { margin: 0; color: var(--muted); font-size: 12px; }
+    .timeline { position: relative; padding-left: 24px; }
+    .timeline::before {
+      content: ""; position: absolute; left: 6px; top: 5px; bottom: 8px;
+      width: 1px; background: var(--line);
+    }
+    .step { position: relative; margin: 0 0 13px; }
+    .step::before {
+      content: ""; position: absolute; left: -22px; top: 18px; width: 9px; height: 9px;
+      border: 2px solid var(--panel); border-radius: 50%; background: var(--cyan);
+      box-shadow: 0 0 0 1px var(--line);
+    }
+    .step.agent::before { background: var(--blue); }
+    .step.match::before { background: var(--amber); }
+    .step.write::before { background: var(--lime); }
+    .step.error::before { background: var(--red); }
+    .card {
+      padding: 14px 15px; border: 1px solid var(--line); background: var(--panel-2);
+      border-radius: 11px;
+    }
+    .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .card-title { font-size: 12px; font-weight: 660; }
+    .card-meta { margin-left: auto; color: var(--faint); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .card p { margin: 6px 0; color: #d5d2ca; font-size: 12px; line-height: 1.52; white-space: pre-wrap; }
+    .kv { display: grid; grid-template-columns: 115px 1fr; gap: 6px 12px; font-size: 11px; line-height: 1.45; }
+    .kv dt { color: var(--faint); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    details { margin-top: 10px; }
+    summary { color: var(--muted); cursor: pointer; font-size: 10px; user-select: none; }
+    pre {
+      margin: 10px 0 0; padding: 12px; max-height: 340px; overflow: auto;
+      border-radius: 8px; background: #111315; color: #c9d1d9;
+      font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .tool {
+      margin-top: 8px; padding: 10px 11px; border-left: 2px solid var(--blue);
+      background: rgba(130,170,255,.045); border-radius: 0 8px 8px 0;
+    }
+    .tool-name { color: var(--blue); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .table-pane { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; min-width: 830px; background: rgba(24,27,30,.84); }
+    th {
+      position: sticky; top: 0; z-index: 1; background: #1b1f22; color: var(--faint);
+      text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line);
+      font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+    }
+    td { padding: 13px 14px; border-bottom: 1px solid var(--line); font-size: 11px; vertical-align: top; }
+    tr:hover td { background: rgba(255,255,255,.018); }
+    .sku { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--cyan); }
+    .qty { font-size: 16px; font-weight: 680; }
+    .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip {
+      padding: 3px 6px; border-radius: 5px; background: #292e32;
+      color: var(--muted); font-size: 9px;
+    }
+    .prompt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+    .prompt-card {
+      border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius);
+      padding: 17px; min-width: 0;
+    }
+    .prompt-card h3 { font-size: 14px; margin: 0; }
+    .prompt-meta { display: flex; gap: 6px; margin: 9px 0 12px; }
+    .prompt-copy { max-height: 180px; overflow: auto; color: var(--muted); font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    .config-strip {
+      display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 15px;
+      padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+    }
+    .settings-layout { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(0, 1.2fr); gap: 15px; }
+    .settings-body { padding: 18px; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+    label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; }
+    label input, label select {
+      width: 100%; min-width: 0; padding: 0 11px;
+      border: 1px solid var(--line); background: #121416; border-radius: 8px;
+      color: var(--ink); height: 40px;
+    }
+    .actions { display: flex; align-items: center; gap: 8px; margin-top: 17px; }
+    .primary { background: var(--lime); color: #101214; border-color: var(--lime); font-weight: 700; }
+    .primary:hover { background: #d7ff8d; border-color: #d7ff8d; }
+    .danger { color: #ffc1be; border-color: rgba(255,130,125,.42); background: rgba(255,130,125,.08); font-weight: 700; }
+    .danger:hover { border-color: var(--red); background: rgba(255,130,125,.14); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .hint { color: var(--faint); font-size: 10px; line-height: 1.55; }
+    .setting-row {
+      display: grid; grid-template-columns: minmax(160px, 1fr) minmax(110px, .6fr) auto;
+      gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); align-items: center;
+      font-size: 11px;
+    }
+    .audit-list, .conversation-list { max-height: calc(100vh - 280px); overflow: auto; }
+    .conversation-layout { display: grid; grid-template-columns: minmax(280px, 32%) minmax(0, 1fr); gap: 15px; }
+    .conversation-detail { max-height: calc(100vh - 220px); overflow: auto; padding: 17px; }
+    .section-title { margin: 20px 0 9px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .summary-box {
+      padding: 13px; border: 1px solid rgba(109,214,208,.2);
+      border-radius: 9px; background: rgba(109,214,208,.045); color: #d8e9e6;
+      font-size: 11px; line-height: 1.55; white-space: pre-wrap;
+    }
+    .health-grid {
+      display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 11px; margin-bottom: 15px;
+    }
+    .health-card {
+      padding: 15px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .health-card.healthy { border-color: rgba(201,242,123,.28); }
+    .health-card.error { border-color: rgba(255,130,125,.32); }
+    .health-head { display: flex; align-items: center; gap: 8px; font-size: 12px; text-transform: capitalize; }
+    .health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px rgba(255,130,125,.07); }
+    .healthy .health-dot { background: var(--lime); box-shadow: 0 0 0 4px rgba(201,242,123,.07); }
+    .health-detail { min-height: 34px; margin-top: 10px; color: var(--faint); font-size: 10px; line-height: 1.55; }
+    .service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+    .service-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+    .loading::after {
+      content: ""; display: inline-block; width: 11px; height: 11px; margin-left: 9px;
+      border: 2px solid var(--line); border-top-color: var(--lime); border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    .error-banner {
+      margin-bottom: 14px; padding: 12px 14px; border: 1px solid rgba(255,130,125,.35);
+      border-radius: 9px; background: rgba(255,130,125,.07); color: #ffc1be; font-size: 11px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { position: static; height: auto; display: flex; align-items: center; padding: 14px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .brand { margin: 0 20px 0 0; }
+      nav { display: flex; }
+      .nav-button { font-size: 0; }
+      .nav-icon { font-size: 14px; }
+      .aside-foot { display: none; }
+      .flow-layout { grid-template-columns: 1fr; }
+      .event-list, .trace { max-height: none; }
+      .event-list { max-height: 310px; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .prompt-grid { grid-template-columns: 1fr; }
+      .settings-layout, .conversation-layout { grid-template-columns: 1fr; }
+      .field-grid { grid-template-columns: 1fr; }
+      .health-grid { grid-template-columns: repeat(2, 1fr); }
+      .service-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <div class="brand-mark">IA</div>
+        <div><h1>Inventory Agent</h1><small>development console</small></div>
+      </div>
+      <nav>
+        <button class="nav-button active" data-view="flow"><span class="nav-icon">⌁</span>Flow inspector</button>
+        <button class="nav-button" data-view="inventory"><span class="nav-icon">▦</span>Inventory</button>
+        <button class="nav-button" data-view="members"><span class="nav-icon">♙</span>Members</button>
+        <button class="nav-button" data-view="system"><span class="nav-icon">◉</span>App health</button>
+        <button class="nav-button" data-view="conversations"><span class="nav-icon">◫</span>Conversations</button>
+        <button class="nav-button" data-view="config"><span class="nav-icon">⚙</span>Configuration</button>
+        <button class="nav-button" data-view="prompts"><span class="nav-icon">⌘</span>Models & prompts</button>
+      </nav>
+      <div class="aside-foot"><span class="live-dot"></span>Local development console<br>Secrets remain server-side</div>
+    </aside>
+    <main>
+      <div class="topbar">
+        <div><p class="eyebrow" id="eyebrow">Observe · inspect · explain</p><h2 id="page-title">Flow inspector</h2></div>
+        <div class="top-controls">
+          <select id="organization" aria-label="Organization"></select>
+          <button class="icon-button" id="refresh" title="Refresh">↻ Refresh</button>
+        </div>
+      </div>
+      <div id="error"></div>
+
+      <section class="view active" id="flow-view">
+        <div class="metric-grid" id="flow-metrics"></div>
+        <div class="flow-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Telegram events</h3><span class="count" id="event-count">—</span></div>
+            <div class="event-list" id="event-list"><div class="empty loading">Loading events</div></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Execution trace</h3><span class="count">raw + interpreted</span></div>
+            <div class="trace" id="trace"><div class="empty">Select an event to inspect every durable layer.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="inventory-view">
+        <div class="metric-grid" id="inventory-metrics"></div>
+        <div class="table-pane"><table>
+          <thead><tr><th>SKU / item</th><th>On hand</th><th>Base unit</th><th>Tracking</th><th>Attributes</th><th>Locations</th><th>Conversions</th></tr></thead>
+          <tbody id="inventory-body"></tbody>
+        </table></div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Recent immutable transactions</h3><span class="count">latest 50</span></div>
+          <div id="transactions"></div>
+        </div>
+        <div class="pane" style="margin-top:15px;border-color:rgba(255,130,125,.3)">
+          <div class="pane-head"><h3>Danger zone</h3><span class="count">selected company only</span></div>
+          <div class="settings-body">
+            <p class="hint">Delete this company’s catalog, stock, transactions, proposals, Telegram event history, and agent conversations. Members, roles, locations, custom fields, registration, and company settings are preserved.</p>
+            <button class="icon-button danger" id="reset-inventory" type="button">Reset inventory test data</button>
+            <div id="reset-result"></div>
+            <div id="reset-history"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="members-view">
+        <div class="metric-grid" id="member-metrics"></div>
+        <div class="settings-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Create registration invite</h3><span class="count">code shown once</span></div>
+            <form class="settings-body" id="invite-form">
+              <div class="field-grid">
+                <label>Expires after
+                  <select id="invite-hours">
+                    <option value="24">24 hours</option>
+                    <option value="72" selected>3 days</option>
+                    <option value="168">7 days</option>
+                    <option value="720">30 days</option>
+                  </select>
+                </label>
+                <label>Maximum uses<input id="invite-uses" type="number" min="1" max="1000" value="1" required></label>
+              </div>
+              <p class="hint">Send the command privately. Only its SHA-256 hash is stored.</p>
+              <button class="icon-button primary" type="submit">Generate invite</button>
+              <div id="new-invite"></div>
+            </form>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Recent invite records</h3><span class="count" id="invite-count">—</span></div>
+            <div class="settings-body" id="invite-list"></div>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Registration requests</h3><span class="count" id="request-count">—</span></div>
+          <div class="table-pane" style="border:0;border-radius:0"><table>
+            <thead><tr><th>Applicant</th><th>Telegram</th><th>Submitted</th><th>Status</th><th>Role</th><th>Decision</th></tr></thead>
+            <tbody id="registration-request-body"></tbody>
+          </table></div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Company members</h3><span class="count" id="member-count">—</span></div>
+          <div class="table-pane" style="border:0;border-radius:0"><table>
+            <thead><tr><th>Name</th><th>Telegram user ID</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead>
+            <tbody id="member-body"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section class="view" id="system-view">
+        <div class="health-grid" id="health-grid"><div class="empty loading">Checking components</div></div>
+        <div class="pane" style="margin-bottom:15px">
+          <div class="pane-head"><h3>Application controls</h3><span class="count">localhost only · fixed commands</span></div>
+          <div class="settings-body">
+            <div class="service-actions">
+              <button class="icon-button primary system-command" data-action="start" data-service="all"
+                title="Start the Telegram receiver/dashboard and the inventory message processor if either is stopped."
+                aria-label="Start the complete application">Start app</button>
+              <button class="icon-button system-command" data-action="restart" data-service="all"
+                title="Restart both application processes. Supabase, ngrok and the supervisor stay running."
+                aria-label="Restart the complete application">Restart app</button>
+              <button class="icon-button system-command" data-action="restart" data-service="api"
+                title="Restart only the web process that receives Telegram updates and serves this dashboard."
+                aria-label="Restart the Telegram receiver and dashboard">Restart receiver</button>
+              <button class="icon-button system-command" data-action="restart" data-service="worker"
+                title="Restart only the process that calls models, handles inventory work and sends Telegram replies."
+                aria-label="Restart the inventory message processor">Restart processor</button>
+              <button class="icon-button system-command" data-action="stop" data-service="worker"
+                title="Pause new message processing while leaving Telegram ingestion and the dashboard available."
+                aria-label="Pause the inventory message processor">Pause processing</button>
+            </div>
+            <p class="hint" id="system-hint">Loading supervisor status…</p>
+          </div>
+        </div>
+        <div class="service-grid" id="service-grid"></div>
+      </section>
+
+      <section class="view" id="prompts-view">
+        <div class="config-strip" id="configuration"></div>
+        <div class="prompt-grid" id="prompt-grid"><div class="empty loading">Loading model contracts</div></div>
+      </section>
+
+      <section class="view" id="conversations-view">
+        <div class="metric-grid" id="conversation-metrics"></div>
+        <div class="conversation-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Company users & chats</h3><span class="count" id="conversation-count">—</span></div>
+            <div class="conversation-list" id="conversation-list"><div class="empty loading">Loading conversations</div></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Stored model context</h3><span class="count">active + compacted</span></div>
+            <div class="conversation-detail" id="conversation-detail"><div class="empty">Select a user conversation.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="config-view">
+        <div class="settings-layout">
+          <div class="pane">
+            <div class="pane-head"><h3>Conversation context</h3><span class="count" id="config-source">—</span></div>
+            <form class="settings-body" id="context-form">
+              <div class="field-grid">
+                <label>Retention policy
+                  <select id="context-policy"><option value="summarize">Summarize</option><option value="discard">Discard</option></select>
+                </label>
+                <label>Retention days<input id="context-days" type="number" min="1" required></label>
+                <label>Approximate token limit<input id="context-tokens" type="number" min="1" required></label>
+                <label>History item limit<input id="context-items" type="number" min="1" max="350" required></label>
+              </div>
+              <p class="hint" id="config-hint"></p>
+              <div class="actions">
+                <button class="icon-button primary" id="save-context" type="submit">Save company override</button>
+                <button class="icon-button" id="reset-context" type="button">Use app defaults</button>
+              </div>
+            </form>
+          </div>
+          <div class="pane">
+            <div class="pane-head"><h3>Other runtime parameters</h3><span class="count">view only · restart to change</span></div>
+            <div class="settings-body" id="runtime-settings"></div>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Model assignments and invocation</h3><span class="count">current runtime · view only</span></div>
+          <div class="table-pane" style="border:0;border-radius:0">
+            <table>
+              <thead><tr><th>Component</th><th>Status</th><th>Model</th><th>Effort</th><th>When called</th><th>Action</th></tr></thead>
+              <tbody id="model-assignments"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pane" style="margin-top:15px">
+          <div class="pane-head"><h3>Configuration audit</h3><span class="count">latest 30</span></div>
+          <div class="audit-list" id="config-audit"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const state = {
+      view: "flow", organizationId: null, events: [], selectedEventId: null,
+      inventory: null, prompts: null, configuration: null, conversations: [],
+      selectedConversationId: null, system: null, memberships: null, organizations: [],
+    };
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+    const esc = (value) => String(value ?? "")
+      .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+    const pretty = (value) => JSON.stringify(value, null, 2);
+    const shortId = (value) => value ? String(value).slice(0, 8) : "—";
+    const number = (value) => new Intl.NumberFormat(undefined, {maximumFractionDigits: 4}).format(Number(value || 0));
+    const time = (value) => value ? new Date(value).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "—";
+    const badge = (value) => `<span class="badge ${esc(value)}">${esc(value || "unknown")}</span>`;
+    const raw = (label, value) => `<details><summary>${esc(label)}</summary><pre>${esc(pretty(value))}</pre></details>`;
+    const attrs = (value) => {
+      const entries = Object.entries(value || {});
+      return entries.length ? `<div class="chips">${entries.map(([k,v]) => `<span class="chip">${esc(k)} · ${esc(v)}</span>`).join("")}</div>` : `<span style="color:var(--faint)">—</span>`;
+    };
+
+    async function api(path, options = {}) {
+      const url = new URL(path, window.location.origin);
+      const request = {credentials: "same-origin", ...options};
+      if (request.body && typeof request.body !== "string") {
+        request.headers = {...request.headers, "Content-Type": "application/json"};
+        request.body = JSON.stringify(request.body);
+      }
+      const response = await fetch(url, request);
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try { detail = (await response.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    function showError(error) {
+      $("#error").innerHTML = error ? `<div class="error-banner">${esc(error.message || error)}</div>` : "";
+    }
+
+    function setView(view) {
+      state.view = view;
+      $$(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
+      $$(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
+      const titles = {
+        flow:"Flow inspector", inventory:"Inventory", members:"Members & registration",
+        system:"App health & controls", conversations:"Conversations",
+        config:"Configuration", prompts:"Models & prompts",
+      };
+      const brows = {
+        flow:"Observe · inspect · explain", inventory:"Catalog · balances · ledger",
+        members:"Invite · approve · assign roles",
+        system:"Health · receiver · message processor",
+        conversations:"Company · user · durable context",
+        config:"Effective values · safe overrides · audit",
+        prompts:"Contracts · configuration · grounding",
+      };
+      $("#page-title").textContent = titles[view];
+      $("#eyebrow").textContent = brows[view];
+      if (view === "inventory" && !state.inventory) loadInventory();
+      if (view === "members" && !state.memberships) loadMemberships();
+      if (view === "system" && !state.system) loadSystem();
+      if (view === "conversations" && !state.conversations.length) loadConversations();
+      if (view === "config" && !state.configuration) loadConfiguration();
+      if (view === "prompts" && !state.prompts) loadPrompts();
+    }
+
+    async function boot() {
+      try {
+        const data = await api("/dev/api/organizations");
+        state.organizations = data.organizations;
+        const select = $("#organization");
+        select.innerHTML = data.organizations.map(org => `<option value="${esc(org.id)}">${esc(org.name)} · ${esc(org.inventory_profile)}</option>`).join("");
+        if (!data.organizations.length) throw new Error("No organizations are available.");
+        state.organizationId = data.organizations[0].id;
+        await loadCurrentView();
+      } catch (error) { showError(error); }
+    }
+
+    async function loadCurrentView() {
+      if (state.view === "flow") await loadEvents();
+      if (state.view === "inventory") await loadInventory();
+      if (state.view === "members") await loadMemberships();
+      if (state.view === "system") await loadSystem();
+      if (state.view === "conversations") await loadConversations();
+      if (state.view === "config") await loadConfiguration();
+      if (state.view === "prompts") await loadPrompts();
+    }
+
+    async function loadEvents(selectFirst = true) {
+      if (!state.organizationId) return;
+      showError(null);
+      $("#event-list").innerHTML = `<div class="empty loading">Loading events</div>`;
+      try {
+        const data = await api(`/dev/api/events?organization_id=${encodeURIComponent(state.organizationId)}&limit=100`);
+        state.events = data.events;
+        renderEvents();
+        renderFlowMetrics();
+        if (selectFirst && state.events.length) await selectEvent(state.events[0].id);
+      } catch (error) { showError(error); }
+    }
+
+    function renderFlowMetrics() {
+      const failed = state.events.filter(event => event.status === "failed").length;
+      const callbacks = state.events.filter(event => event.event_type === "callback_query").length;
+      const processing = state.events.filter(event => ["received","processing"].includes(event.status)).length;
+      $("#flow-metrics").innerHTML = [
+        ["Events loaded", state.events.length],
+        ["Button actions", callbacks],
+        ["In flight", processing],
+        ["Failed", failed],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+    }
+
+    function renderEvents() {
+      $("#event-count").textContent = `${state.events.length} loaded`;
+      $("#event-list").innerHTML = state.events.length ? state.events.map(event => `
+        <button class="event ${state.selectedEventId === event.id ? "active" : ""}" data-event-id="${esc(event.id)}">
+          <div class="event-top">${badge(event.status)}<span class="badge">${esc(event.event_type)}</span><span class="event-time">${time(event.received_at)}</span></div>
+          <div class="event-summary">${esc(event.summary)}</div>
+          <div class="event-meta">event ${shortId(event.id)} · msg ${esc(event.telegram_message_id || "—")} · attempt ${esc(event.processing_attempts || 0)}</div>
+        </button>`).join("") : `<div class="empty">No events yet.</div>`;
+      $$(".event").forEach(button => button.addEventListener("click", () => selectEvent(button.dataset.eventId)));
+    }
+
+    async function selectEvent(eventId) {
+      state.selectedEventId = eventId;
+      renderEvents();
+      $("#trace").innerHTML = `<div class="empty loading">Building trace</div>`;
+      try {
+        const flow = await api(`/dev/api/events/${eventId}`);
+        renderTrace(flow);
+      } catch (error) {
+        $("#trace").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+      }
+    }
+
+    function renderTrace(flow) {
+      const event = flow.event;
+      const steps = [];
+      steps.push(step("ingress", "Telegram ingress", `
+        <div class="kv"><dt>Type</dt><dd>${badge(event.event_type)}</dd><dt>Status</dt><dd>${badge(event.status)}</dd>
+        <dt>Received</dt><dd>${time(event.received_at)}</dd><dt>Attempts</dt><dd>${esc(event.processing_attempts || 0)}</dd>
+        <dt>External ID</dt><dd>${esc(event.external_event_id)}</dd>
+        ${event.callback ? `<dt>Action</dt><dd>${esc(event.callback.label)}</dd><dt>Target</dt><dd>${esc(event.callback.target_id || "—")}</dd>` : ""}</div>
+        <p>${esc(event.summary)}</p>${event.error_message ? `<p style="color:var(--red)">${esc(event.error_message)}</p>` : ""}
+        ${raw("Raw Telegram payload", event.payload)}`, event.status === "failed" ? "error" : ""));
+
+      if (flow.artifacts?.length) {
+        steps.push(step("artifact", "Source artifact", flow.artifacts.map(artifact => `
+          <div class="kv"><dt>Media</dt><dd>${esc(artifact.media_type)}</dd><dt>SHA-256</dt><dd>${esc(artifact.sha256 || "—")}</dd>
+          <dt>Storage</dt><dd>${esc(artifact.storage_bucket)}/${esc(artifact.storage_path)}</dd></div>
+          ${artifact.transcript ? `<p>${esc(artifact.transcript)}</p>` : ""}${raw("Artifact metadata", artifact.metadata)}`).join(""), ""));
+      }
+
+      if (flow.conversation) {
+        const conversation = flow.conversation;
+        const turns = Array.isArray(flow.conversation_turns) ? flow.conversation_turns : [];
+        const activeTurns = turns.filter(turn => !turn.compacted_at);
+        const compactedTurns = turns.filter(turn => turn.compacted_at);
+        const history = Array.isArray(conversation.history) ? conversation.history : [];
+        const recent = history.slice(-14);
+        const exactTurn = conversation.last_source_event_id === event.id;
+        const exchanges = recent.map(item => {
+          if (item.type === "function_call") {
+            return `<div class="tool"><div class="tool-name">→ ${esc(item.name)} · ${esc(item.call_id)}</div>${raw("Arguments", parseMaybe(item.arguments))}</div>`;
+          }
+          if (item.type === "function_call_output") {
+            return `<div class="tool"><div class="tool-name">← tool output · ${esc(item.call_id)}</div>${raw("Output", parseMaybe(item.output))}</div>`;
+          }
+          const role = item.role || item.type || "model";
+          const content = textContent(item);
+          return `<div class="tool" style="border-color:${role === "user" ? "var(--cyan)" : "var(--blue)"}"><div class="tool-name">${esc(role)}</div><p>${esc(content)}</p>${raw("Message object", item)}</div>`;
+        }).join("");
+        steps.push(step("agent", exactTurn ? "LLM input, tools & output" : "Persisted conversation context", `
+          <div class="kv"><dt>Model</dt><dd>${esc(conversation.model_name || "—")}</dd><dt>Response ID</dt><dd>${esc(conversation.last_response_id || "—")}</dd>
+          <dt>Conversation</dt><dd>${esc(conversation.id)}</dd><dt>Active history items</dt><dd>${history.length}</dd>
+          <dt>Active turns</dt><dd>${activeTurns.length}</dd><dt>Compacted turns</dt><dd>${compactedTurns.length}</dd></div>
+          <p style="color:var(--muted)">${exactTurn ? "This snapshot ends at the selected model turn." : "This event did not run the main agent. The latest context for the same Telegram chat is shown for reference."}</p>
+          ${conversation.summary ? `<div class="tool" style="border-color:var(--violet)"><div class="tool-name">Rolling summary</div><p>${esc(conversation.summary)}</p></div>` : ""}
+          ${exchanges}${raw("Complete active model history", history)}
+          ${raw("Immutable turn audit (latest 200)", turns)}`, "agent"));
+      }
+
+      (flow.proposals || []).forEach(proposal => {
+        const lines = proposal.proposal_lines || [];
+        const lineHtml = lines.map(line => `
+          <div class="tool" style="border-color:var(--amber)"><div class="tool-name">line ${line.line_number} · ${esc(line.match_method || "unresolved")}</div>
+          <p>${esc(line.requested_quantity)} ${esc(line.requested_unit || "")} · ${esc(line.extracted_description || line.source_text)}</p>
+          <div class="kv"><dt>Variant</dt><dd>${esc(line.item_variant_id || "not resolved")}</dd><dt>Score</dt><dd>${esc(line.match_score || "—")}</dd>
+          <dt>Base delta</dt><dd>${esc(line.base_quantity_delta || "—")} ${esc(line.base_unit || "")}</dd></div>
+          ${attrs(line.attributes)}${raw("Match evidence", line.match_evidence)}</div>`).join("");
+        steps.push(step("proposal", "Proposal & matching", `
+          <div class="kv"><dt>Intent</dt><dd>${esc(proposal.intent)}</dd><dt>Status</dt><dd>${badge(proposal.status)}</dd>
+          <dt>Model</dt><dd>${esc(proposal.model_name || "—")}</dd><dt>Prompt version</dt><dd>${esc(proposal.prompt_version || "—")}</dd>
+          <dt>Proposal ID</dt><dd>${esc(proposal.id)}</dd></div>${lineHtml}${raw("Structured command", proposal.raw_command)}`, "match"));
+      });
+
+      (flow.clarifications || []).forEach(request => steps.push(step("clarify", "Match clarification", `
+        <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Question</dt><dd>${esc(request.question)}</dd>
+        <dt>Turns</dt><dd>${esc(request.turn_count)}</dd></div>${attrs(request.accumulated_attributes)}${raw("Replies", request.clarification_replies)}`, "match")));
+
+      (flow.command_clarifications || []).forEach(request => steps.push(step("clarify", "Input clarification", `
+        <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Question</dt><dd>${esc(request.question)}</dd>
+        <dt>Source event</dt><dd>${esc(request.source_event_id)}</dd><dt>Proposal</dt><dd>${esc(request.proposal_id || "—")}</dd></div>
+        ${raw("Preserved extraction", request.extraction)}${raw("Replies", request.clarification_replies)}`, "match")));
+
+      (flow.catalog_requests || []).forEach(request => steps.push(step("catalog", "Catalog item workflow", `
+        <div class="kv"><dt>Status</dt><dd>${badge(request.status)}</dd><dt>Name</dt><dd>${esc(request.name || request.suggested_name)}</dd>
+        <dt>SKU</dt><dd>${esc(request.sku || request.suggested_sku)}</dd><dt>Base unit</dt><dd>${esc(request.base_unit || request.suggested_base_unit)}</dd>
+        <dt>Tracking</dt><dd>${esc(request.tracking_mode || request.suggested_tracking_mode)}</dd></div>${attrs(request.attributes)}${raw("Catalog request", request)}`, "write")));
+
+      (flow.catalog_batches || []).forEach(batch => steps.push(step("catalog", "Bulk catalog workflow", `
+        <div class="kv"><dt>Status</dt><dd>${badge(batch.status)}</dd><dt>Batch</dt><dd>${esc(batch.id)}</dd>
+        <dt>Proposal</dt><dd>${esc(batch.proposal_id)}</dd><dt>Requested by</dt><dd>${esc(batch.requested_by)}</dd></div>
+        ${raw("Batch state", batch)}`, "write")));
+
+      (flow.outbox || []).forEach(outcome => steps.push(step("outbox", "Telegram outbox", `
+        <div class="kv"><dt>Outcome</dt><dd>${esc(outcome.outcome_type)}</dd><dt>Status</dt><dd>${badge(outcome.status)}</dd>
+        <dt>Attempts</dt><dd>${esc(outcome.attempts)}</dd><dt>Sent</dt><dd>${time(outcome.sent_at)}</dd>
+        <dt>Aggregate</dt><dd>${esc(outcome.aggregate_id || "—")}</dd></div>${outcome.error_message ? `<p style="color:var(--red)">${esc(outcome.error_message)}</p>` : ""}${raw("Outbound payload", outcome.payload)}`, outcome.status === "failed" ? "error" : "")));
+
+      (flow.transactions || []).forEach(transaction => {
+        const lines = (flow.transaction_lines || []).filter(line => line.transaction_id === transaction.id);
+        steps.push(step("transaction", "Immutable inventory transaction", `
+          <div class="kv"><dt>Type</dt><dd>${esc(transaction.transaction_type)}</dd><dt>Status</dt><dd>${badge(transaction.status)}</dd>
+          <dt>Applied</dt><dd>${time(transaction.applied_at)}</dd><dt>Transaction ID</dt><dd>${esc(transaction.id)}</dd></div>
+          ${lines.map(line => `<div class="tool" style="border-color:var(--lime)"><div class="tool-name">stock movement</div><p>${esc(line.quantity_before)} → ${esc(line.quantity_after)} (${Number(line.quantity_delta) >= 0 ? "+" : ""}${esc(line.quantity_delta)} ${esc(line.base_unit)})</p>${raw("Transaction line", line)}</div>`).join("")}`, "write"));
+      });
+
+      $("#trace").innerHTML = `
+        <div class="trace-intro"><div><h3>${esc(event.summary)}</h3><p>${esc(event.event_type)} · ${time(event.received_at)}</p></div>${badge(event.status)}</div>
+        <div class="timeline">${steps.join("")}</div>`;
+    }
+
+    function step(key, title, body, kind) {
+      return `<div class="step ${kind || ""}"><div class="card"><div class="card-head"><span class="card-title">${esc(title)}</span><span class="card-meta">${esc(key)}</span></div>${body}</div></div>`;
+    }
+    function parseMaybe(value) {
+      if (typeof value !== "string") return value;
+      try { return JSON.parse(value); } catch (_) { return value; }
+    }
+    function textContent(item) {
+      if (typeof item.content === "string") return item.content;
+      if (!Array.isArray(item.content)) return "";
+      return item.content.map(part => part.text || part.output_text || part.refusal || "").filter(Boolean).join("\n");
+    }
+
+    async function loadInventory() {
+      if (!state.organizationId) return;
+      try {
+        state.inventory = await api(`/dev/api/inventory?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderInventory();
+      } catch (error) { showError(error); }
+    }
+    function renderInventory() {
+      const data = state.inventory;
+      const m = data.metrics;
+      $("#inventory-metrics").innerHTML = [
+        ["Active SKUs", m.active_skus], ["Total on hand", number(m.total_on_hand)],
+        ["Locations", m.locations], ["Recent transactions", m.transactions],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+      $("#inventory-body").innerHTML = data.items.map(row => {
+        const item = row.item || {};
+        return `<tr><td><div class="sku">${esc(row.sku)}</div><div style="margin-top:5px">${esc(item.name)}${row.name ? ` · ${esc(row.name)}` : ""}</div></td>
+          <td><span class="qty">${number(row.on_hand)}</span></td><td>${esc(item.base_unit)}</td><td>${badge(item.tracking_mode)}</td>
+          <td>${attrs({...item.attributes, ...row.attributes})}</td>
+          <td>${row.balances.length ? row.balances.map(balance => `<div>${esc(balance.location?.name || shortId(balance.location_id))} · <b>${number(balance.quantity)}</b></div>`).join("") : "—"}</td>
+          <td>${row.conversions.length ? row.conversions.map(c => `<div>1 ${esc(c.from_unit)} = ${number(c.factor_to_base)} ${esc(item.base_unit)}</div>`).join("") : "—"}</td></tr>`;
+      }).join("");
+      const linesByTx = Object.groupBy ? Object.groupBy(data.transaction_lines, line => line.transaction_id) : data.transaction_lines.reduce((a,line) => ((a[line.transaction_id] ||= []).push(line), a), {});
+      $("#transactions").innerHTML = data.transactions.length ? data.transactions.map(tx => `
+        <div class="event" style="cursor:default"><div class="event-top">${badge(tx.status)}<span class="badge">${esc(tx.transaction_type)}</span><span class="event-time">${time(tx.applied_at)}</span></div>
+        <div class="event-summary">${(linesByTx[tx.id] || []).map(line => `${Number(line.quantity_delta) >= 0 ? "+" : ""}${line.quantity_delta} ${line.base_unit} · ${shortId(line.item_variant_id)}`).join(" · ") || esc(tx.notes || tx.reason || "Inventory transaction")}</div>
+        <div class="event-meta">${esc(tx.id)}${tx.reversal_of_transaction_id ? ` · reverses ${esc(tx.reversal_of_transaction_id)}` : ""}</div></div>`).join("") : `<div class="empty">No applied transactions yet.</div>`;
+      const resets = Array.isArray(data.resets) ? data.resets : [];
+      $("#reset-history").innerHTML = resets.length ? `<h4 class="section-title">Recent reset audit</h4>${resets.map(reset => `
+        <div class="audit-row"><div><strong>${time(reset.created_at)}</strong>
+        <p>${Object.entries(reset.deleted_counts || {}).map(([key,value]) => `${esc(key.replaceAll("_"," "))}: ${esc(value)}`).join(" · ")}</p></div>
+        <span class="badge">reset</span></div>`).join("")}` : `<p class="hint">No inventory resets recorded.</p>`;
+    }
+
+    async function resetInventory() {
+      const organization = state.organizations.find(row => row.id === state.organizationId);
+      if (!organization?.slug) {
+        showError(new Error("The selected company slug is unavailable."));
+        return;
+      }
+      const expectedConfirmation = `RESET ${organization.slug}`;
+      const confirmation = window.prompt(
+        `This permanently deletes ${organization.name}’s catalog, stock, transactions, event history, and agent conversations. Type ${expectedConfirmation} to continue.`
+      );
+      if (confirmation === null) return;
+      if (confirmation !== expectedConfirmation) {
+        showError(new Error(`Reset cancelled: you must type ${expectedConfirmation} exactly.`));
+        return;
+      }
+      const button = $("#reset-inventory");
+      button.disabled = true;
+      button.textContent = "Resetting…";
+      showError(null);
+      try {
+        const result = await api(`/dev/api/inventory/reset?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST", body:{confirmation},
+        });
+        state.events = []; state.selectedEventId = null; state.inventory = null;
+        state.conversations = []; state.selectedConversationId = null;
+        await loadInventory();
+        const counts = Object.entries(result.deleted_counts || {})
+          .map(([key,value]) => `${esc(key.replaceAll("_"," "))}: ${esc(value)}`).join(" · ");
+        $("#reset-result").innerHTML = `<div class="summary-box"><strong>✅ Inventory test data reset</strong><br>${counts}<br>Message processing was ${result.processor_restarted ? "restarted" : "already paused"}.</div>`;
+      } catch (error) { showError(error); }
+      finally {
+        button.disabled = false;
+        button.textContent = "Reset inventory test data";
+      }
+    }
+
+    async function loadMemberships() {
+      if (!state.organizationId) return;
+      showError(null);
+      try {
+        state.memberships = await api(`/dev/api/memberships?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderMemberships();
+      } catch (error) { showError(error); }
+    }
+    function renderMemberships() {
+      const data = state.memberships || {invites:[], requests:[], members:[]};
+      $("#member-metrics").innerHTML = [
+        ["Active members", data.members.filter(row => row.active).length],
+        ["Pending requests", data.requests.filter(row => row.status === "pending").length],
+        ["Usable invites", data.invites.filter(row => row.active && new Date(row.expires_at) > new Date()).length],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(value)}</div></div>`).join("");
+      $("#invite-count").textContent = `${data.invites.length} records`;
+      $("#invite-list").innerHTML = data.invites.length ? data.invites.map(invite => {
+        const usable = invite.active && new Date(invite.expires_at) > new Date();
+        return `<div class="audit-row"><div><strong>••••••${esc(invite.code_hint)}</strong>
+          <p>${esc(invite.use_count)} / ${esc(invite.max_uses)} uses · expires ${time(invite.expires_at)}</p></div>
+          ${badge(usable ? "active" : "closed")}</div>`;
+      }).join("") : `<div class="empty">No registration invites yet.</div>`;
+
+      $("#request-count").textContent = `${data.requests.length} requests`;
+      $("#registration-request-body").innerHTML = data.requests.length ? data.requests.map(request => `
+        <tr><td><strong>${esc(request.display_name)}</strong>${request.simulated_persona ? ` ${badge("🧪 simulated")}` : ""}</td>
+          <td>${request.telegram_username ? `@${esc(request.telegram_username)}<br>` : ""}<span class="mono">${esc(request.telegram_user_id)}</span></td>
+          <td>${time(request.created_at)}</td><td>${badge(request.status)}</td>
+          <td><select class="registration-role" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>
+            <option value="worker">Worker</option><option value="manager">Manager</option><option value="admin">Admin</option>
+          </select></td>
+          <td><div class="actions">
+            <button class="icon-button primary approve-registration" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>Approve</button>
+            <button class="icon-button reject-registration" data-request-id="${esc(request.id)}" ${request.status !== "pending" ? "disabled" : ""}>Reject</button>
+          </div></td></tr>`).join("") : `<tr><td colspan="6"><div class="empty">No pending applicants.</div></td></tr>`;
+      $$(".approve-registration").forEach(button => button.addEventListener("click", () => decideRegistration(button.dataset.requestId, true)));
+      $$(".reject-registration").forEach(button => button.addEventListener("click", () => decideRegistration(button.dataset.requestId, false)));
+
+      $("#member-count").textContent = `${data.members.length} members`;
+      $("#member-body").innerHTML = data.members.length ? data.members.map(member => `
+        <tr><td><strong>${esc(member.display_name)}</strong>${member.simulated_persona ? ` ${badge("🧪 simulated")}` : ""}</td><td class="mono">${esc(member.telegram_user_id || "—")}</td>
+        <td>${badge(member.role)}</td><td>${badge(member.active ? "active" : "inactive")}</td><td>${time(member.created_at)}</td></tr>
+      `).join("") : `<tr><td colspan="5"><div class="empty">No members.</div></td></tr>`;
+    }
+    async function createInvite(event) {
+      event.preventDefault();
+      showError(null);
+      $("#new-invite").innerHTML = `<p class="hint loading">Generating one-time code</p>`;
+      try {
+        const result = await api(`/dev/api/membership-invites?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST",
+          body:{expires_in_hours:Number($("#invite-hours").value), max_uses:Number($("#invite-uses").value)},
+        });
+        $("#new-invite").innerHTML = `<div class="summary-box"><strong>Copy this now — it will not be shown again.</strong>
+          <pre>${esc(result.command)}</pre><button class="icon-button copy-invite" type="button">Copy command</button></div>`;
+        $(".copy-invite").addEventListener("click", async event => {
+          await navigator.clipboard.writeText(result.command);
+          event.currentTarget.textContent = "Copied";
+        });
+        await loadMemberships();
+      } catch (error) {
+        $("#new-invite").innerHTML = "";
+        showError(error);
+      }
+    }
+    async function decideRegistration(requestId, approve) {
+      if (!approve && !window.confirm("Reject this applicant? Their details are deleted after the Telegram notification is delivered.")) return;
+      const role = $(`.registration-role[data-request-id="${requestId}"]`)?.value || "worker";
+      showError(null);
+      try {
+        const suffix = approve ? "approve" : "reject";
+        await api(`/dev/api/registration-requests/${encodeURIComponent(requestId)}/${suffix}?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method:"POST", body:approve ? {role} : undefined,
+        });
+        await loadMemberships();
+      } catch (error) { showError(error); }
+    }
+
+    async function loadPrompts() {
+      try {
+        state.prompts = await api("/dev/api/prompts");
+        renderPrompts();
+      } catch (error) { showError(error); }
+    }
+    function renderPrompts() {
+      $("#configuration").innerHTML = Object.entries(state.prompts.configuration).map(([key,value]) => `<span class="chip">${esc(key.replaceAll("_"," "))} · ${esc(value)}</span>`).join("");
+      $("#prompt-grid").innerHTML = state.prompts.prompts.map(prompt => `
+        <article class="prompt-card"><h3>${esc(prompt.label)}</h3>
+        <div class="prompt-meta"><span class="badge">${esc(prompt.runtime_status)}</span><span class="badge">${esc(prompt.model)}</span><span class="badge">effort · ${esc(prompt.reasoning_effort)}</span>${prompt.prompt_version ? `<span class="badge">${esc(prompt.prompt_version)}</span>` : ""}${prompt.tools?.length ? `<span class="badge">${prompt.tools.length} tools</span>` : ""}</div>
+        <div class="summary-box"><strong>When called</strong><br>${esc(prompt.when_called)}<br><br><strong>Action</strong><br>${esc(prompt.action)}</div>
+        <div class="prompt-copy">${esc(prompt.instructions)}</div>
+        ${prompt.tools?.length ? raw("Tool definitions", prompt.tools) : ""}</article>`).join("");
+    }
+
+    async function loadSystem() {
+      try {
+        state.system = await api("/dev/api/system");
+        renderSystem();
+      } catch (error) {
+        state.system = null;
+        showError(error);
+      }
+    }
+
+    function renderSystem() {
+      const data = state.system;
+      const localDashboard = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+      const componentLabels = {
+        api: "Telegram receiver & dashboard",
+        worker: "Inventory message processor",
+        supervisor: "Local process controller",
+        supabase: "Inventory database",
+        "telegram tunnel": "Telegram public connection",
+      };
+      const serviceLabels = {
+        api: "Telegram receiver & dashboard",
+        worker: "Inventory message processor",
+      };
+      $("#health-grid").innerHTML = data.components.map(component => `
+        <article class="health-card ${component.healthy ? "healthy" : "error"}">
+          <div class="health-head"><span class="health-dot"></span><strong>${esc(componentLabels[component.name] || component.name)}</strong></div>
+          <div class="health-detail">${esc(component.detail)}</div>
+        </article>`).join("");
+      $("#system-hint").textContent = data.controls_enabled && localDashboard
+        ? "Green means the process is running or the live check responded successfully. Red includes the failure detail below."
+        : localDashboard
+          ? "Process controls are disabled. Configure and launch the local development supervisor."
+          : "Health is visible, but process controls work only when this page is opened through localhost.";
+      $$(".system-command").forEach(button => button.disabled = !data.controls_enabled || !localDashboard);
+      $("#service-grid").innerHTML = Object.entries(data.services || {}).map(([name, service]) => `
+        <article class="pane">
+          <div class="pane-head"><h3>${esc(serviceLabels[name] || name)}</h3>${badge(service.running ? "running" : "stopped")}</div>
+          <div class="settings-body">
+            <div class="kv"><dt>PID</dt><dd>${esc(service.pid || "—")}</dd>
+            <dt>Started</dt><dd>${time(service.started_at)}</dd>
+            <dt>Restarts</dt><dd>${esc(service.restart_count)}</dd>
+            <dt>Last exit</dt><dd>${esc(service.last_exit_code ?? "—")}</dd></div>
+            <h4 class="section-title">Recent logs</h4>
+            <pre>${esc((service.logs || []).join("\n") || "No process logs yet.")}</pre>
+          </div>
+        </article>`).join("");
+    }
+
+    async function runSystemCommand(button) {
+      const action = button.dataset.action;
+      const service = button.dataset.service;
+      $$(".system-command").forEach(item => item.disabled = true);
+      $("#system-hint").textContent = `${button.textContent.trim()} accepted; waiting for health checks…`;
+      try {
+        await api(`/dev/api/system/${action}`, {method: "POST", body: {service}});
+      } catch (error) {
+        if (!(action === "restart" && ["api", "all"].includes(service))) showError(error);
+      }
+      await new Promise(resolve => setTimeout(resolve, 2200));
+      state.system = null;
+      await loadSystem();
+    }
+
+    async function loadConfiguration() {
+      if (!state.organizationId) return;
+      try {
+        state.configuration = await api(`/dev/api/configuration?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    function renderConfiguration() {
+      const data = state.configuration;
+      const context = data.context;
+      $("#context-policy").value = context.effective.policy;
+      $("#context-days").value = context.effective.retention_days;
+      $("#context-tokens").value = context.effective.max_tokens;
+      $("#context-items").value = context.effective.max_items;
+      $("#config-source").textContent = context.source;
+      $("#config-hint").textContent = data.writes_enabled
+        ? `${context.source}. Saved values apply on the next agent message; no restart is needed.`
+        : "Viewing is enabled, but writes require DEV_DASHBOARD_CONFIG_WRITES_ENABLED=true.";
+      $("#save-context").disabled = !data.writes_enabled;
+      $("#reset-context").disabled = !data.writes_enabled || !context.override;
+      $("#runtime-settings").innerHTML = data.runtime.map(row => `
+        <div class="setting-row"><span>${esc(row.key.replaceAll("_", " "))}</span>
+        <span class="sku">${esc(row.value)}</span><span class="badge">restart</span></div>`).join("");
+      $("#model-assignments").innerHTML = data.models.map(component => `
+        <tr>
+          <td><strong>${esc(component.label)}</strong><div class="event-meta">${esc(component.layer)}</div></td>
+          <td>${badge(component.runtime_status)}</td>
+          <td class="sku">${esc(component.model)}</td>
+          <td>${esc(component.reasoning_effort)}</td>
+          <td>${esc(component.when_called)}</td>
+          <td>${esc(component.action)}</td>
+        </tr>`).join("");
+      $("#config-audit").innerHTML = data.changes.length ? data.changes.map(change => `
+        <div class="event" style="cursor:default">
+          <div class="event-top"><span class="badge">${esc(change.setting_key)}</span><span class="event-time">${time(change.created_at)}</span></div>
+          <div class="event-summary">${esc(change.changed_by)} · ${change.new_value ? "override saved" : "override cleared"}</div>
+          ${raw("Before and after", {before: change.old_value, after: change.new_value})}
+        </div>`).join("") : `<div class="empty">No dashboard setting changes yet.</div>`;
+    }
+
+    async function saveContext(event) {
+      event.preventDefault();
+      try {
+        await api(`/dev/api/configuration/context?organization_id=${encodeURIComponent(state.organizationId)}`, {
+          method: "PUT",
+          body: {
+            policy: $("#context-policy").value,
+            retention_days: Number($("#context-days").value),
+            max_tokens: Number($("#context-tokens").value),
+            max_items: Number($("#context-items").value),
+          },
+        });
+        state.configuration = null;
+        await loadConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    async function resetContext() {
+      try {
+        await api(`/dev/api/configuration/context?organization_id=${encodeURIComponent(state.organizationId)}`, {method: "DELETE"});
+        state.configuration = null;
+        await loadConfiguration();
+      } catch (error) { showError(error); }
+    }
+
+    async function loadConversations() {
+      if (!state.organizationId) return;
+      try {
+        const data = await api(`/dev/api/conversations?organization_id=${encodeURIComponent(state.organizationId)}`);
+        state.conversations = data.conversations;
+        renderConversations();
+        if (state.conversations.length) {
+          const selected = state.conversations.some(row => row.id === state.selectedConversationId)
+            ? state.selectedConversationId : state.conversations[0].id;
+          await selectConversation(selected);
+        } else {
+          $("#conversation-detail").innerHTML = `<div class="empty">No agent conversations for this company.</div>`;
+        }
+      } catch (error) { showError(error); }
+    }
+
+    function renderConversations() {
+      const activeTurns = state.conversations.reduce((total, row) => total + row.active_turns, 0);
+      const compactedTurns = state.conversations.reduce((total, row) => total + row.compacted_turns, 0);
+      const tokens = state.conversations.reduce((total, row) => total + row.active_estimated_tokens, 0);
+      $("#conversation-metrics").innerHTML = [
+        ["Conversations", state.conversations.length], ["Active turns", activeTurns],
+        ["Compacted turns", compactedTurns], ["Active token estimate", number(tokens)],
+      ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join("");
+      $("#conversation-count").textContent = `${state.conversations.length} chats`;
+      $("#conversation-list").innerHTML = state.conversations.length ? state.conversations.map(row => `
+        <button class="event conversation-event ${state.selectedConversationId === row.id ? "active" : ""}" data-conversation-id="${esc(row.id)}">
+          <div class="event-top"><span class="badge">${esc(row.user?.role || "unknown")}</span><span class="event-time">${time(row.updated_at)}</span></div>
+          <div class="event-summary">${esc(row.user?.display_name || "Unknown user")}</div>
+          <div class="event-meta">chat ${esc(row.chat_id)} · ${row.history_items} items · ${row.active_estimated_tokens} tokens · ${row.compacted_turns} compacted</div>
+        </button>`).join("") : `<div class="empty">No conversations yet.</div>`;
+      $$(".conversation-event").forEach(button => button.addEventListener("click", () => selectConversation(button.dataset.conversationId)));
+    }
+
+    async function selectConversation(conversationId) {
+      state.selectedConversationId = conversationId;
+      renderConversations();
+      $("#conversation-detail").innerHTML = `<div class="empty loading">Loading durable context</div>`;
+      try {
+        const data = await api(`/dev/api/conversations/${conversationId}?organization_id=${encodeURIComponent(state.organizationId)}`);
+        renderConversationDetail(data);
+      } catch (error) {
+        $("#conversation-detail").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+      }
+    }
+
+    function renderConversationDetail(data) {
+      const conversation = data.conversation;
+      const history = Array.isArray(conversation.history) ? conversation.history : [];
+      const user = data.user || {};
+      $("#conversation-detail").innerHTML = `
+        <div class="trace-intro"><div><h3>${esc(user.display_name || "Unknown user")}</h3>
+        <p>Telegram ${esc(user.telegram_user_id || "—")} · chat ${esc(conversation.chat_id)} · ${esc(user.role || "—")}</p></div>
+        <span class="badge">${esc(conversation.model_name || "no model")}</span></div>
+        <div class="kv"><dt>Conversation</dt><dd>${esc(conversation.id)}</dd>
+        <dt>Updated</dt><dd>${time(conversation.updated_at)}</dd>
+        <dt>Active history</dt><dd>${history.length} stored items</dd>
+        <dt>Active turns</dt><dd>${data.active_turns.length}</dd>
+        <dt>Compacted turns</dt><dd>${data.compacted_turns.length}</dd></div>
+        <h4 class="section-title">Rolling compacted summary</h4>
+        ${conversation.summary ? `<div class="summary-box">${esc(conversation.summary)}</div>` : `<p class="hint">No rolling summary has been created.</p>`}
+        <h4 class="section-title">Current stored history</h4>
+        <pre>${esc(pretty(history))}</pre>
+        <h4 class="section-title">Active immutable turns</h4>
+        ${data.active_turns.length ? data.active_turns.map(turn => raw(`${time(turn.created_at)} · ${turn.estimated_tokens} estimated tokens`, turn)).join("") : `<p class="hint">No active turn rows.</p>`}
+        <h4 class="section-title">Compacted immutable turns</h4>
+        ${data.compacted_turns.length ? data.compacted_turns.map(turn => raw(`${time(turn.created_at)} · ${esc(turn.compaction_policy)}`, turn)).join("") : `<p class="hint">No compacted turn rows.</p>`}`;
+    }
+
+    $$(".nav-button").forEach(button => button.addEventListener("click", () => {
+      window.location.hash = button.dataset.view;
+      setView(button.dataset.view);
+    }));
+    $("#organization").addEventListener("change", async event => {
+      state.organizationId = event.target.value;
+      state.inventory = null; state.configuration = null; state.conversations = []; state.memberships = null;
+      state.selectedEventId = null; state.selectedConversationId = null;
+      await loadCurrentView();
+    });
+    $("#context-form").addEventListener("submit", saveContext);
+    $("#invite-form").addEventListener("submit", createInvite);
+    $("#reset-inventory").addEventListener("click", resetInventory);
+    $("#reset-context").addEventListener("click", resetContext);
+    $$(".system-command").forEach(button => button.addEventListener("click", () => runSystemCommand(button)));
+    $("#refresh").addEventListener("click", async () => {
+      if (state.view === "flow") await loadEvents(false);
+      if (state.view === "inventory") await loadInventory();
+      if (state.view === "members") await loadMemberships();
+      if (state.view === "system") { state.system = null; await loadSystem(); }
+      if (state.view === "conversations") await loadConversations();
+      if (state.view === "config") { state.configuration = null; await loadConfiguration(); }
+      if (state.view === "prompts") { state.prompts = null; await loadPrompts(); }
+    });
+    const requestedView = window.location.hash.slice(1);
+    if (["flow", "inventory", "members", "system", "conversations", "config", "prompts"].includes(requestedView)) setView(requestedView);
+    boot();
+  </script>
+</body>
+</html>

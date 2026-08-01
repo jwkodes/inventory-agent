@@ -29,6 +29,23 @@ class ReversalRepository(Protocol):
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         """Apply a pending request and return the compensating transaction ID."""
 
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        """Link a grounded corrected proposal to a pending reversal."""
+
+    async def get_completed_replacement(
+        self,
+        *,
+        request_id: UUID,
+        actor_id: UUID,
+    ) -> UUID | None:
+        """Return the pending replacement after its reversal completes."""
+
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         """Cancel a pending request and return its ID."""
 
@@ -94,6 +111,40 @@ class SupabaseReversalRepository:
             },
         )
         return _required_uuid(result, "reversal transaction")
+
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        result = await self._call(
+            "attach_transaction_reversal_replacement",
+            {
+                "p_request_id": str(request_id),
+                "p_proposal_id": str(proposal_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+        return _required_uuid(result, "reversal replacement proposal")
+
+    async def get_completed_replacement(
+        self,
+        *,
+        request_id: UUID,
+        actor_id: UUID,
+    ) -> UUID | None:
+        result = await self._call(
+            "get_completed_reversal_replacement",
+            {
+                "p_request_id": str(request_id),
+                "p_actor_id": str(actor_id),
+            },
+        )
+        if result is None:
+            return None
+        return _required_uuid(result, "completed reversal replacement proposal")
 
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         result = await self._call(

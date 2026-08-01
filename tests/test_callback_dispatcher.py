@@ -2,6 +2,12 @@
 
 from uuid import UUID
 
+from inventory_agent.catalog.models import (
+    CatalogBatchCreationView,
+    CatalogItemCreationView,
+    CatalogPreviewCreationResult,
+)
+from inventory_agent.catalog.repository import CatalogItemConfirmationConflict
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
     TelegramCallbackDispatcher,
@@ -46,6 +52,21 @@ class RecordingActions:
         self.events.append("select")
         return PROPOSAL_ID
 
+    async def mark_new_item(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        assert (line_id, actor_id) == (LINE_ID, ACTOR_ID)
+        self.events.append("mark_new")
+        return PROPOSAL_ID
+
+    async def ignore_line(self, *, line_id: UUID, actor_id: UUID) -> UUID:
+        assert (line_id, actor_id) == (LINE_ID, ACTOR_ID)
+        self.events.append("ignore_line")
+        return PROPOSAL_ID
+
+    async def mark_all_new_items(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
+        assert (proposal_id, actor_id) == (PROPOSAL_ID, ACTOR_ID)
+        self.events.append("mark_all_new")
+        return proposal_id
+
     async def confirm(self, *, proposal_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("confirm")
         return UUID("60000000-0000-0000-0000-000000000001")
@@ -56,8 +77,9 @@ class RecordingActions:
 
 
 class RecordingReversals:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], replacement_proposal_id: UUID | None = None) -> None:
         self.events = events
+        self.replacement_proposal_id = replacement_proposal_id
 
     async def begin(
         self,
@@ -85,6 +107,25 @@ class RecordingReversals:
         self.events.append("confirm_reversal")
         return REVERSAL_TRANSACTION_ID
 
+    async def attach_replacement(
+        self,
+        *,
+        request_id: UUID,
+        proposal_id: UUID,
+        actor_id: UUID,
+    ) -> UUID:
+        raise AssertionError("dispatcher does not attach replacement proposals")
+
+    async def get_completed_replacement(
+        self,
+        *,
+        request_id: UUID,
+        actor_id: UUID,
+    ) -> UUID | None:
+        assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
+        self.events.append("get_replacement")
+        return self.replacement_proposal_id
+
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         assert (request_id, actor_id) == (REVERSAL_REQUEST_ID, ACTOR_ID)
         self.events.append("cancel_reversal")
@@ -92,8 +133,16 @@ class RecordingReversals:
 
 
 class RecordingCatalog:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        status: str = "awaiting_confirmation",
+        confirmation_conflict: bool = False,
+    ) -> None:
         self.events = events
+        self.status = status
+        self.confirmation_conflict = confirmation_conflict
 
     async def begin(self, *, line_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
         self.events.append("begin_catalog")
@@ -103,26 +152,84 @@ class RecordingCatalog:
         self.events.append("show_existing")
         return PROPOSAL_ID
 
+    async def create_from_preview(
+        self, *, line_id: UUID, actor_id: UUID, chat_id: int
+    ) -> CatalogPreviewCreationResult:
+        assert (line_id, actor_id, chat_id) == (LINE_ID, ACTOR_ID, -100123)
+        self.events.append("create_catalog_preview")
+        preview_status = "awaiting_details" if self.status == "awaiting_details" else "completed"
+        return CatalogPreviewCreationResult(
+            status=preview_status,
+            result_id=(PROPOSAL_ID if preview_status == "completed" else CATALOG_REQUEST_ID),
+        )
+
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         raise AssertionError("dispatcher does not capture catalog details")
+
+    async def get_view(self, *, request_id: UUID) -> CatalogItemCreationView:
+        self.events.append("get_catalog_view")
+        return CatalogItemCreationView(
+            request_id=request_id,
+            status=self.status,
+            suggested_name="AMOX-505",
+            suggested_sku="AMOX-505",
+            suggested_base_unit="unit",
+            suggested_tracking_mode="simple",
+            name="AMOX-505",
+            sku="AMOX-505",
+            base_unit="unit",
+            tracking_mode="simple",
+            attributes={"pack size": "10 units per box"},
+        )
 
     async def save_details(self, **kwargs: object) -> UUID:
         raise AssertionError("dispatcher does not capture catalog details")
 
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("confirm_catalog")
+        if self.confirmation_conflict:
+            raise CatalogItemConfirmationConflict(
+                request_id=request_id,
+                message="SKU HAC-001 is already used by the blue variant.",
+            )
         return PROPOSAL_ID
 
     async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("cancel_catalog")
         return CATALOG_REQUEST_ID
 
+    async def begin_batch(self, *, proposal_id: UUID, actor_id: UUID, chat_id: int) -> UUID:
+        self.events.append("begin_catalog_batch")
+        return CATALOG_REQUEST_ID
 
-def dispatcher(events: list[str], *, answerer_fails: bool = False) -> TelegramCallbackDispatcher:
+    async def get_batch_view(self, *, batch_id: UUID) -> CatalogBatchCreationView:
+        self.events.append("get_catalog_batch_view")
+        return CatalogBatchCreationView(
+            batch_id=batch_id,
+            proposal_id=PROPOSAL_ID,
+            status=self.status,
+            items=[],
+        )
+
+    async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
+        self.events.append("confirm_catalog_batch")
+        return TRANSACTION_ID
+
+    async def cancel_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
+        self.events.append("cancel_catalog_batch")
+        return batch_id
+
+
+def dispatcher(
+    events: list[str],
+    *,
+    answerer_fails: bool = False,
+    replacement_proposal_id: UUID | None = None,
+) -> TelegramCallbackDispatcher:
     return TelegramCallbackDispatcher(
         answerer=RecordingAnswerer(events, fail=answerer_fails),
         repository=RecordingActions(events),
-        reversals=RecordingReversals(events),
+        reversals=RecordingReversals(events, replacement_proposal_id),
         catalog=RecordingCatalog(events),
     )
 
@@ -221,9 +328,28 @@ async def test_reversal_actions_route_through_durable_request_lifecycle() -> Non
         "begin_reversal",
         "ack",
         "confirm_reversal",
+        "get_replacement",
         "ack",
         "cancel_reversal",
     ]
+
+
+async def test_confirmed_reversal_returns_linked_replacement_proposal() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events, replacement_proposal_id=PROPOSAL_ID)
+
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="callback-linked-correction",
+        callback_data=encode_callback(
+            CallbackCommand(CallbackAction.CONFIRM_REVERSAL, REVERSAL_REQUEST_ID)
+        ),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.result_id == REVERSAL_TRANSACTION_ID
+    assert outcome.replacement_proposal_id == PROPOSAL_ID
+    assert events == ["ack", "confirm_reversal", "get_replacement"]
 
 
 async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> None:
@@ -245,10 +371,14 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         )
         assert outcome.status is CallbackOutcomeStatus.COMPLETED
         assert outcome.result_id == expected_result
+        if action is CallbackAction.ADD_NEW_ITEM:
+            assert outcome.catalog_status == "awaiting_confirmation"
 
     assert events == [
         "ack",
+        "mark_new",
         "begin_catalog",
+        "get_catalog_view",
         "ack",
         "show_existing",
         "ack",
@@ -256,3 +386,92 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         "ack",
         "cancel_catalog",
     ]
+
+
+async def test_complete_preview_is_created_without_a_second_catalog_confirmation() -> None:
+    events: list[str] = []
+    outcome = await dispatcher(events).dispatch(
+        callback_query_id="callback-create-preview",
+        callback_data=encode_callback(CallbackCommand(CallbackAction.CREATE_NEW_ITEM, LINE_ID)),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.status is CallbackOutcomeStatus.COMPLETED
+    assert outcome.result_id == PROPOSAL_ID
+    assert outcome.catalog_status == "completed"
+    assert events == ["ack", "create_catalog_preview"]
+
+
+async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+    cases = [
+        (CallbackAction.ADD_ALL_NEW_ITEMS, PROPOSAL_ID, CATALOG_REQUEST_ID),
+        (CallbackAction.CONFIRM_CATALOG_BATCH, CATALOG_REQUEST_ID, TRANSACTION_ID),
+        (CallbackAction.CANCEL_CATALOG_BATCH, CATALOG_REQUEST_ID, CATALOG_REQUEST_ID),
+    ]
+
+    for action, target_id, expected_result in cases:
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, target_id)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == expected_result
+
+    assert events == [
+        "ack",
+        "mark_all_new",
+        "begin_catalog_batch",
+        "get_catalog_batch_view",
+        "ack",
+        "confirm_catalog_batch",
+        "ack",
+        "cancel_catalog_batch",
+    ]
+
+
+async def test_multi_line_decisions_return_the_proposal_for_a_fresh_review() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+
+    for action in (CallbackAction.MARK_NEW_ITEM, CallbackAction.IGNORE_PROPOSAL_LINE):
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, LINE_ID)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == PROPOSAL_ID
+
+    assert events == ["ack", "mark_new", "ack", "ignore_line"]
+
+
+async def test_duplicate_catalog_sku_reopens_details_and_alerts_immediately() -> None:
+    events: list[str] = []
+    answerer = RecordingAnswerer(events)
+    callback_dispatcher = TelegramCallbackDispatcher(
+        answerer=answerer,
+        repository=RecordingActions(events),
+        reversals=RecordingReversals(events),
+        catalog=RecordingCatalog(events, confirmation_conflict=True),
+    )
+
+    outcome = await callback_dispatcher.dispatch(
+        callback_query_id="duplicate-sku",
+        callback_data=encode_callback(
+            CallbackCommand(CallbackAction.CONFIRM_NEW_ITEM, CATALOG_REQUEST_ID)
+        ),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.status is CallbackOutcomeStatus.COMPLETED
+    assert outcome.result_id == CATALOG_REQUEST_ID
+    assert outcome.catalog_status == "awaiting_details"
+    assert answerer.alert is True
+    assert events == ["ack", "confirm_catalog", "ack"]

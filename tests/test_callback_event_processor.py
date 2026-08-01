@@ -67,17 +67,10 @@ class FakeDispatcher:
 class RecordingEditor:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
-        self.edits: list[tuple[int, int, str, list[list[dict[str, str]]] | None]] = []
+        self.removed_keyboards: list[tuple[int, int]] = []
 
-    async def edit_message_text(
-        self,
-        *,
-        chat_id: int,
-        message_id: int,
-        text: str,
-        inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
-        self.edits.append((chat_id, message_id, text, inline_keyboard))
+    async def remove_inline_keyboard(self, *, chat_id: int, message_id: int) -> None:
+        self.removed_keyboards.append((chat_id, message_id))
         if self.error is not None:
             raise self.error
 
@@ -89,6 +82,33 @@ class RecordingOutbox:
     async def enqueue(self, draft: ProcessingOutcomeDraft) -> UUID:
         self.drafts.append(draft)
         return OUTBOX_ID
+
+
+class RecordingConversation:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def record_callback_outcome(
+        self,
+        *,
+        organization_id: UUID,
+        organization_user_id: UUID,
+        chat_id: int,
+        source_event_id: UUID,
+        action: str,
+        result_id: UUID,
+    ) -> UUID | None:
+        self.calls.append(
+            {
+                "organization_id": organization_id,
+                "organization_user_id": organization_user_id,
+                "chat_id": chat_id,
+                "source_event_id": source_event_id,
+                "action": action,
+                "result_id": result_id,
+            }
+        )
+        return UUID("65000000-0000-0000-0000-000000000001")
 
 
 def context() -> TelegramCallbackEventContext:
@@ -126,7 +146,7 @@ async def test_variant_selection_refreshes_proposal_with_confirmation_buttons() 
     result = await processor.process_next()
 
     assert result is not None
-    assert editor.edits == [(-100123, 77, "Item selected. See the new confirmation message.", None)]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "proposal_ready"
     assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
     assert events.finishes == [(EVENT_ID, True, None)]
@@ -136,6 +156,7 @@ async def test_confirmation_offers_a_reversal_button() -> None:
     events = FakeEvents(context())
     editor = RecordingEditor()
     outbox = RecordingOutbox()
+    conversation = RecordingConversation()
     processor = TelegramCallbackEventProcessor(
         events=events,
         dispatcher=FakeDispatcher(
@@ -148,15 +169,24 @@ async def test_confirmation_offers_a_reversal_button() -> None:
         ),
         message_editor=editor,
         outbox=outbox,
+        conversation_recorder=conversation,
     )
 
     await processor.process_next()
 
-    assert editor.edits == [
-        (-100123, 77, "Proposal confirmed. See the new inventory update.", None)
-    ]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "transaction_applied"
     assert outbox.drafts[0].aggregate_id == TRANSACTION_ID
+    assert conversation.calls == [
+        {
+            "organization_id": ORGANIZATION_ID,
+            "organization_user_id": ACTOR_ID,
+            "chat_id": -100123,
+            "source_event_id": EVENT_ID,
+            "action": "confirm_proposal",
+            "result_id": TRANSACTION_ID,
+        }
+    ]
     assert events.finishes == [(EVENT_ID, True, None)]
 
 
@@ -180,7 +210,7 @@ async def test_cancelled_proposal_sends_a_new_notice() -> None:
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
     assert outbox.drafts[0].aggregate_id is None
-    assert outbox.drafts[0].payload == {"message": "Proposal cancelled."}
+    assert outbox.drafts[0].payload == {"message": "🚫 **Proposal cancelled**"}
 
 
 async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
@@ -203,14 +233,7 @@ async def test_reversal_request_prompts_for_reason_with_cancel_button() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [
-        (
-            -100123,
-            77,
-            "Reversal requested. I sent a separate message asking for the reason.",
-            None,
-        )
-    ]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert len(outbox.drafts) == 1
     draft = outbox.drafts[0]
     assert draft.source_event_id == EVENT_ID
@@ -237,9 +260,38 @@ async def test_confirmed_reversal_removes_buttons() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == [(-100123, 77, "Reversal confirmed. See the new status message.", None)]
+    assert editor.removed_keyboards == [(-100123, 77)]
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
-    assert outbox.drafts[0].payload == {"message": "Transaction reversed."}
+    assert outbox.drafts[0].payload == {
+        "message": ("✅ **Transaction reversed**\nThe original stock movement was reversed."),
+        "transaction_id": str(TRANSACTION_ID),
+    }
+
+
+async def test_confirmed_correction_immediately_presents_linked_replacement() -> None:
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CONFIRM_REVERSAL,
+                TRANSACTION_ID,
+                "Transaction reversed",
+                replacement_proposal_id=PROPOSAL_ID,
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert editor.removed_keyboards == [(-100123, 77)]
+    assert outbox.drafts[0].outcome_type.value == "proposal_ready"
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
+    assert outbox.drafts[0].payload == {"reversal_transaction_id": str(TRANSACTION_ID)}
 
 
 async def test_cancelled_reversal_sends_a_new_notice() -> None:
@@ -261,25 +313,47 @@ async def test_cancelled_reversal_sends_a_new_notice() -> None:
     await processor.process_next()
 
     assert outbox.drafts[0].outcome_type.value == "callback_notice"
-    assert outbox.drafts[0].payload == {"message": "Reversal cancelled."}
+    assert outbox.drafts[0].payload == {"message": "🚫 **Reversal cancelled**"}
 
 
 @pytest.mark.parametrize(
-    ("action", "result_id", "outcome_type"),
+    ("action", "result_id", "catalog_status", "outcome_type"),
     [
         (
             CallbackAction.ADD_NEW_ITEM,
             PROPOSAL_ID,
+            "awaiting_details",
             "catalog_item_details_required",
         ),
-        (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, "proposal_ready"),
-        (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, "proposal_ready"),
-        (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, "callback_notice"),
+        (
+            CallbackAction.ADD_NEW_ITEM,
+            PROPOSAL_ID,
+            "awaiting_confirmation",
+            "catalog_item_confirmation",
+        ),
+        (
+            CallbackAction.CREATE_NEW_ITEM,
+            PROPOSAL_ID,
+            "completed",
+            "proposal_ready",
+        ),
+        (
+            CallbackAction.CREATE_NEW_ITEM,
+            PROPOSAL_ID,
+            "awaiting_details",
+            "catalog_item_details_required",
+        ),
+        (CallbackAction.SHOW_EXISTING_ITEMS, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.MARK_NEW_ITEM, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.IGNORE_PROPOSAL_LINE, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.CONFIRM_NEW_ITEM, PROPOSAL_ID, None, "proposal_ready"),
+        (CallbackAction.CANCEL_NEW_ITEM, PROPOSAL_ID, None, "callback_notice"),
     ],
 )
 async def test_catalog_actions_send_new_outbox_messages(
     action: CallbackAction,
     result_id: UUID,
+    catalog_status: str | None,
     outcome_type: str,
 ) -> None:
     outbox = RecordingOutbox()
@@ -291,6 +365,7 @@ async def test_catalog_actions_send_new_outbox_messages(
                 action,
                 result_id,
                 "Catalog action completed",
+                catalog_status,
             )
         ),
         message_editor=RecordingEditor(),
@@ -300,6 +375,92 @@ async def test_catalog_actions_send_new_outbox_messages(
     await processor.process_next()
 
     assert outbox.drafts[0].outcome_type.value == outcome_type
+
+
+@pytest.mark.parametrize(
+    ("action", "result_id", "batch_status", "outcome_type"),
+    [
+        (
+            CallbackAction.ADD_ALL_NEW_ITEMS,
+            PROPOSAL_ID,
+            "awaiting_details",
+            "catalog_batch_details_required",
+        ),
+        (
+            CallbackAction.ADD_ALL_NEW_ITEMS,
+            PROPOSAL_ID,
+            "awaiting_confirmation",
+            "catalog_batch_confirmation",
+        ),
+        (
+            CallbackAction.CONFIRM_CATALOG_BATCH,
+            TRANSACTION_ID,
+            None,
+            "transaction_applied",
+        ),
+        (
+            CallbackAction.CANCEL_CATALOG_BATCH,
+            PROPOSAL_ID,
+            None,
+            "callback_notice",
+        ),
+    ],
+)
+async def test_bulk_catalog_actions_send_one_batch_outcome(
+    action: CallbackAction,
+    result_id: UUID,
+    batch_status: str | None,
+    outcome_type: str,
+) -> None:
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=FakeEvents(context()),
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                status=CallbackOutcomeStatus.COMPLETED,
+                action=action,
+                result_id=result_id,
+                message="Bulk catalog action completed",
+                catalog_batch_status=batch_status,
+            )
+        ),
+        message_editor=RecordingEditor(),
+        outbox=outbox,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == outcome_type
+
+
+async def test_duplicate_catalog_sku_sends_new_detail_prompt_without_retrying() -> None:
+    events = FakeEvents(context())
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    conversation = RecordingConversation()
+    processor = TelegramCallbackEventProcessor(
+        events=events,
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                CallbackAction.CONFIRM_NEW_ITEM,
+                PROPOSAL_ID,
+                "SKU already in use",
+                "awaiting_details",
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+        conversation_recorder=conversation,
+    )
+
+    await processor.process_next()
+
+    assert outbox.drafts[0].outcome_type.value == "catalog_item_details_required"
+    assert outbox.drafts[0].aggregate_id == PROPOSAL_ID
+    assert editor.removed_keyboards == [(-100123, 77)]
+    assert conversation.calls == []
+    assert events.finishes == [(EVENT_ID, True, None)]
 
 
 async def test_invalid_callback_is_completed_without_editing_message() -> None:
@@ -321,8 +482,48 @@ async def test_invalid_callback_is_completed_without_editing_message() -> None:
 
     await processor.process_next()
 
-    assert editor.edits == []
+    assert editor.removed_keyboards == []
     assert events.finishes == [(EVENT_ID, True, None)]
+
+
+async def test_rejected_callback_sends_new_notice_without_removing_buttons() -> None:
+    events = FakeEvents(context())
+    editor = RecordingEditor()
+    outbox = RecordingOutbox()
+    processor = TelegramCallbackEventProcessor(
+        events=events,
+        dispatcher=FakeDispatcher(
+            CallbackOutcome(
+                CallbackOutcomeStatus.FAILED,
+                CallbackAction.ADD_NEW_ITEM,
+                None,
+                "This action may require a manager or admin.",
+            )
+        ),
+        message_editor=editor,
+        outbox=outbox,
+    )
+
+    result = await processor.process_next()
+
+    assert result is not None
+    assert result.outcome.status is CallbackOutcomeStatus.FAILED
+    assert editor.removed_keyboards == []
+    assert events.finishes == [(EVENT_ID, True, None)]
+    assert outbox.drafts == [
+        ProcessingOutcomeDraft(
+            organization_id=ORGANIZATION_ID,
+            source_event_id=EVENT_ID,
+            outcome_type="callback_notice",
+            aggregate_id=None,
+            chat_id=-100123,
+            payload={
+                "message": (
+                    "⚠️ **Action not completed**\nThis action may require a manager or admin."
+                )
+            },
+        )
+    ]
 
 
 async def test_edit_failure_is_sanitized_and_returned_to_event_retry_queue() -> None:

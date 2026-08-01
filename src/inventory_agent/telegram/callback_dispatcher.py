@@ -7,7 +7,11 @@ from uuid import UUID
 
 import httpx
 
-from inventory_agent.catalog.repository import CatalogItemCreationRepository
+from inventory_agent.catalog.repository import (
+    CatalogBatchConfirmationConflict,
+    CatalogItemConfirmationConflict,
+    CatalogItemCreationRepository,
+)
 from inventory_agent.proposals.actions import ProposalActionRepository
 from inventory_agent.reversals.repository import ReversalRepository
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
@@ -35,6 +39,9 @@ class CallbackOutcome:
     action: CallbackAction | None
     result_id: UUID | None
     message: str
+    catalog_status: str | None = None
+    replacement_proposal_id: UUID | None = None
+    catalog_batch_status: str | None = None
 
 
 class TelegramCallbackDispatcher:
@@ -61,6 +68,9 @@ class TelegramCallbackDispatcher:
     ) -> CallbackOutcome:
         """Acknowledge first, then execute exactly one decoded database action."""
 
+        catalog_status: str | None = None
+        catalog_batch_status: str | None = None
+        replacement_proposal_id: UUID | None = None
         try:
             command = decode_callback(callback_data)
         except ValueError:
@@ -88,6 +98,18 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Item selected"
+            elif command.action is CallbackAction.MARK_NEW_ITEM:
+                result_id = await self._repository.mark_new_item(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Line will be added as a new item"
+            elif command.action is CallbackAction.IGNORE_PROPOSAL_LINE:
+                result_id = await self._repository.ignore_line(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Line ignored"
             elif command.action is CallbackAction.CONFIRM_PROPOSAL:
                 result_id = await self._repository.confirm(
                     proposal_id=command.target_id,
@@ -101,12 +123,31 @@ class TelegramCallbackDispatcher:
                 )
                 message = "Proposal cancelled"
             elif command.action is CallbackAction.ADD_NEW_ITEM:
+                await self._repository.mark_new_item(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                )
                 result_id = await self._catalog.begin(
                     line_id=command.target_id,
                     actor_id=actor_id,
                     chat_id=chat_id,
                 )
+                catalog_status = (await self._catalog.get_view(request_id=result_id)).status
                 message = "Catalog item details required"
+            elif command.action is CallbackAction.CREATE_NEW_ITEM:
+                creation = await self._catalog.create_from_preview(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
+                )
+                result_id = creation.result_id
+                catalog_status = creation.status
+                if catalog_status == "completed":
+                    message = "Catalog item created"
+                elif catalog_status == "awaiting_details":
+                    message = creation.message or "Catalog item details required"
+                else:
+                    raise ValueError("Catalog preview returned an unsupported status")
             elif command.action is CallbackAction.SHOW_EXISTING_ITEMS:
                 result_id = await self._catalog.show_existing(
                     line_id=command.target_id,
@@ -125,6 +166,32 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Catalog item creation cancelled"
+            elif command.action is CallbackAction.ADD_ALL_NEW_ITEMS:
+                await self._repository.mark_all_new_items(
+                    proposal_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                result_id = await self._catalog.begin_batch(
+                    proposal_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
+                )
+                catalog_batch_status = (
+                    await self._catalog.get_batch_view(batch_id=result_id)
+                ).status
+                message = "Bulk catalog details required"
+            elif command.action is CallbackAction.CONFIRM_CATALOG_BATCH:
+                result_id = await self._catalog.confirm_batch(
+                    batch_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog items created"
+            elif command.action is CallbackAction.CANCEL_CATALOG_BATCH:
+                result_id = await self._catalog.cancel_batch(
+                    batch_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog batch cancelled"
             elif command.action is CallbackAction.REVERSE_TRANSACTION:
                 result_id = await self._reversals.begin(
                     transaction_id=command.target_id,
@@ -137,6 +204,10 @@ class TelegramCallbackDispatcher:
                     request_id=command.target_id,
                     actor_id=actor_id,
                 )
+                replacement_proposal_id = await self._reversals.get_completed_replacement(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
                 message = "Transaction reversed"
             elif command.action is CallbackAction.CANCEL_REVERSAL:
                 result_id = await self._reversals.cancel(
@@ -146,6 +217,42 @@ class TelegramCallbackDispatcher:
                 message = "Reversal cancelled"
             else:
                 raise ValueError("Unsupported callback action")
+        except CatalogItemConfirmationConflict as error:
+            await self._try_answer(
+                callback_query_id=callback_query_id,
+                text="That SKU is already in use. I sent the details needed to continue.",
+                show_alert=True,
+            )
+            return CallbackOutcome(
+                CallbackOutcomeStatus.COMPLETED,
+                command.action,
+                error.request_id,
+                str(error),
+                "awaiting_details",
+            )
+        except CatalogBatchConfirmationConflict as error:
+            await self._try_answer(
+                callback_query_id=callback_query_id,
+                text="One or more SKUs need correction. I sent the details.",
+                show_alert=True,
+            )
+            return CallbackOutcome(
+                status=CallbackOutcomeStatus.COMPLETED,
+                action=command.action,
+                result_id=error.batch_id,
+                message=str(error),
+                catalog_batch_status="awaiting_details",
+            )
+        except httpx.HTTPStatusError:
+            return CallbackOutcome(
+                CallbackOutcomeStatus.FAILED,
+                command.action,
+                None,
+                (
+                    "This action may require a manager or admin, or the request may "
+                    "no longer be pending."
+                ),
+            )
         except (ValueError, RuntimeError, httpx.HTTPError) as error:
             return CallbackOutcome(
                 CallbackOutcomeStatus.FAILED,
@@ -159,6 +266,9 @@ class TelegramCallbackDispatcher:
             command.action,
             result_id,
             message,
+            catalog_status,
+            replacement_proposal_id,
+            catalog_batch_status,
         )
 
     async def _try_answer(

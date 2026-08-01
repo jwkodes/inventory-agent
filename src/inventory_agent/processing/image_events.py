@@ -16,6 +16,7 @@ from inventory_agent.processing.models import (
 )
 from inventory_agent.processing.repository import SourceEventWorkRepository
 from inventory_agent.telegram.client import DownloadedTelegramFile
+from inventory_agent.telegram.group_activation import strip_bot_reference
 
 
 class InvoiceImageInterpreter(Protocol):
@@ -53,12 +54,14 @@ class TelegramImageEventProcessor:
         artifacts: SourceArtifactRepository,
         interpreter: InvoiceImageInterpreter,
         commands: InventoryCommandHandler,
+        bot_username: str | None = None,
     ) -> None:
         self._events = events
         self._downloader = downloader
         self._artifacts = artifacts
         self._interpreter = interpreter
         self._commands = commands
+        self._bot_username = bot_username
 
     async def process_next(self) -> ImageEventProcessingResult | None:
         context = await self._events.claim_next_image_event()
@@ -71,6 +74,15 @@ class TelegramImageEventProcessor:
         context: TelegramImageEventContext,
     ) -> ImageEventProcessingResult:
         try:
+            if context.caption is not None:
+                context = context.model_copy(
+                    update={
+                        "caption": strip_bot_reference(
+                            context.caption,
+                            bot_username=self._bot_username,
+                        )
+                    }
+                )
             downloaded = await self._downloader.download_file(
                 file_id=context.telegram_file_id,
                 expected_size=context.file_size,

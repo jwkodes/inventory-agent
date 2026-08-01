@@ -9,10 +9,24 @@ from typing import Protocol
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
+from inventory_agent.agent.context import (
+    AgentContextManager,
+    ContextRetentionPolicy,
+    ContextRetentionSettings,
+    ModelConversationSummarizer,
+)
+from inventory_agent.agent.production_tools import GroundedAgentCatalogReader
+from inventory_agent.agent.repository import SupabaseAgentRepository
+from inventory_agent.agent.runtime import OpenAIResponsesAgentModel
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
+from inventory_agent.catalog.batch import OpenAICatalogBatchDetailsInterpreter
 from inventory_agent.catalog.interpreter import OpenAICatalogDetailsInterpreter
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
+from inventory_agent.extraction.clarification import (
+    OpenAICommandClarificationInterpreter,
+    SupabaseCommandClarificationRepository,
+)
 from inventory_agent.extraction.image_interpreter import OpenAIImageCommandInterpreter
 from inventory_agent.extraction.interpreter import OpenAITextCommandInterpreter
 from inventory_agent.matching.clarification import (
@@ -25,11 +39,16 @@ from inventory_agent.matching.semantic import (
     SupabaseSemanticCandidateRepository,
 )
 from inventory_agent.matching.service import InventoryItemMatcher, MatchingStrategy
+from inventory_agent.processing.agent_text_events import (
+    AgentTextEventProcessingError,
+    TelegramAgentTextEventProcessor,
+)
 from inventory_agent.processing.callback_events import (
     CallbackEventProcessingError,
     CallbackEventProcessingResult,
     TelegramCallbackEventProcessor,
 )
+from inventory_agent.processing.catalog_batches import CatalogBatchReplyHandler
 from inventory_agent.processing.commands import InventoryCommandHandler
 from inventory_agent.processing.delivery import TelegramOutboxDeliveryWorker
 from inventory_agent.processing.image_events import (
@@ -56,6 +75,10 @@ from inventory_agent.proposals.repository import SupabaseProposalRepository
 from inventory_agent.reversals.repository import SupabaseReversalRepository
 from inventory_agent.telegram.callback_dispatcher import TelegramCallbackDispatcher
 from inventory_agent.telegram.client import TelegramBotClient
+from inventory_agent.telegram.registration import (
+    SupabaseRegistrationRepository,
+    TelegramRegistrationNotificationWorker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +108,12 @@ async def run_loop(
     callback_processor: NextCallbackEventProcessor,
     image_processor: NextImageEventProcessor,
     text_processor: NextTextEventProcessor,
+    registration_delivery_worker: NextOutboxDeliveryWorker,
     delivery_worker: NextOutboxDeliveryWorker,
     watch: bool,
     poll_seconds: float,
 ) -> None:
-    """Prioritize button actions, then process images, text, and outbound delivery."""
+    """Process inputs, registration notices, and ordinary outbound delivery."""
 
     while True:
         callback_result: CallbackEventProcessingResult | None = None
@@ -121,7 +145,7 @@ async def run_loop(
         text_result: TextEventProcessingResult | None = None
         try:
             text_result = await text_processor.process_next()
-        except TextEventProcessingError:
+        except (TextEventProcessingError, AgentTextEventProcessingError):
             logger.exception("text_event_processing status=failed")
         if text_result is not None:
             logger.info(
@@ -131,19 +155,30 @@ async def run_loop(
                 text_result.proposal_id,
             )
 
+        registration_delivery_result = await registration_delivery_worker.deliver_one()
+        if registration_delivery_result.status is not OutboxDeliveryStatus.IDLE:
+            logger.info(
+                "registration_delivery status=%s notification_id=%s telegram_message_id=%s",
+                registration_delivery_result.status,
+                registration_delivery_result.outbox_id,
+                registration_delivery_result.telegram_message_id,
+            )
+
         delivery_result = await delivery_worker.deliver_one()
-        logger.info(
-            "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
-            delivery_result.status,
-            delivery_result.outbox_id,
-            delivery_result.telegram_message_id,
-        )
+        if delivery_result.status is not OutboxDeliveryStatus.IDLE:
+            logger.info(
+                "outbox_delivery status=%s outbox_id=%s telegram_message_id=%s",
+                delivery_result.status,
+                delivery_result.outbox_id,
+                delivery_result.telegram_message_id,
+            )
         if not watch:
             return
         if (
             callback_result is None
             and image_result is None
             and text_result is None
+            and registration_delivery_result.status is OutboxDeliveryStatus.IDLE
             and delivery_result.status is OutboxDeliveryStatus.IDLE
         ):
             await asyncio.sleep(poll_seconds)
@@ -155,6 +190,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
     bot_token = _required_secret(settings.telegram_bot_token, "TELEGRAM_BOT_TOKEN")
     openai_api_key = _required_secret(settings.openai_api_key, "OPENAI_API_KEY")
     openai_client = AsyncOpenAI(api_key=openai_api_key)
+    agent_text_processor: TelegramAgentTextEventProcessor | None = None
     try:
         event_repository = SupabaseSourceEventWorkRepository(
             supabase_url=settings.supabase_url,
@@ -177,19 +213,29 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        agent_repository = (
+            SupabaseAgentRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            )
+            if settings.inventory_agent_enabled
+            else None
+        )
+        proposal_actions = SupabaseProposalActionRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         callback_processor = TelegramCallbackEventProcessor(
             events=event_repository,
             dispatcher=TelegramCallbackDispatcher(
                 answerer=telegram_client,
-                repository=SupabaseProposalActionRepository(
-                    supabase_url=settings.supabase_url,
-                    secret_key=secret_key,
-                ),
+                repository=proposal_actions,
                 reversals=reversal_repository,
                 catalog=catalog_repository,
             ),
             message_editor=telegram_client,
             outbox=outbox,
+            conversation_recorder=agent_repository,
         )
         candidate_judge = (
             OpenAICandidateJudge(
@@ -204,24 +250,31 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        command_clarification_repository = SupabaseCommandClarificationRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
+        candidate_repository = SupabaseInventoryCandidateRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
+        semantic_repository = SupabaseSemanticCandidateRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+            embeddings=OpenAIEmbeddingProvider(
+                client=openai_client,
+                model=settings.openai_embedding_model,
+                dimensions=settings.openai_embedding_dimensions,
+            ),
+            embedding_model=settings.openai_embedding_model,
+            embedding_dimensions=settings.openai_embedding_dimensions,
+        )
+        matching_strategy = MatchingStrategy(settings.inventory_matching_strategy)
         matcher = InventoryItemMatcher(
-            repository=SupabaseInventoryCandidateRepository(
-                supabase_url=settings.supabase_url,
-                secret_key=secret_key,
-            ),
-            semantic_repository=SupabaseSemanticCandidateRepository(
-                supabase_url=settings.supabase_url,
-                secret_key=secret_key,
-                embeddings=OpenAIEmbeddingProvider(
-                    client=openai_client,
-                    model=settings.openai_embedding_model,
-                    dimensions=settings.openai_embedding_dimensions,
-                ),
-                embedding_model=settings.openai_embedding_model,
-                embedding_dimensions=settings.openai_embedding_dimensions,
-            ),
+            repository=candidate_repository,
+            semantic_repository=semantic_repository,
             judge=candidate_judge,
-            strategy=MatchingStrategy(settings.inventory_matching_strategy),
+            strategy=matching_strategy,
         )
         proposals = SupabaseProposalRepository(
             supabase_url=settings.supabase_url,
@@ -232,27 +285,88 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             proposals=proposals,
             outbox=outbox,
             clarifications=clarification_repository,
+            command_clarifications=command_clarification_repository,
         )
-        text_processor = TelegramTextEventProcessor(
-            events=event_repository,
-            interpreter=OpenAITextCommandInterpreter(
-                client=openai_client,
-                model=settings.openai_model,
-                reasoning_effort=settings.openai_reasoning_effort,
-            ),
-            catalog_interpreter=OpenAICatalogDetailsInterpreter(
-                client=openai_client,
-                model=settings.openai_model,
-                reasoning_effort=settings.openai_reasoning_effort,
-            ),
-            matcher=matcher,
-            proposals=proposals,
-            outbox=outbox,
-            reversals=reversal_repository,
+        catalog_interpreter = OpenAICatalogDetailsInterpreter(
+            client=openai_client,
+            model=settings.openai_model,
+            reasoning_effort=settings.openai_reasoning_effort,
+        )
+        catalog_batch_handler = CatalogBatchReplyHandler(
             catalog=catalog_repository,
-            clarifications=clarification_repository,
-            candidate_judge=candidate_judge,
+            interpreter=OpenAICatalogBatchDetailsInterpreter(
+                client=openai_client,
+                model=settings.openai_model,
+                reasoning_effort=settings.openai_reasoning_effort,
+            ),
+            outbox=outbox,
         )
+        if settings.inventory_agent_enabled:
+            if agent_repository is None:  # pragma: no cover - construction invariant
+                raise RuntimeError("Inventory agent repository is unavailable")
+            agent_model = OpenAIResponsesAgentModel(
+                client=openai_client,
+                model=settings.inventory_agent_model,
+                reasoning_effort=settings.inventory_agent_reasoning_effort,
+            )
+            agent_text_processor = TelegramAgentTextEventProcessor(
+                events=event_repository,
+                model=agent_model,
+                conversations=agent_repository,
+                catalog_reader=GroundedAgentCatalogReader(
+                    candidates=candidate_repository,
+                    semantic=semantic_repository,
+                    reads=agent_repository,
+                    strategy=matching_strategy,
+                ),
+                reads=agent_repository,
+                proposals=proposals,
+                proposal_actions=proposal_actions,
+                outbox=outbox,
+                reversals=reversal_repository,
+                catalog=catalog_repository,
+                catalog_interpreter=catalog_interpreter,
+                command_clarifications=command_clarification_repository,
+                command_clarification_interpreter=OpenAICommandClarificationInterpreter(
+                    client=openai_client,
+                    model=settings.openai_model,
+                    reasoning_effort=settings.openai_reasoning_effort,
+                ),
+                command_handler=command_handler,
+                catalog_batches=catalog_batch_handler,
+                bot_username=settings.telegram_bot_username,
+                context_manager=AgentContextManager(
+                    conversations=agent_repository,
+                    defaults=ContextRetentionSettings(
+                        policy=ContextRetentionPolicy(settings.inventory_agent_context_policy),
+                        retention_days=settings.inventory_agent_context_retention_days,
+                        max_tokens=settings.inventory_agent_context_max_tokens,
+                        max_items=settings.inventory_agent_context_max_items,
+                    ),
+                    settings_provider=agent_repository,
+                    summarizer=ModelConversationSummarizer(model=agent_model),
+                ),
+            )
+            text_processor: NextTextEventProcessor = agent_text_processor
+        else:
+            text_processor = TelegramTextEventProcessor(
+                events=event_repository,
+                interpreter=OpenAITextCommandInterpreter(
+                    client=openai_client,
+                    model=settings.openai_model,
+                    reasoning_effort=settings.openai_reasoning_effort,
+                ),
+                catalog_interpreter=catalog_interpreter,
+                matcher=matcher,
+                proposals=proposals,
+                outbox=outbox,
+                reversals=reversal_repository,
+                catalog=catalog_repository,
+                clarifications=clarification_repository,
+                candidate_judge=candidate_judge,
+                catalog_batches=catalog_batch_handler,
+                bot_username=settings.telegram_bot_username,
+            )
         image_processor = TelegramImageEventProcessor(
             events=event_repository,
             downloader=telegram_client,
@@ -267,20 +381,32 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reasoning_effort=settings.openai_reasoning_effort,
             ),
             commands=command_handler,
+            bot_username=settings.telegram_bot_username,
         )
         delivery_worker = TelegramOutboxDeliveryWorker(
             repository=proposal_view_repository,
+            sender=telegram_client,
+            display_timezone=settings.inventory_display_timezone,
+        )
+        registration_delivery_worker = TelegramRegistrationNotificationWorker(
+            repository=SupabaseRegistrationRepository(
+                supabase_url=settings.supabase_url,
+                secret_key=secret_key,
+            ),
             sender=telegram_client,
         )
         await run_loop(
             callback_processor=callback_processor,
             image_processor=image_processor,
             text_processor=text_processor,
+            registration_delivery_worker=registration_delivery_worker,
             delivery_worker=delivery_worker,
             watch=watch,
             poll_seconds=poll_seconds,
         )
     finally:
+        if agent_text_processor is not None:
+            await agent_text_processor.wait_for_background_compactions()
         await openai_client.close()
 
 

@@ -5,7 +5,10 @@ from uuid import UUID
 
 import httpx
 
-from inventory_agent.proposals.actions import SupabaseProposalActionRepository
+from inventory_agent.proposals.actions import (
+    ProposalActionRejectedError,
+    SupabaseProposalActionRepository,
+)
 
 ACTOR_ID = UUID("11000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
@@ -29,3 +32,24 @@ async def test_confirm_calls_atomic_apply_function() -> None:
     transaction_id = await repository.confirm(proposal_id=PROPOSAL_ID, actor_id=ACTOR_ID)
 
     assert transaction_id == UUID("60000000-0000-0000-0000-000000000001")
+
+
+async def test_proposal_validation_rejection_has_a_safe_typed_error() -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"code": "22023", "message": "Proposal is not ready"},
+        )
+
+    repository = SupabaseProposalActionRepository(
+        supabase_url="http://supabase.test",
+        secret_key="test-secret",
+        transport=httpx.MockTransport(handle_request),
+    )
+
+    try:
+        await repository.confirm(proposal_id=PROPOSAL_ID, actor_id=ACTOR_ID)
+    except ProposalActionRejectedError:
+        pass
+    else:
+        raise AssertionError("Expected a rejected proposal action")

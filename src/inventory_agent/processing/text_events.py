@@ -10,6 +10,7 @@ from inventory_agent.catalog.repository import CatalogItemCreationRepository
 from inventory_agent.extraction.interpreter import CommandExtractionResult
 from inventory_agent.matching.clarification import MatchClarificationRepository
 from inventory_agent.matching.judge import CandidateJudge
+from inventory_agent.processing.catalog_batches import CatalogBatchReplyHandler
 from inventory_agent.processing.commands import InventoryCommandHandler, ItemMatcher
 from inventory_agent.processing.models import (
     ProcessingOutcomeDraft,
@@ -24,6 +25,7 @@ from inventory_agent.processing.repository import (
 )
 from inventory_agent.proposals.repository import ProposalRepository
 from inventory_agent.reversals.repository import ReversalRepository
+from inventory_agent.telegram.group_activation import strip_bot_reference
 
 
 class CommandInterpreter(Protocol):
@@ -61,6 +63,8 @@ class TelegramTextEventProcessor:
         catalog: CatalogItemCreationRepository,
         clarifications: MatchClarificationRepository | None = None,
         candidate_judge: CandidateJudge | None = None,
+        catalog_batches: CatalogBatchReplyHandler | None = None,
+        bot_username: str | None = None,
     ) -> None:
         self._events = events
         self._interpreter = interpreter
@@ -70,6 +74,8 @@ class TelegramTextEventProcessor:
         self._catalog = catalog
         self._clarifications = clarifications
         self._candidate_judge = candidate_judge
+        self._catalog_batches = catalog_batches
+        self._bot_username = bot_username
         self._commands = InventoryCommandHandler(
             matcher=matcher,
             proposals=proposals,
@@ -99,6 +105,14 @@ class TelegramTextEventProcessor:
         context: TelegramTextEventContext,
     ) -> TextEventProcessingResult:
         try:
+            context = context.model_copy(
+                update={
+                    "message_text": strip_bot_reference(
+                        context.message_text,
+                        bot_username=self._bot_username,
+                    )
+                }
+            )
             reversal_request_id = await self._reversals.capture_reason(
                 event_id=context.event_id,
                 actor_id=context.organization_user_id,
@@ -124,6 +138,12 @@ class TelegramTextEventProcessor:
                     reversal_request_id=reversal_request_id,
                     outbox_id=outbox_id,
                 )
+
+            if self._catalog_batches is not None:
+                batch_result = await self._catalog_batches.handle_pending(context=context)
+                if batch_result is not None:
+                    await self._require_finish(context.event_id)
+                    return batch_result
 
             if self._clarifications is not None and self._candidate_judge is not None:
                 clarification_id = await self._clarifications.find_pending(
@@ -177,65 +197,65 @@ class TelegramTextEventProcessor:
                     user_text=context.message_text,
                     view=catalog_view,
                 )
-                details, missing = complete_catalog_item_details(
-                    extracted=catalog_extraction.details,
-                    view=catalog_view,
-                )
-                if details is None:
-                    await self._catalog.save_draft(
+                if catalog_extraction.details.applies_to_pending_request:
+                    details, missing = complete_catalog_item_details(
+                        extracted=catalog_extraction.details,
+                        view=catalog_view,
+                    )
+                    if details is None:
+                        await self._catalog.save_draft(
+                            request_id=catalog_request_id,
+                            event_id=context.event_id,
+                            actor_id=context.organization_user_id,
+                            details=catalog_extraction.details,
+                        )
+                        outbox_id = await self._outbox.enqueue(
+                            ProcessingOutcomeDraft(
+                                organization_id=context.organization_id,
+                                source_event_id=context.event_id,
+                                outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                                chat_id=context.chat_id,
+                                payload={
+                                    "message": (
+                                        "❓ **Reply with the missing catalog information**\n"
+                                        f"Please send {_natural_list(missing)} in any format."
+                                    )
+                                },
+                            )
+                        )
+                        await self._require_finish(context.event_id)
+                        return TextEventProcessingResult(
+                            event_id=context.event_id,
+                            status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                            chat_id=context.chat_id,
+                            catalog_request_id=catalog_request_id,
+                            outbox_id=outbox_id,
+                        )
+
+                    await self._catalog.save_details(
                         request_id=catalog_request_id,
                         event_id=context.event_id,
                         actor_id=context.organization_user_id,
-                        details=catalog_extraction.details,
+                        details=details,
                     )
                     outbox_id = await self._outbox.enqueue(
                         ProcessingOutcomeDraft(
                             organization_id=context.organization_id,
                             source_event_id=context.event_id,
-                            outcome_type=ProcessingOutcomeType.CALLBACK_NOTICE,
+                            outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+                            aggregate_id=catalog_request_id,
                             chat_id=context.chat_id,
-                            payload={
-                                "message": (
-                                    "I still need "
-                                    f"{_natural_list(missing)}. "
-                                    "Reply naturally with the missing information."
-                                )
-                            },
+                            payload={},
                         )
                     )
                     await self._require_finish(context.event_id)
                     return TextEventProcessingResult(
                         event_id=context.event_id,
-                        status=TextEventProcessingStatus.CLARIFICATION_REQUIRED,
+                        status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
                         chat_id=context.chat_id,
                         catalog_request_id=catalog_request_id,
                         outbox_id=outbox_id,
                     )
-
-                await self._catalog.save_details(
-                    request_id=catalog_request_id,
-                    event_id=context.event_id,
-                    actor_id=context.organization_user_id,
-                    details=details,
-                )
-                outbox_id = await self._outbox.enqueue(
-                    ProcessingOutcomeDraft(
-                        organization_id=context.organization_id,
-                        source_event_id=context.event_id,
-                        outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
-                        aggregate_id=catalog_request_id,
-                        chat_id=context.chat_id,
-                        payload={},
-                    )
-                )
-                await self._require_finish(context.event_id)
-                return TextEventProcessingResult(
-                    event_id=context.event_id,
-                    status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
-                    chat_id=context.chat_id,
-                    catalog_request_id=catalog_request_id,
-                    outbox_id=outbox_id,
-                )
 
             command_extraction = await self._interpreter.interpret(context.message_text)
             result = await self._commands.handle(
