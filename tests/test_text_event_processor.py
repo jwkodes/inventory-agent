@@ -550,7 +550,7 @@ async def test_pending_catalog_request_asks_only_for_missing_information() -> No
     assert proposals.drafts == []
     assert outbox.drafts[0].payload == {
         "message": (
-            "❓ **More information needed**\n"
+            "❓ **Reply with the missing catalog information**\n"
             "Please send SKU or internal product code in any format."
         )
     }

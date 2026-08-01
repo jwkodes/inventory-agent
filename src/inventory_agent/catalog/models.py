@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -71,6 +71,16 @@ class CatalogItemCreationView(BaseModel):
     line_number: int | None = None
     requested_quantity: Decimal | None = None
     requested_unit: str | None = None
+
+
+class CatalogPreviewCreationResult(BaseModel):
+    """Outcome from creating an agent-proposed catalog item in one transaction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["completed", "awaiting_details"]
+    result_id: UUID
+    message: str | None = None
 
 
 class CatalogBatchItemView(BaseModel):

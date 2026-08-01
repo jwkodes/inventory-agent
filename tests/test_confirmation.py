@@ -49,7 +49,7 @@ def test_resolved_proposal_has_confirm_and_cancel_buttons() -> None:
     ]
     assert actions == [CallbackAction.CONFIRM_PROPOSAL, CallbackAction.CANCEL_PROPOSAL]
     assert "➕ ADD 3 each" in message.text
-    assert message.text.startswith("⏳ **Pending stock addition**")
+    assert message.text.startswith("📋 **Review and confirm stock addition**")
     assert "Please review, then choose **Confirm** or **Cancel**." in message.text
     assert "No inventory has changed" not in message.text
 
@@ -69,7 +69,7 @@ def test_stock_issue_is_visually_explicit_on_heading_and_every_line() -> None:
         ],
     )
 
-    assert message.text.startswith("⏳ **Pending stock deduction**")
+    assert message.text.startswith("📋 **Review and confirm stock deduction**")
     assert "Review stock deduction:" in message.text
     assert "1. ➖ DEDUCT 5 each" in message.text
     assert "5.00000000" not in message.text
@@ -100,7 +100,9 @@ def test_unresolved_proposal_requires_candidate_selection() -> None:
     assert selection.target_id == LINE_ID
     assert selection.choice_id == VARIANT_ID
     assert final_actions == [CallbackAction.CANCEL_PROPOSAL]
-    assert "Resolve the unmatched item, or choose **Cancel**." in message.text
+    assert message.text.startswith("🔎 **Choose a catalog match**")
+    assert "I couldn't find a close enough catalog match." in message.text
+    assert "These are the best available matches" in message.text
 
 
 def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() -> None:
@@ -133,6 +135,104 @@ def test_not_found_line_offers_add_new_or_choose_existing_before_candidates() ->
         "Choose existing",
     ]
     assert "🔎 **No confident match:**" in message.text
+    assert message.text.startswith(
+        "🆕 **Choose: create a new catalog product or match an existing one**"
+    )
+
+
+def test_complete_agent_draft_is_previewed_and_can_be_created_directly() -> None:
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Milo 500g",
+                quantity=Decimal("1"),
+                unit="each",
+                match_decision="not_found",
+                new_item_preview={
+                    "name": "Milo 500g",
+                    "sku": "8873",
+                    "base_unit": "each",
+                    "tracking_mode": "simple",
+                    "attributes": [{"key": "weight", "value": "500g"}],
+                },
+            )
+        ],
+    )
+
+    assert "🆕 **New catalog product preview**" in message.text
+    assert "Name: Milo 500g" in message.text
+    assert "SKU: 8873" in message.text
+    assert "Unit: each" in message.text
+    assert "Attributes: weight: 500g" in message.text
+    assert "without another catalog review" in message.text
+    assert [button.text for button in message.inline_keyboard[0]] == [
+        "Create this item",
+        "Choose existing",
+    ]
+    assert [
+        decode_callback(button.callback_data).action for button in message.inline_keyboard[0]
+    ] == [CallbackAction.CREATE_NEW_ITEM, CallbackAction.SHOW_EXISTING_ITEMS]
+
+
+def test_choose_existing_shows_only_three_best_available_matches() -> None:
+    candidate_ids = [UUID(f"21000000-0000-0000-0000-{index:012d}") for index in range(1, 5)]
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Milo 500g",
+                quantity=Decimal("1"),
+                unit="each",
+                match_decision="not_found",
+                show_candidates=True,
+                candidate_choices=[
+                    CandidateChoice(item_variant_id=item_id, label=f"Milo guess {index}")
+                    for index, item_id in enumerate(candidate_ids, start=1)
+                ],
+            )
+        ],
+    )
+
+    selection_buttons = message.inline_keyboard[:-1]
+    assert [row[0].text for row in selection_buttons] == [
+        "Milo guess 1",
+        "Milo guess 2",
+        "Milo guess 3",
+    ]
+    assert message.text.startswith("🔎 **Choose a catalog match**")
+    assert "Milo 500g → review the best available matches" in message.text
+    assert "choose one only if it is correct" in message.text
+    assert "⚠️ **Action needed**" not in message.text
+
+
+def test_choose_existing_without_guesses_explains_that_no_similar_products_exist() -> None:
+    message = render_proposal_confirmation(
+        proposal_id=PROPOSAL_ID,
+        intent_label="stock receipt",
+        lines=[
+            ProposalLineView(
+                proposal_line_id=LINE_ID,
+                description="Milo 500g",
+                quantity=Decimal("1"),
+                unit="each",
+                match_decision="not_found",
+                show_candidates=True,
+            )
+        ],
+    )
+
+    assert message.text.startswith("🔎 **No similar catalog products found**")
+    assert "I couldn't find any similar catalog products." in message.text
+    assert "Resolve the unmatched item" not in message.text
+    assert len(message.inline_keyboard) == 1
+    assert decode_callback(message.inline_keyboard[0][0].callback_data).action is (
+        CallbackAction.CANCEL_PROPOSAL
+    )
 
 
 def test_multiple_unmatched_lines_offer_bulk_or_one_line_decision() -> None:
@@ -171,6 +271,7 @@ def test_multiple_unmatched_lines_offer_bulk_or_one_line_decision() -> None:
         is CallbackAction.ADD_ALL_NEW_ITEMS
     )
     assert "Resolve line 1 next" in message.text
+    assert message.text.startswith("🆕 **Choose how to catalog each unmatched product**")
 
 
 def test_only_unmatched_line_uses_plain_buttons_even_when_proposal_has_two_lines() -> None:
@@ -263,7 +364,7 @@ def test_ignored_line_is_a_visible_noop_and_does_not_block_confirmation() -> Non
     )
 
     assert "1. 🚫 IGNORE 4 PCS — Incorrect invoice line → excluded" in message.text
-    assert message.text.startswith("⏳ **Pending stock addition**")
+    assert message.text.startswith("📋 **Review and confirm stock addition**")
     assert decode_callback(message.inline_keyboard[-1][0].callback_data).action is (
         CallbackAction.CONFIRM_PROPOSAL
     )
@@ -295,6 +396,7 @@ def test_completed_multi_new_selection_batches_detail_collection() -> None:
     )
 
     assert "Line decisions complete" in message.text
+    assert message.text.startswith("📝 **Continue setting up 2 new catalog products**")
     assert message.inline_keyboard[0][0].text == "Continue with 2 new items"
     assert decode_callback(message.inline_keyboard[0][0].callback_data).action is (
         CallbackAction.ADD_ALL_NEW_ITEMS
@@ -318,7 +420,7 @@ def test_created_catalog_item_is_resolved_even_with_add_new_audit_marker() -> No
         ],
     )
 
-    assert message.text.startswith("⏳ **Pending stock addition**")
+    assert message.text.startswith("📋 **Review and confirm stock addition**")
     assert "details pending" not in message.text
     assert "Valve 24V · VALVE-24V" in message.text
 
@@ -343,6 +445,7 @@ def test_match_clarification_asks_for_one_natural_reply_without_candidate_button
     )
 
     assert "❓ **One detail needed:** Which colour is it?" in message.text
+    assert message.text.startswith("❓ **Reply with a product detail to find a catalog match**")
     assert "Reply naturally in a new message" in message.text
     assert len(message.inline_keyboard) == 1
     assert decode_callback(message.inline_keyboard[0][0].callback_data).action is (
@@ -397,6 +500,7 @@ def test_catalog_detail_and_confirmation_messages_use_expected_actions() -> None
         decode_callback(button.callback_data).action for button in confirmation.inline_keyboard[0]
     ]
     assert actions == [CallbackAction.CONFIRM_NEW_ITEM, CallbackAction.CANCEL_NEW_ITEM]
+    assert confirmation.text.startswith("📋 **Review and create the new catalog product**")
     assert "Unit: each" in confirmation.text
     assert "Attributes: colour: purple" in confirmation.text
     assert "{'colour': 'purple'}" not in confirmation.text
@@ -457,7 +561,7 @@ def test_applied_transaction_and_reversal_prompts_use_expected_actions() -> None
     assert "Duplicate delivery" in confirmation.text
     assert f"Original transaction ID: `{TRANSACTION_ID}`" in confirmation.text
     assert "Original transaction time: 24 Jul 2026, 07:42:19 PM" in confirmation.text
-    assert confirmation.text.startswith("⏳ **Pending reversal confirmation**")
+    assert confirmation.text.startswith("📋 **Review and confirm transaction reversal**")
 
     reversed_transaction = render_reversal_applied(
         transaction_id=TRANSACTION_ID,

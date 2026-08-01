@@ -29,6 +29,10 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
     responses = {
         "begin_catalog_item_creation": str(REQUEST_ID),
         "show_existing_inventory_candidates": str(PROPOSAL_ID),
+        "create_catalog_item_from_agent_preview": {
+            "status": "completed",
+            "result_id": str(PROPOSAL_ID),
+        },
         "find_pending_catalog_item_creation": str(REQUEST_ID),
         "get_catalog_item_creation_view": {
             "request_id": str(REQUEST_ID),
@@ -76,6 +80,13 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
 
     assert await repository.begin(line_id=LINE_ID, actor_id=ACTOR_ID, chat_id=-100123) == REQUEST_ID
     assert await repository.show_existing(line_id=LINE_ID, actor_id=ACTOR_ID) == PROPOSAL_ID
+    preview_result = await repository.create_from_preview(
+        line_id=LINE_ID,
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+    assert preview_result.status == "completed"
+    assert preview_result.result_id == PROPOSAL_ID
     assert await repository.find_pending(actor_id=ACTOR_ID, chat_id=-100123) == REQUEST_ID
     assert await repository.get_view(
         request_id=REQUEST_ID

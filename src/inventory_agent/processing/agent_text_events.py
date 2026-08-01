@@ -583,7 +583,11 @@ class TelegramAgentTextEventProcessor:
                                 source_event_id=context.event_id,
                                 outcome_type=ProcessingOutcomeType.CLARIFICATION_REQUIRED,
                                 chat_id=context.chat_id,
-                                payload={"message": f"❓ **More information needed**\n{question}"},
+                                payload={
+                                    "message": (
+                                        f"❓ **Reply with the missing information**\n{question}"
+                                    )
+                                },
                             )
                         )
                         await self._require_finish(context.event_id)
@@ -641,7 +645,7 @@ class TelegramAgentTextEventProcessor:
                     chat_id=context.chat_id,
                     payload={
                         "message": (
-                            "❓ **More information needed**\n"
+                            "❓ **Reply with the missing catalog information**\n"
                             f"Please send {_natural_list(missing)} in any format."
                         )
                     },

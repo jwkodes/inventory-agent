@@ -728,7 +728,7 @@ async def test_delivery_crosses_python_and_local_supabase_boundaries() -> None:
             assert sender.messages == [
                 (
                     100000001,
-                    "❓ **More information needed**\nWhich item should I use?",
+                    "❓ **Reply with the missing information**\nWhich item should I use?",
                 )
             ]
 

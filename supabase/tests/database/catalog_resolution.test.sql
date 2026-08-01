@@ -6,7 +6,7 @@ update public.organization_users
 set telegram_user_id = 100000001
 where id = '11000000-0000-0000-0000-000000000001';
 
-select plan(40);
+select plan(47);
 
 select has_table(
   'public',
@@ -56,6 +56,12 @@ select has_function(
 select has_function(
   'public', 'cancel_catalog_item_creation', array['uuid', 'uuid'],
   'catalog item cancellation exists'
+);
+select has_function(
+  'public',
+  'create_catalog_item_from_agent_preview',
+  array['uuid', 'uuid', 'bigint'],
+  'complete agent previews can be accepted atomically'
 );
 
 create temporary table fallback_candidates as
@@ -429,6 +435,14 @@ select line.id as line_id
 from public.proposal_lines as line
 where line.proposal_id = (select proposal_id from agent_catalog_proposal);
 
+select is(
+  public.get_proposal_confirmation_view(
+    (select proposal_id from agent_catalog_proposal)
+  ) #>> '{lines,0,new_item_preview,sku}',
+  'PGTAP-AMOX-502',
+  'proposal review exposes a complete agent catalog draft for immediate creation'
+);
+
 create temporary table agent_catalog_request as
 select public.begin_catalog_item_creation(
   (select line_id from agent_catalog_line),
@@ -522,6 +536,60 @@ select ok(
     where request.id = (select request_id from agent_catalog_request)
   ),
   'duplicate SKU recovery clears the conflict and explains what must change'
+);
+
+select is(
+  public.save_catalog_item_creation_details(
+    (select request_id from agent_catalog_request),
+    '50000000-0000-0000-0000-000000000301',
+    '11000000-0000-0000-0000-000000000001',
+    'Amoxicillin',
+    'PGTAP-AMOX-503',
+    'box',
+    'simple',
+    '{"strength":"502mg","brand":"Example Labs"}'::jsonb
+  ),
+  (select request_id from agent_catalog_request),
+  'a corrected preview can return to confirmation'
+);
+
+create temporary table preview_creation_result as
+select public.create_catalog_item_from_agent_preview(
+  (select line_id from agent_catalog_line),
+  '11000000-0000-0000-0000-000000000001',
+  100000001
+) as result;
+
+select is(
+  (select result ->> 'status' from preview_creation_result),
+  'completed',
+  'accepting a complete preview creates its catalog item immediately'
+);
+select is(
+  (select (result ->> 'result_id')::uuid from preview_creation_result),
+  (select proposal_id from agent_catalog_proposal),
+  'preview creation resumes the stock proposal'
+);
+select is(
+  (
+    public.create_catalog_item_from_agent_preview(
+      (select line_id from agent_catalog_line),
+      '11000000-0000-0000-0000-000000000001',
+      100000001
+    ) ->> 'result_id'
+  )::uuid,
+  (select proposal_id from agent_catalog_proposal),
+  'repeating the preview callback returns the same proposal'
+);
+select is(
+  (
+    select count(*)
+    from public.item_variants as variant
+    where variant.organization_id = '10000000-0000-0000-0000-000000000001'
+      and variant.sku = 'PGTAP-AMOX-503'
+  ),
+  1::bigint,
+  'a repeated preview callback does not duplicate the catalog variant'
 );
 
 select * from finish();

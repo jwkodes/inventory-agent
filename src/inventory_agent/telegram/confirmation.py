@@ -7,7 +7,12 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
+from inventory_agent.catalog.models import (
+    CatalogBatchCreationView,
+    CatalogItemCreationView,
+    CatalogTrackingMode,
+    ExtractedCatalogAttribute,
+)
 from inventory_agent.telegram.callbacks import CallbackAction, CallbackCommand, encode_callback
 
 
@@ -16,6 +21,16 @@ class CandidateChoice(BaseModel):
 
     item_variant_id: UUID
     label: str
+
+
+class NewCatalogItemPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    sku: str
+    base_unit: str
+    tracking_mode: CatalogTrackingMode
+    attributes: list[ExtractedCatalogAttribute] = Field(default_factory=list)
 
 
 class ProposalLineView(BaseModel):
@@ -31,6 +46,7 @@ class ProposalLineView(BaseModel):
     clarification_question: str | None = None
     show_candidates: bool = False
     user_resolution: str | None = None
+    new_item_preview: NewCatalogItemPreview | None = None
 
 
 class InlineButton(BaseModel):
@@ -51,6 +67,9 @@ class ProposalConfirmationView(BaseModel):
     proposal_id: UUID
     intent: str
     lines: list[ProposalLineView]
+
+
+MAX_CANDIDATE_GUESSES = 3
 
 
 def render_proposal_confirmation(
@@ -92,6 +111,17 @@ def render_proposal_confirmation(
         line.matched_label is None and line.show_candidates and line.user_resolution != "ignored"
         for line in lines
     )
+    candidate_guess_lines = [
+        line
+        for line in lines
+        if line.matched_label is None
+        and line.match_decision != "clarification_required"
+        and (line.show_candidates or line.match_decision != "not_found")
+        and line.user_resolution != "ignored"
+    ]
+    visible_guess_count = sum(
+        min(len(line.candidate_choices), MAX_CANDIDATE_GUESSES) for line in candidate_guess_lines
+    )
 
     for index, line in enumerate(lines, start=1):
         unit = f" {line.unit}" if line.unit else ""
@@ -124,14 +154,25 @@ def render_proposal_confirmation(
                     text_lines.append(
                         f"🔎 **No confident match:** No catalog match was found for {subject}."
                     )
+                    if line.new_item_preview is not None:
+                        text_lines.extend(_new_item_preview_lines(line.new_item_preview))
                 if not bulk_new_items:
+                    create_action = (
+                        CallbackAction.CREATE_NEW_ITEM
+                        if line.new_item_preview is not None
+                        else CallbackAction.ADD_NEW_ITEM
+                    )
                     keyboard.append(
                         [
                             InlineButton(
-                                text="Add new item",
+                                text=(
+                                    "Create this item"
+                                    if line.new_item_preview is not None
+                                    else "Add new item"
+                                ),
                                 callback_data=encode_callback(
                                     CallbackCommand(
-                                        CallbackAction.ADD_NEW_ITEM,
+                                        create_action,
                                         line.proposal_line_id,
                                     )
                                 ),
@@ -205,7 +246,7 @@ def render_proposal_confirmation(
                             ]
                         )
             else:
-                for choice in line.candidate_choices:
+                for choice in line.candidate_choices[:MAX_CANDIDATE_GUESSES]:
                     keyboard.append(
                         [
                             InlineButton(
@@ -240,7 +281,7 @@ def render_proposal_confirmation(
                     )
 
     if not unresolved:
-        text_lines.insert(0, f"⏳ **Pending {operation_label}**")
+        text_lines.insert(0, f"📋 **Review and confirm {operation_label}**")
         text_lines.append("Please review, then choose **Confirm** or **Cancel**.")
         keyboard.append(
             [
@@ -259,7 +300,27 @@ def render_proposal_confirmation(
             ]
         )
     else:
-        text_lines.insert(0, "⚠️ **Action needed**")
+        if clarification_prompt_shown:
+            heading = "❓ **Reply with a product detail to find a catalog match**"
+        elif candidate_guess_lines and visible_guess_count:
+            heading = "🔎 **Choose a catalog match**"
+        elif candidate_guess_lines:
+            heading = "🔎 **No similar catalog products found**"
+        elif pending_new_lines:
+            heading = (
+                "🆕 **Choose: create a new catalog product or match an existing one**"
+                if len(pending_new_lines) == 1
+                else "🆕 **Choose how to catalog each unmatched product**"
+            )
+        elif selected_new_lines:
+            heading = (
+                "📝 **Enter details for the new catalog product**"
+                if len(selected_new_lines) == 1
+                else f"📝 **Continue setting up {len(selected_new_lines)} new catalog products**"
+            )
+        else:
+            heading = "🔎 **Resolve unmatched catalog products**"
+        text_lines.insert(0, heading)
         if bulk_new_items and pending_new_lines and not candidate_resolution_pending:
             text_lines.append(
                 "🔎 **No catalog matches:** "
@@ -322,7 +383,23 @@ def render_proposal_confirmation(
                     ],
                 )
         else:
-            text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
+            if visible_guess_count:
+                text_lines.append(
+                    "I couldn't find a close enough catalog match. These are the best "
+                    "available matches; choose one only if it is correct, or choose **Cancel**."
+                )
+            elif candidate_guess_lines:
+                text_lines.append(
+                    "I couldn't find any similar catalog products. Choose **Cancel** to go back."
+                )
+            elif len(pending_new_lines) == 1 and pending_new_lines[0].new_item_preview is not None:
+                text_lines.append(
+                    "Review the catalog preview above, then choose **Create this item** or "
+                    "**Choose existing**. Creating it will continue to the stock-addition "
+                    "confirmation without another catalog review."
+                )
+            else:
+                text_lines.append("Resolve the unmatched item, or choose **Cancel**.")
         keyboard.append(
             [
                 InlineButton(
@@ -352,6 +429,8 @@ def _unresolved_status(line: ProposalLineView) -> str:
         return "more information needed"
     if line.match_decision == "not_found" and not line.show_candidates:
         return "no catalog match"
+    if line.candidate_choices or line.show_candidates:
+        return "review the best available matches"
     return "choose a catalog match"
 
 
@@ -375,6 +454,21 @@ def _candidate_label(
     if not disambiguate:
         return candidate[:64]
     return f"{description} → {candidate}"[:64]
+
+
+def _new_item_preview_lines(preview: NewCatalogItemPreview) -> list[str]:
+    lines = [
+        "🆕 **New catalog product preview**",
+        f"Name: {preview.name}",
+        f"SKU: {preview.sku}",
+        f"Unit: {preview.base_unit}",
+    ]
+    if preview.attributes:
+        attributes = ", ".join(
+            f"{attribute.key}: {attribute.value}" for attribute in preview.attributes
+        )
+        lines.append(f"Attributes: {attributes}")
+    return lines
 
 
 def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> ConfirmationMessage:
@@ -431,7 +525,7 @@ def render_catalog_item_details_prompt(view: CatalogItemCreationView) -> Confirm
             "Reply naturally only if you want to correct or add details."
         )
     return ConfirmationMessage(
-        text=(f"📝 **New item details needed**\n{retained}{request_text}"),
+        text=(f"📝 **Send details for the new catalog product**\n{retained}{request_text}"),
         inline_keyboard=[
             [
                 InlineButton(
@@ -449,7 +543,7 @@ def render_catalog_batch_details_prompt(view: CatalogBatchCreationView) -> Confi
     """Ask once for missing identifiers across every selected new product."""
 
     text_lines = [
-        f"📝 **{len(view.items)} new catalog items**",
+        f"📝 **Send details for {len(view.items)} new catalog products**",
         "The receipt quantities are retained:",
     ]
     for item in view.items:
@@ -489,7 +583,7 @@ def render_catalog_batch_confirmation(
 ) -> ConfirmationMessage:
     """Review catalog creation and the receipt behind one atomic confirmation."""
 
-    text_lines = ["⏳ **Pending catalog and stock addition**"]
+    text_lines = ["📋 **Review and confirm new catalog products + stock addition**"]
     if proposal is None:
         text_lines.append(f"Create and receive {len(view.items)} new products:")
         for item in view.items:
@@ -552,7 +646,7 @@ def render_catalog_item_confirmation(view: CatalogItemCreationView) -> Confirmat
     if tracking_mode is None:
         raise ValueError("Catalog item tracking mode is missing")
     text_lines = [
-        "⏳ **Pending catalog change**",
+        "📋 **Review and create the new catalog product**",
         f"Name: {view.name}",
         f"SKU: {view.sku}",
         f"Unit: {view.base_unit}",
@@ -626,7 +720,8 @@ def render_reversal_reason_prompt(request_id: UUID) -> ConfirmationMessage:
 
     return ConfirmationMessage(
         text=(
-            "❓ **Reversal reason needed**\nReply with the reason, or choose **Cancel reversal**."
+            "✍️ **Reply with the reason for reversing this transaction**\n"
+            "Or choose **Cancel reversal**."
         ),
         inline_keyboard=[
             [
@@ -653,7 +748,7 @@ def render_reversal_confirmation(
 
     return ConfirmationMessage(
         text=(
-            "⏳ **Pending reversal confirmation**\n"
+            "📋 **Review and confirm transaction reversal**\n"
             "This reverses the entire original transaction.\n"
             f"🧾 Original transaction ID: `{original_transaction_id}`\n"
             "🕒 Original transaction time: "

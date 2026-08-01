@@ -357,7 +357,7 @@ def _style_plain_outcome(outcome_type: ProcessingOutcomeType, message: str) -> s
     if stripped.startswith(("✅", "⏳", "🚫", "❓", "⚠️", "🔎", "📝", "🤖")):
         return stripped
     if outcome_type is ProcessingOutcomeType.CLARIFICATION_REQUIRED:
-        return f"❓ **More information needed**\n{stripped}"
+        return f"❓ **Reply with the missing information**\n{stripped}"
     if outcome_type is ProcessingOutcomeType.UNSUPPORTED_COMMAND:
         return f"🤖 **Inventory assistant**\n{stripped}"
     return stripped

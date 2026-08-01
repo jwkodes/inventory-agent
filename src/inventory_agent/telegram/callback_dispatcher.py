@@ -134,6 +134,20 @@ class TelegramCallbackDispatcher:
                 )
                 catalog_status = (await self._catalog.get_view(request_id=result_id)).status
                 message = "Catalog item details required"
+            elif command.action is CallbackAction.CREATE_NEW_ITEM:
+                creation = await self._catalog.create_from_preview(
+                    line_id=command.target_id,
+                    actor_id=actor_id,
+                    chat_id=chat_id,
+                )
+                result_id = creation.result_id
+                catalog_status = creation.status
+                if catalog_status == "completed":
+                    message = "Catalog item created"
+                elif catalog_status == "awaiting_details":
+                    message = creation.message or "Catalog item details required"
+                else:
+                    raise ValueError("Catalog preview returned an unsupported status")
             elif command.action is CallbackAction.SHOW_EXISTING_ITEMS:
                 result_id = await self._catalog.show_existing(
                     line_id=command.target_id,

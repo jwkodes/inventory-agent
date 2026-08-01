@@ -29,3 +29,12 @@ def test_variant_selection_round_trips_within_telegram_limit() -> None:
 def test_malformed_callback_is_rejected() -> None:
     with pytest.raises(ValueError, match="format"):
         decode_callback("not-a-valid-callback")
+
+
+def test_create_preview_action_round_trips() -> None:
+    command = CallbackCommand(
+        action=CallbackAction.CREATE_NEW_ITEM,
+        target_id=UUID("41000000-0000-0000-0000-000000000001"),
+    )
+
+    assert decode_callback(encode_callback(command)) == command

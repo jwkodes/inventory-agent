@@ -2,7 +2,11 @@
 
 from uuid import UUID
 
-from inventory_agent.catalog.models import CatalogBatchCreationView, CatalogItemCreationView
+from inventory_agent.catalog.models import (
+    CatalogBatchCreationView,
+    CatalogItemCreationView,
+    CatalogPreviewCreationResult,
+)
 from inventory_agent.catalog.repository import CatalogItemConfirmationConflict
 from inventory_agent.telegram.callback_dispatcher import (
     CallbackOutcomeStatus,
@@ -147,6 +151,17 @@ class RecordingCatalog:
     async def show_existing(self, *, line_id: UUID, actor_id: UUID) -> UUID:
         self.events.append("show_existing")
         return PROPOSAL_ID
+
+    async def create_from_preview(
+        self, *, line_id: UUID, actor_id: UUID, chat_id: int
+    ) -> CatalogPreviewCreationResult:
+        assert (line_id, actor_id, chat_id) == (LINE_ID, ACTOR_ID, -100123)
+        self.events.append("create_catalog_preview")
+        preview_status = "awaiting_details" if self.status == "awaiting_details" else "completed"
+        return CatalogPreviewCreationResult(
+            status=preview_status,
+            result_id=(PROPOSAL_ID if preview_status == "completed" else CATALOG_REQUEST_ID),
+        )
 
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         raise AssertionError("dispatcher does not capture catalog details")
@@ -371,6 +386,21 @@ async def test_catalog_actions_route_through_durable_resolution_lifecycle() -> N
         "ack",
         "cancel_catalog",
     ]
+
+
+async def test_complete_preview_is_created_without_a_second_catalog_confirmation() -> None:
+    events: list[str] = []
+    outcome = await dispatcher(events).dispatch(
+        callback_query_id="callback-create-preview",
+        callback_data=encode_callback(CallbackCommand(CallbackAction.CREATE_NEW_ITEM, LINE_ID)),
+        actor_id=ACTOR_ID,
+        chat_id=-100123,
+    )
+
+    assert outcome.status is CallbackOutcomeStatus.COMPLETED
+    assert outcome.result_id == PROPOSAL_ID
+    assert outcome.catalog_status == "completed"
+    assert events == ["ack", "create_catalog_preview"]
 
 
 async def test_bulk_catalog_actions_use_one_batch_lifecycle() -> None:

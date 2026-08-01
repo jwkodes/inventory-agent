@@ -19,6 +19,7 @@ _CONTEXT_LIFECYCLE_ACTIONS = {
     CallbackAction.CONFIRM_PROPOSAL,
     CallbackAction.CANCEL_PROPOSAL,
     CallbackAction.CONFIRM_NEW_ITEM,
+    CallbackAction.CREATE_NEW_ITEM,
     CallbackAction.CANCEL_NEW_ITEM,
     CallbackAction.CONFIRM_CATALOG_BATCH,
     CallbackAction.CANCEL_CATALOG_BATCH,
@@ -194,6 +195,15 @@ class TelegramCallbackEventProcessor:
                 raise ValueError("Catalog item request is not awaiting user action")
             aggregate_id = result_id
             payload = {}
+        elif action is CallbackAction.CREATE_NEW_ITEM:
+            if catalog_status == "completed":
+                outcome_type = ProcessingOutcomeType.PROPOSAL_READY
+            elif catalog_status == "awaiting_details":
+                outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
+            else:
+                raise ValueError("Catalog item request is not awaiting user action")
+            aggregate_id = result_id
+            payload = {}
         elif action is CallbackAction.CONFIRM_NEW_ITEM:
             if catalog_status == "awaiting_details":
                 outcome_type = ProcessingOutcomeType.CATALOG_ITEM_DETAILS_REQUIRED
@@ -271,7 +281,8 @@ class TelegramCallbackEventProcessor:
             )
         )
         conflict_reopened = (
-            action is CallbackAction.CONFIRM_NEW_ITEM and catalog_status == "awaiting_details"
+            action in {CallbackAction.CONFIRM_NEW_ITEM, CallbackAction.CREATE_NEW_ITEM}
+            and catalog_status == "awaiting_details"
         ) or (
             action is CallbackAction.CONFIRM_CATALOG_BATCH
             and catalog_batch_status == "awaiting_details"
@@ -286,7 +297,11 @@ class TelegramCallbackEventProcessor:
                 organization_user_id=actor_id,
                 chat_id=chat_id,
                 source_event_id=event_id,
-                action=action.name.casefold(),
+                action=(
+                    CallbackAction.CONFIRM_NEW_ITEM.name.casefold()
+                    if action is CallbackAction.CREATE_NEW_ITEM
+                    else action.name.casefold()
+                ),
                 result_id=result_id,
             )
         await self._message_editor.remove_inline_keyboard(

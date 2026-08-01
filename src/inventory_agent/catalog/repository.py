@@ -10,6 +10,7 @@ from inventory_agent.catalog.models import (
     CatalogBatchItemDraft,
     CatalogItemCreationView,
     CatalogItemDetails,
+    CatalogPreviewCreationResult,
     ExtractedCatalogItemDetails,
 )
 
@@ -36,6 +37,11 @@ class CatalogItemCreationRepository(Protocol):
 
     async def show_existing(self, *, line_id: UUID, actor_id: UUID) -> UUID:
         """Expose ranked fallback candidates and return the proposal ID."""
+
+    async def create_from_preview(
+        self, *, line_id: UUID, actor_id: UUID, chat_id: int
+    ) -> CatalogPreviewCreationResult:
+        """Create a complete agent draft atomically, or request corrected details."""
 
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         """Find a detail form awaiting text from this actor and chat."""
@@ -130,6 +136,19 @@ class SupabaseCatalogItemCreationRepository:
             ),
             "existing candidate proposal",
         )
+
+    async def create_from_preview(
+        self, *, line_id: UUID, actor_id: UUID, chat_id: int
+    ) -> CatalogPreviewCreationResult:
+        result = await self._call(
+            "create_catalog_item_from_agent_preview",
+            {
+                "p_proposal_line_id": str(line_id),
+                "p_actor_id": str(actor_id),
+                "p_chat_id": chat_id,
+            },
+        )
+        return CatalogPreviewCreationResult.model_validate(result)
 
     async def find_pending(self, *, actor_id: UUID, chat_id: int) -> UUID | None:
         result = await self._call(

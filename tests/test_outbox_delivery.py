@@ -210,7 +210,7 @@ async def test_delivers_rendered_proposal_with_selection_keyboard() -> None:
     assert result.status is OutboxDeliveryStatus.SENT
     assert result.telegram_message_id == 77
     assert repository.requested_proposals == [PROPOSAL_ID]
-    assert sender.messages[0][1].startswith("⚠️ **Action needed**")
+    assert sender.messages[0][1].startswith("🔎 **Choose a catalog match**")
     assert "Review stock addition" in sender.messages[0][1]
     assert "➕ ADD 3" in sender.messages[0][1]
     assert "💬 **Agent note**\nI found the exact catalog item." in sender.messages[0][1]
@@ -278,7 +278,8 @@ async def test_reversal_success_and_linked_replacement_are_delivered_together() 
     assert text.startswith("✅ **Transaction reversed**")
     assert f"Reversal transaction ID: `{TRANSACTION_ID}`" in text
     assert "Review stock addition:" in text
-    assert "Resolve the unmatched item, or choose **Cancel**." in text
+    assert "These are the best available matches" in text
+    assert "choose one only if it is correct" in text
     assert repository.requested_transactions == [(ORGANIZATION_ID, TRANSACTION_ID)]
     assert sender.messages[0][2] is not None
 
@@ -298,7 +299,9 @@ async def test_delivers_plain_clarification_message() -> None:
     ).deliver_one(OUTBOX_ID)
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages == [(-100123, "❓ **More information needed**\nWhich item?", None)]
+    assert sender.messages == [
+        (-100123, "❓ **Reply with the missing information**\nWhich item?", None)
+    ]
 
 
 async def test_delivers_one_bulk_catalog_prompt_with_retained_quantity() -> None:
@@ -332,7 +335,7 @@ async def test_bulk_catalog_confirmation_reviews_creation_and_stock_together() -
 
     assert result.status is OutboxDeliveryStatus.SENT
     text = sender.messages[0][1]
-    assert text.startswith("⏳ **Pending catalog and stock addition**")
+    assert text.startswith("📋 **Review and confirm new catalog products + stock addition**")
     assert "🆕 CREATE + ADD 3 each — Purple Widget · ZX-999" in text
     assert "Confirm once" in text
     assert repository.requested_proposals == [PROPOSAL_ID]
@@ -455,7 +458,7 @@ async def test_delivers_reversal_confirmation_with_reason_and_buttons() -> None:
     ).deliver_one()
 
     assert result.status is OutboxDeliveryStatus.SENT
-    assert sender.messages[0][1].startswith("⏳ **Pending reversal confirmation**")
+    assert sender.messages[0][1].startswith("📋 **Review and confirm transaction reversal**")
     assert f"Original transaction ID: `{TRANSACTION_ID}`" in sender.messages[0][1]
     assert "💬 **Agent note**\nI found the transaction to reverse." in sender.messages[0][1]
     assert "Wrong delivery was entered" in sender.messages[0][1]

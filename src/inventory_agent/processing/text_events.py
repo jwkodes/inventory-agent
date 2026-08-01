@@ -217,7 +217,7 @@ class TelegramTextEventProcessor:
                                 chat_id=context.chat_id,
                                 payload={
                                     "message": (
-                                        "❓ **More information needed**\n"
+                                        "❓ **Reply with the missing catalog information**\n"
                                         f"Please send {_natural_list(missing)} in any format."
                                     )
                                 },
