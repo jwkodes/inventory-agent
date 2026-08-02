@@ -1,9 +1,9 @@
 # Inventory Agent
 
-An inventory assistant for SMEs that turns Telegram text, invoice images, and voice
-notes into reviewable inventory transactions. Inventory writes are confirmed by a
-human, applied atomically, recorded in an immutable ledger, and reversible through
-compensating transactions.
+An inventory assistant prototype for SMEs that currently turns Telegram text and supported
+invoice images into reviewable inventory transactions. Voice notes are planned but are not
+implemented. Inventory writes are confirmed by a human, applied atomically, recorded in an
+immutable ledger, and reversible through compensating transactions.
 
 This repository is in the prototype stage. It currently includes the application
 foundation, a health endpoint, the first Supabase inventory schema, atomic stock
@@ -38,8 +38,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the component and data desi
 See [docs/MODEL_AND_ACTION_FLOW.md](docs/MODEL_AND_ACTION_FLOW.md) for the current
 model-switching flowchart, reasoning-effort assignments, tool calls, and deterministic
 inventory actions.
+See [docs/HANDOVER_LIMITATIONS.md](docs/HANDOVER_LIMITATIONS.md) for the prototype's known
+limitations, why those constraints were chosen, and the production follow-up expected from
+the next owner.
 
-An opt-in LLM-led text path now lives on `experiment/llm-inventory-agent`. It gives one
+An opt-in LLM-led text path is included in `main`. It gives one
 conversational model organization-scoped inventory and transaction reads plus tools that
 create pending stock or reversal proposals. The model cannot apply inventory; the existing
 Telegram confirmation buttons and atomic database functions remain the write boundary.
@@ -70,20 +73,28 @@ Install:
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - [Docker Desktop](https://docs.docker.com/get-docker/) or another Docker-compatible runtime
 - [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started)
+- [ngrok](https://ngrok.com/docs/getting-started/) for the Telegram webhook tunnel
+- `jq`, `curl`, and `openssl` for the development scripts and local secret generation
 
 On macOS with Homebrew:
 
 ```bash
-brew install uv supabase
+brew install uv supabase ngrok jq
 ```
 
-Install and start Docker Desktop separately. Verify the tools:
+macOS already includes `curl` and an `openssl`-compatible command. Install and start Docker
+Desktop separately. Verify every command used by the setup:
 
 ```bash
 git --version
 uv --version
 docker --version
 supabase --version
+ngrok version
+jq --version
+curl --version
+openssl version
+docker info
 ```
 
 ### 2. Get the source code
@@ -100,7 +111,7 @@ When working from an existing local checkout, just change into its directory.
 ### 3. Install Python and project dependencies
 
 ```bash
-uv sync --all-groups
+uv sync --all-groups --locked
 ```
 
 `uv` installs a compatible Python version when needed, creates `.venv`, and installs the
@@ -112,9 +123,10 @@ exact dependency versions recorded in `uv.lock`.
 cp .env.example .env
 ```
 
-For the health endpoint and unit tests, the blank secret values are acceptable. OpenAI,
-Telegram, and Supabase features will require their corresponding values as those features
-are enabled.
+For the health endpoint, API-only command, and unit tests, blank secret values are
+acceptable. The complete `./scripts/start-dev.sh` stack also launches the worker, so it
+requires `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `SUPABASE_SECRET_KEY` before it can be
+started.
 
 Never commit `.env`, Telegram bot tokens, OpenAI API keys, or Supabase secret keys.
 An API key authenticates requests but does not itself include an API balance. Before a
@@ -131,8 +143,12 @@ Start the local Supabase services:
 
 ```bash
 supabase start
-supabase db reset
+supabase db reset --local
 ```
+
+`supabase db reset --local` destroys and recreates the local development database, then
+replays the committed migrations and seed data. Run it for a fresh setup or when you
+intentionally want a clean local database; do not run it when local data must be preserved.
 
 Copy the local Project URL, publishable key, and secret key printed by `supabase start`
 into `.env`. Local Supabase Studio is normally available at
@@ -144,11 +160,28 @@ The first `supabase start` downloads several container images and can take a few
 If it appears to wait indefinitely without output, confirm that Docker Desktop has fully
 started, then run the command again.
 
-### 6. Run the API
+### 6. Configure and run the application
 
-The recommended local command starts a loopback-only supervisor, which starts both the
-API and background worker and enables their dashboard controls. Generate one local
-development password:
+Before launching the complete stack:
+
+1. Create or select a Telegram bot through `@BotFather`.
+2. Put its token in `.env` as `TELEGRAM_BOT_TOKEN`.
+3. Put its username without the leading `@` in `.env` as `TELEGRAM_BOT_USERNAME`.
+4. Put a funded OpenAI Platform API key in `.env` as `OPENAI_API_KEY`.
+5. Confirm that `SUPABASE_SECRET_KEY` contains the local secret copied in step 5.
+6. Authenticate ngrok once with the authtoken from your ngrok dashboard:
+
+   ```bash
+   ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
+   ngrok config check
+   ```
+
+The ngrok authtoken is written to user-level configuration outside this repository. Never
+put it in `.env` or commit it.
+
+The recommended local command starts a loopback-only supervisor, which starts both the API
+and background worker and enables their dashboard controls. Generate one local development
+password:
 
 ```bash
 openssl rand -hex 32
@@ -182,7 +215,7 @@ The start script:
 - starts the project’s local Supabase stack;
 - launches the API and worker through the loopback supervisor;
 - launches ngrok for port 8000, or reuses an existing port-8000 tunnel;
-- waits for the services to become healthy and prints their URLs; and
+- waits for the supervisor, API, and tunnel to become healthy and prints their URLs; and
 - writes process logs and ownership PID files under the gitignored `.runtime/` directory.
 
 It is safe to run the command again: healthy existing services are reused rather than
@@ -232,25 +265,9 @@ Interactive API documentation is available at <http://127.0.0.1:8000/docs>.
 Telegram can deliver webhooks only to a public HTTPS URL. For local development, keep
 the API running and expose port 8000 through an HTTPS tunnel. A free authenticated ngrok
 account provides one assigned development domain that remains the same across agent
-restarts, so it is the preferred prototype setup.
-
-Install ngrok once:
-
-```bash
-brew install ngrok/ngrok/ngrok
-```
-
-Create a free ngrok account, copy its authtoken from the ngrok dashboard, and authenticate
-this computer once:
-
-```bash
-ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
-ngrok config check
-```
-
-The authtoken is written to ngrok's user-level configuration outside this repository.
-Never put it in `.env` or commit it. `./scripts/start-dev.sh` starts or reuses the ngrok
-tunnel automatically. The following separate terminals are only the manual alternative.
+restarts, so it is the preferred prototype setup. `./scripts/start-dev.sh` starts or reuses
+the authenticated ngrok tunnel configured in step 6. The following separate terminals are
+only the manual alternative.
 
 Terminal 1 — API and worker supervisor:
 
@@ -280,13 +297,11 @@ It should return:
 {"status":"ok","service":"inventory-agent"}
 ```
 
-Before registering a webhook, identify your Telegram numeric user ID:
+Before registering a webhook, identify your Telegram numeric user ID. Telegram's
+`getUpdates` discovery endpoint works only while no webhook is registered:
 
-1. Put the BotFather token in `.env` as `TELEGRAM_BOT_TOKEN`.
-2. Put the bot username without its leading `@` in `.env`, for example
-   `TELEGRAM_BOT_USERNAME=capybababot`.
-3. Send the bot a private message in Telegram.
-4. Run:
+1. Send the bot a private message in Telegram.
+2. Run:
 
 ```bash
 uv run python -m inventory_agent.telegram.discover_users
@@ -307,8 +322,16 @@ Replace `123456789` with your actual ID. Then generate the webhook secret:
 openssl rand -hex 32
 ```
 
-Put the result in `.env` as `TELEGRAM_WEBHOOK_SECRET`, set the tunnel URL in
-`TELEGRAM_WEBHOOK_URL`, and register it from a third terminal:
+Put the result in `.env` as `TELEGRAM_WEBHOOK_SECRET` and set the tunnel URL in
+`TELEGRAM_WEBHOOK_URL`. Fully restart the application so the API and worker inherit the
+completed environment:
+
+```bash
+./scripts/stop-dev.sh
+./scripts/start-dev.sh
+```
+
+Verify the public health route again, then register the webhook:
 
 ```bash
 uv run python -m inventory_agent.telegram.setup_webhook
@@ -532,7 +555,8 @@ When finished, run `./scripts/stop-dev.sh`. Local database contents remain in th
 project’s Docker volume and are restored by the next start.
 
 If you do not want an ngrok account, a Cloudflare Quick Tunnel remains a temporary
-fallback:
+fallback. Because `./scripts/start-dev.sh` specifically manages ngrok, use the manual
+supervisor command from step 6 and start Cloudflare in a separate terminal:
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8000

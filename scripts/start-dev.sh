@@ -45,6 +45,26 @@ if [[ -z "$control_token" ]]; then
   exit 1
 fi
 
+missing_worker_settings=()
+for setting_name in SUPABASE_SECRET_KEY TELEGRAM_BOT_TOKEN OPENAI_API_KEY; do
+  if [[ -z "${!setting_name:-}" ]]; then
+    missing_worker_settings+=("$setting_name")
+  fi
+done
+if (( ${#missing_worker_settings[@]} > 0 )); then
+  echo "The full development stack cannot start until these .env values are set:" >&2
+  for setting_name in "${missing_worker_settings[@]}"; do
+    echo "  - $setting_name" >&2
+  done
+  echo "Run the API-only command from README.md if you do not need the worker yet." >&2
+  exit 1
+fi
+
+if ! "$python_bin" -c "from inventory_agent.config import Settings; Settings()"; then
+  echo "The values in .env are invalid. Correct the validation error above and try again." >&2
+  exit 1
+fi
+
 pid_is_running() {
   local pid_file="$1"
   local pid
