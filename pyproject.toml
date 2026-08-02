@@ -1,7 +1,7 @@
 [project]
 name = "inventory-agent"
 version = "0.1.0"
-description = "A Telegram-first, multimodal inventory assistant for SMEs"
+description = "A Telegram-first, multimodal inventory assistant"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [

@@ -3,8 +3,8 @@
 > **Disclaimer:** The code in this repository was produced entirely by OpenAI Codex,
 > based on requirements, direction, and feedback provided by the author.
 
-An inventory assistant prototype for SMEs that currently turns Telegram text and supported
-invoice images into reviewable inventory transactions. Voice notes are planned but are not
+An inventory assistant prototype that currently turns Telegram text and supported invoice
+images into reviewable inventory transactions. Voice notes are planned but are not
 implemented. Inventory writes are confirmed by a human, applied atomically, recorded in an
 immutable ledger, and reversible through compensating transactions.
 
