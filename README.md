@@ -624,9 +624,10 @@ reversal application continue through their existing deterministic handlers.
 
 The application—not OpenAI—maintains a separate conversation for each organization,
 organization user, and Telegram chat. OpenAI requests use `store=false`. For each agent
-turn, the worker loads that conversation's active history from Supabase, appends the new
-user/model/tool items, sends the resulting item list to the Responses API, and saves an
-immutable timestamped turn in `inventory_agent_turns`.
+turn, the worker loads that conversation's active history from Supabase, removes stale
+authoritative read results, adds any rolling summary as untrusted reference data, appends
+the current user/model/tool items, sends the resulting input to the Responses API, and
+saves an immutable timestamped turn in `inventory_agent_turns`.
 
 That active history includes the member's retained user messages, the agent's replies,
 relevant tool calls and results, and deterministic lifecycle events such as proposal
@@ -634,11 +635,18 @@ confirmation, cancellation, and reversal. It does not load another member's conv
 history merely because both members are in the same Telegram group. Current message text
 that explicitly quotes or copies someone else is still part of the sender's current turn.
 
-Context limits are checked twice:
+Context retention targets are checked at two turn boundaries:
 
-1. Immediately before an LLM call, so an oversized context is never knowingly sent.
+1. Before the first LLM call of a new agent turn.
 2. After a successful turn, in a background task that does not delay the queued Telegram
    reply.
+
+These targets bound retained conversation history; they are not absolute Responses API
+request limits. The system instructions, ordered tool definitions, rolling summary,
+request-only cache marker, current user message, and tool results produced during the
+current turn add to the actual request. The newest retained turn is kept even when it alone
+exceeds a configured target, and a turn can grow across its maximum six model/tool rounds.
+The provider's model context and token-rate limits still apply independently.
 
 Only one compaction task runs for a given organization, user, and chat at a time. If that
 same conversation receives another message before its task finishes, the new turn waits
@@ -649,8 +657,9 @@ compactions are allowed to finish before the OpenAI client closes.
 A turn leaves active context when it is older than
 `INVENTORY_AGENT_CONTEXT_RETENTION_DAYS`, or when retaining it would exceed either the
 approximate token budget or item limit. The token estimate uses the serialized history
-size and is deliberately conservative; `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` also stays
-below the database's hard 400-item ceiling.
+size and is deliberately conservative. `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` is a retained
+history target rather than a complete request-item ceiling; its maximum remains below the
+database's hard 400-item history limit to leave room for newly persisted turn items.
 
 `INVENTORY_AGENT_CONTEXT_POLICY` controls what replaces removed active history:
 
@@ -668,12 +677,54 @@ not be used as current stock or transaction state. Encrypted/private reasoning o
 retained in the immutable turn audit but removed from later model inputs and summaries at
 the end of each turn.
 
-The four application values above are defaults. The development dashboard can store a
+The four context values above are defaults. The development dashboard can store a
 complete override for one company in `organizations.settings.inventory_agent.context`.
 The worker loads that override before each compaction check, so a saved override applies
 on the next agent message without restarting the worker. Resetting the override makes the
 company inherit `.env` again. Every save and reset is recorded in
 `organization_setting_changes`; secrets and model credentials are never company settings.
+
+#### Prompt caching and context cost
+
+Context retention and OpenAI prompt caching solve different problems. Retention controls
+which prior conversation items the application sends. Prompt caching can reduce billed
+input cost and latency when an identical input prefix is still cached, but it does not
+increase the model's context window or token-per-minute limit. Reliable cache hits can make
+a larger retention target affordable within a monetary budget, provided the resulting
+request still fits those provider limits.
+
+Every main-agent conversation receives a stable opaque `prompt_cache_key`: a SHA-256 hash
+derived from the prompt version and durable conversation ID. It does not contain the raw
+organization, Telegram user, member, or chat identifier. Changing the conversation or
+prompt version changes the key. Changing any content within a cached prefix, or allowing
+the provider entry to expire, produces a miss or a new cache write even when the key itself
+is unchanged.
+
+For configured GPT-5.6-or-newer model names, each main-agent request uses explicit caching
+with a 30-minute TTL and two breakpoints:
+
+1. A stable breakpoint follows the versioned instructions and ordered tool definitions.
+   The mutable rolling summary and conversation history come after it, so their changes do
+   not prevent reuse of the stable configuration prefix.
+2. A breakpoint on the current user message lets later model/tool rounds in that same turn
+   reuse the complete prefix while newly generated tool calls and results are appended.
+
+Older configured model names receive the opaque cache key but no explicit breakpoints or
+TTL option, leaving prefix reuse to the provider's automatic caching behavior. In every
+case `store=false` remains enabled; prompt caching does not make OpenAI responsible for the
+application's durable conversation history.
+
+Caching is currently applied only to the LLM-led main agent. Structured text and image
+extraction, catalog-detail extraction, candidate judging, conversation summarization, and
+embedding calls do not use this conversation cache path. A summary call can therefore add
+uncached model usage when compaction is required.
+
+The worker records `input_tokens`, `cached_input_tokens`, and `cache_write_tokens` from
+every model round, sums them into the durable turn audit, and displays aggregate values in
+the development dashboard. **Cache hit rate** is cached input tokens divided by total input
+tokens for the loaded turns. **Cached input** and **Cache writes** are token counts, not
+request counts; a cache write means the provider stored eligible input for possible later
+reuse, not that the same request was a cache hit.
 
 ### 9. Use the development dashboard
 
@@ -1005,8 +1056,8 @@ Configuration is read from environment variables and `.env` by
 | `INVENTORY_AGENT_ENABLED` | Route Telegram text through the LLM-led agent | `false` |
 | `INVENTORY_AGENT_CONTEXT_POLICY` | Old context handling: `summarize` or `discard` | `summarize` |
 | `INVENTORY_AGENT_CONTEXT_RETENTION_DAYS` | Exact-turn retention window per user/chat | `7` |
-| `INVENTORY_AGENT_CONTEXT_MAX_TOKENS` | Approximate active-context token ceiling | `30000` |
-| `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` | Active Responses API item ceiling; maximum `350` | `300` |
+| `INVENTORY_AGENT_CONTEXT_MAX_TOKENS` | Approximate retained-history token target | `30000` |
+| `INVENTORY_AGENT_CONTEXT_MAX_ITEMS` | Retained-history item target; maximum `350` | `300` |
 | `OPENAI_EMBEDDING_MODEL` | Semantic inventory embedding model | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_DIMENSIONS` | pgvector embedding width; fixed by the current schema | `512` |
 | `INVENTORY_MATCHING_STRATEGY` | Name matching: `semantic`, `fuzzy`, or `hybrid` | `semantic` |
