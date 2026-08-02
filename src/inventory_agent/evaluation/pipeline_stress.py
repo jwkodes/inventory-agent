@@ -303,8 +303,10 @@ class ScenarioAgentModel:
         input_items: list[dict[str, object]],
         instructions: str,
         tools: list[dict[str, object]],
+        prompt_cache_key: str | None = None,
+        prompt_cache_prefix_item_count: int | None = None,
     ) -> ModelTurn:
-        del instructions, tools
+        del instructions, tools, prompt_cache_key, prompt_cache_prefix_item_count
         plan = _required_plan(self._plan)
         self._round += 1
         await asyncio.sleep(self._rng.uniform(0.0002, 0.003))

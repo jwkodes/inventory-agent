@@ -26,6 +26,8 @@ class CallbackAction(StrEnum):
     MARK_NEW_ITEM = "m"
     IGNORE_PROPOSAL_LINE = "i"
     CREATE_NEW_ITEM = "n"
+    CONFIRM_CATALOG_ITEM_EDIT = "u"
+    CANCEL_CATALOG_ITEM_EDIT = "q"
 
 
 @dataclass(frozen=True, slots=True)

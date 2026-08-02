@@ -28,11 +28,17 @@ from inventory_agent.agent.repository import (
     AgentConversationRepository,
     AgentReadRepository,
 )
-from inventory_agent.agent.runtime import AgentModel, InventoryAgentSession
+from inventory_agent.agent.runtime import (
+    AgentModel,
+    InventoryAgentSession,
+    build_prompt_cache_key,
+)
 from inventory_agent.catalog.details import complete_catalog_item_details
+from inventory_agent.catalog.edit_repository import CatalogItemEditRepository
 from inventory_agent.catalog.interpreter import CatalogDetailsExtractionResult
 from inventory_agent.catalog.models import CatalogItemCreationView
 from inventory_agent.catalog.repository import CatalogItemCreationRepository
+from inventory_agent.catalog.sku import is_explicit_sku_deferral
 from inventory_agent.extraction.clarification import (
     CommandClarificationInterpreter,
     CommandClarificationRepository,
@@ -110,6 +116,7 @@ class TelegramAgentTextEventProcessor:
         reversals: ReversalRepository,
         catalog: CatalogItemCreationRepository,
         catalog_interpreter: CatalogDetailsInterpreter,
+        catalog_edits: CatalogItemEditRepository | None = None,
         context_manager: AgentContextManager | None = None,
         command_clarifications: CommandClarificationRepository | None = None,
         command_clarification_interpreter: CommandClarificationInterpreter | None = None,
@@ -139,6 +146,7 @@ class TelegramAgentTextEventProcessor:
         self._reversals = reversals
         self._catalog = catalog
         self._catalog_interpreter = catalog_interpreter
+        self._catalog_edits = catalog_edits
         self._context_manager = context_manager
         self._command_clarifications = command_clarifications
         self._command_clarification_interpreter = command_clarification_interpreter
@@ -237,6 +245,7 @@ class TelegramAgentTextEventProcessor:
                 reads=self._reads,
                 proposals=self._proposals,
                 reversals=self._reversals,
+                catalog_edits=self._catalog_edits,
                 allowed_variant_ids=set(conversation.allowed_variant_ids),
                 preselected_transactions=preselected_transactions,
             )
@@ -246,6 +255,7 @@ class TelegramAgentTextEventProcessor:
                 tools=tools,
                 history=active_history,
                 summary=conversation.summary,
+                prompt_cache_key=build_prompt_cache_key(conversation.conversation_id),
             )
             history_start = len(active_history)
             reply = await session.handle(context.message_text, turn_context=turn_context)
@@ -269,6 +279,8 @@ class TelegramAgentTextEventProcessor:
                 response_id=reply.response_id,
                 model_name=reply.model,
                 input_tokens=reply.input_tokens,
+                cached_input_tokens=reply.cached_input_tokens,
+                cache_write_tokens=reply.cache_write_tokens,
                 output_tokens=reply.output_tokens,
                 total_tokens=reply.total_tokens,
             )
@@ -284,6 +296,7 @@ class TelegramAgentTextEventProcessor:
                 proposal_id=tools.stock_proposal_id,
                 reversal_request_id=tools.reversal_request_id,
                 reversal_reason=tools.reversal_reason,
+                catalog_edit_request_id=tools.catalog_edit_request_id,
             )
             self._log_runtime(
                 component="outbox_enqueue_agent_turn",
@@ -620,6 +633,30 @@ class TelegramAgentTextEventProcessor:
         if catalog_request_id is None:
             return None
         view = await self._catalog.get_view(request_id=catalog_request_id)
+        if is_explicit_sku_deferral(context.message_text):
+            await self._catalog.defer_sku(
+                request_id=catalog_request_id,
+                event_id=context.event_id,
+                actor_id=context.organization_user_id,
+            )
+            outbox_id = await self._outbox.enqueue(
+                ProcessingOutcomeDraft(
+                    organization_id=context.organization_id,
+                    source_event_id=context.event_id,
+                    outcome_type=ProcessingOutcomeType.CATALOG_ITEM_CONFIRMATION,
+                    aggregate_id=catalog_request_id,
+                    chat_id=context.chat_id,
+                    payload={},
+                )
+            )
+            await self._require_finish(context.event_id)
+            return TextEventProcessingResult(
+                event_id=context.event_id,
+                status=TextEventProcessingStatus.CATALOG_ITEM_CONFIRMATION,
+                chat_id=context.chat_id,
+                catalog_request_id=catalog_request_id,
+                outbox_id=outbox_id,
+            )
         extraction = await self._catalog_interpreter.interpret(
             user_text=context.message_text,
             view=view,
@@ -808,6 +845,8 @@ class TelegramAgentTextEventProcessor:
             response_id=f"deterministic-proposal-{action}-{context.event_id}",
             model_name="deterministic-proposal-control",
             input_tokens=0,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
             output_tokens=0,
             total_tokens=0,
         )
@@ -827,12 +866,22 @@ class TelegramAgentTextEventProcessor:
     ) -> TextEventProcessingResult:
         if conversation.last_reply_text is None:
             raise RuntimeError("Replayed agent turn is missing its saved reply")
+        catalog_edit_request_id = None
+        if (
+            conversation.last_proposal_id is None
+            and conversation.last_reversal_request_id is None
+            and self._catalog_edits is not None
+        ):
+            catalog_edit_request_id = await self._catalog_edits.find_by_source_event(
+                source_event_id=context.event_id
+            )
         return await self._enqueue_agent_turn(
             context=context,
             reply_text=conversation.last_reply_text,
             proposal_id=conversation.last_proposal_id,
             reversal_request_id=conversation.last_reversal_request_id,
             reversal_reason=conversation.last_reversal_reason,
+            catalog_edit_request_id=catalog_edit_request_id,
         )
 
     async def _enqueue_agent_turn(
@@ -843,6 +892,7 @@ class TelegramAgentTextEventProcessor:
         proposal_id: UUID | None,
         reversal_request_id: UUID | None,
         reversal_reason: str | None,
+        catalog_edit_request_id: UUID | None = None,
     ) -> TextEventProcessingResult:
         if proposal_id is not None:
             outcome_type = ProcessingOutcomeType.PROPOSAL_READY
@@ -856,6 +906,11 @@ class TelegramAgentTextEventProcessor:
             status = TextEventProcessingStatus.REVERSAL_CONFIRMATION
             aggregate_id = reversal_request_id
             payload = {"reason": reversal_reason, "agent_reply": reply_text}
+        elif catalog_edit_request_id is not None:
+            outcome_type = ProcessingOutcomeType.CATALOG_ITEM_EDIT_CONFIRMATION
+            status = TextEventProcessingStatus.CATALOG_ITEM_EDIT_CONFIRMATION
+            aggregate_id = catalog_edit_request_id
+            payload = {"agent_reply": reply_text}
         else:
             outcome_type = ProcessingOutcomeType.AGENT_MESSAGE
             status = TextEventProcessingStatus.AGENT_MESSAGE
@@ -877,6 +932,7 @@ class TelegramAgentTextEventProcessor:
             chat_id=context.chat_id,
             proposal_id=proposal_id,
             reversal_request_id=reversal_request_id,
+            catalog_edit_request_id=catalog_edit_request_id,
             outbox_id=outbox_id,
         )
 

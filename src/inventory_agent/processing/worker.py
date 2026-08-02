@@ -20,6 +20,7 @@ from inventory_agent.agent.repository import SupabaseAgentRepository
 from inventory_agent.agent.runtime import OpenAIResponsesAgentModel
 from inventory_agent.artifacts.repository import SupabaseSourceArtifactRepository
 from inventory_agent.catalog.batch import OpenAICatalogBatchDetailsInterpreter
+from inventory_agent.catalog.edit_repository import SupabaseCatalogItemEditRepository
 from inventory_agent.catalog.interpreter import OpenAICatalogDetailsInterpreter
 from inventory_agent.catalog.repository import SupabaseCatalogItemCreationRepository
 from inventory_agent.config import Settings
@@ -209,6 +210,10 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
         )
+        catalog_edit_repository = SupabaseCatalogItemEditRepository(
+            supabase_url=settings.supabase_url,
+            secret_key=secret_key,
+        )
         outbox = SupabaseProcessingOutboxRepository(
             supabase_url=settings.supabase_url,
             secret_key=secret_key,
@@ -232,6 +237,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 repository=proposal_actions,
                 reversals=reversal_repository,
                 catalog=catalog_repository,
+                catalog_edits=catalog_edit_repository,
             ),
             message_editor=telegram_client,
             outbox=outbox,
@@ -326,6 +332,7 @@ async def run_worker(*, watch: bool, poll_seconds: float) -> None:
                 reversals=reversal_repository,
                 catalog=catalog_repository,
                 catalog_interpreter=catalog_interpreter,
+                catalog_edits=catalog_edit_repository,
                 command_clarifications=command_clarification_repository,
                 command_clarification_interpreter=OpenAICommandClarificationInterpreter(
                     client=openai_client,

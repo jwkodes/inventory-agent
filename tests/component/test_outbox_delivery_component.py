@@ -183,7 +183,10 @@ class ExactReceiptAgentModel:
         input_items: list[dict[str, object]],
         instructions: str,
         tools: list[dict[str, object]],
+        prompt_cache_key: str | None = None,
+        prompt_cache_prefix_item_count: int | None = None,
     ) -> ModelTurn:
+        del prompt_cache_key, prompt_cache_prefix_item_count
         self.calls += 1
         if self.calls == 1:
             call = FunctionCall(

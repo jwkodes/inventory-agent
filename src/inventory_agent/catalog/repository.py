@@ -69,6 +69,9 @@ class CatalogItemCreationRepository(Protocol):
     ) -> UUID:
         """Merge partial details while waiting for a clarification reply."""
 
+    async def defer_sku(self, *, request_id: UUID, event_id: UUID, actor_id: UUID) -> UUID:
+        """Explicitly continue one item creation without an SKU for now."""
+
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         """Create the catalog item and return the resumed proposal ID."""
 
@@ -93,6 +96,9 @@ class CatalogItemCreationRepository(Protocol):
         items: list[CatalogBatchItemDraft],
     ) -> UUID:
         """Merge one natural reply across all items in the batch."""
+
+    async def defer_batch_skus(self, *, batch_id: UUID, event_id: UUID, actor_id: UUID) -> UUID:
+        """Explicitly continue all SKU-less batch items without SKUs for now."""
 
     async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:
         """Atomically create all batch items, apply stock, and return the transaction ID."""
@@ -220,6 +226,19 @@ class SupabaseCatalogItemCreationRepository:
             "catalog item draft",
         )
 
+    async def defer_sku(self, *, request_id: UUID, event_id: UUID, actor_id: UUID) -> UUID:
+        return _required_uuid(
+            await self._call(
+                "defer_catalog_item_creation_sku",
+                {
+                    "p_request_id": str(request_id),
+                    "p_event_id": str(event_id),
+                    "p_actor_id": str(actor_id),
+                },
+            ),
+            "deferred catalog SKU",
+        )
+
     async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
         preparation = await self._call(
             "prepare_catalog_item_creation_confirmation",
@@ -300,6 +319,19 @@ class SupabaseCatalogItemCreationRepository:
                 },
             ),
             "catalog batch draft",
+        )
+
+    async def defer_batch_skus(self, *, batch_id: UUID, event_id: UUID, actor_id: UUID) -> UUID:
+        return _required_uuid(
+            await self._call(
+                "defer_catalog_batch_skus",
+                {
+                    "p_batch_id": str(batch_id),
+                    "p_event_id": str(event_id),
+                    "p_actor_id": str(actor_id),
+                },
+            ),
+            "deferred catalog batch SKUs",
         )
 
     async def confirm_batch(self, *, batch_id: UUID, actor_id: UUID) -> UUID:

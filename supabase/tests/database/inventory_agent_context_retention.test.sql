@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(14);
+select plan(16);
 
 select has_table(
   'public',
@@ -20,7 +20,8 @@ select has_function(
   'save_inventory_agent_conversation_turn',
   array[
     'uuid', 'uuid', 'uuid', 'jsonb', 'jsonb', 'integer', 'uuid[]', 'uuid[]',
-    'text', 'uuid', 'uuid', 'text', 'text', 'text', 'integer', 'integer', 'integer'
+    'text', 'uuid', 'uuid', 'text', 'text', 'text', 'integer', 'integer', 'integer',
+    'integer', 'integer'
   ],
   'timestamped agent turn save function exists'
 );
@@ -78,6 +79,8 @@ select is(
     'resp-context-test',
     'gpt-test',
     10,
+    6,
+    2,
     5,
     15
   ),
@@ -113,6 +116,24 @@ select is(
   ),
   15,
   'turn audit row retains provider token usage'
+);
+select is(
+  (
+    select turn.cached_input_tokens
+    from public.inventory_agent_turns as turn
+    where turn.source_event_id = '50000000-0000-0000-0000-000000000602'
+  ),
+  6,
+  'turn audit row retains prompt-cache read usage'
+);
+select is(
+  (
+    select turn.cache_write_tokens
+    from public.inventory_agent_turns as turn
+    where turn.source_event_id = '50000000-0000-0000-0000-000000000602'
+  ),
+  2,
+  'turn audit row retains prompt-cache write usage'
 );
 
 select is(

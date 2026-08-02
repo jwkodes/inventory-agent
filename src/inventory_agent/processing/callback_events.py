@@ -237,6 +237,16 @@ class TelegramCallbackEventProcessor:
             outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
             aggregate_id = None
             payload = {"message": "🚫 **Catalog batch cancelled**"}
+        elif action is CallbackAction.CONFIRM_CATALOG_ITEM_EDIT:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {
+                "message": "✅ **Catalog product updated**\nThe reviewed metadata changes are live."
+            }
+        elif action is CallbackAction.CANCEL_CATALOG_ITEM_EDIT:
+            outcome_type = ProcessingOutcomeType.CALLBACK_NOTICE
+            aggregate_id = None
+            payload = {"message": "🚫 **Catalog product update cancelled**"}
         elif action is CallbackAction.CONFIRM_PROPOSAL:
             outcome_type = ProcessingOutcomeType.TRANSACTION_APPLIED
             aggregate_id = result_id

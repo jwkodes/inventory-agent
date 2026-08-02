@@ -7,6 +7,7 @@ from uuid import UUID
 
 import httpx
 
+from inventory_agent.catalog.edit_repository import CatalogItemEditRepository
 from inventory_agent.catalog.repository import (
     CatalogBatchConfirmationConflict,
     CatalogItemConfirmationConflict,
@@ -52,11 +53,13 @@ class TelegramCallbackDispatcher:
         repository: ProposalActionRepository,
         reversals: ReversalRepository,
         catalog: CatalogItemCreationRepository,
+        catalog_edits: CatalogItemEditRepository | None = None,
     ) -> None:
         self._answerer = answerer
         self._repository = repository
         self._reversals = reversals
         self._catalog = catalog
+        self._catalog_edits = catalog_edits
 
     async def dispatch(
         self,
@@ -192,6 +195,22 @@ class TelegramCallbackDispatcher:
                     actor_id=actor_id,
                 )
                 message = "Catalog batch cancelled"
+            elif command.action is CallbackAction.CONFIRM_CATALOG_ITEM_EDIT:
+                if self._catalog_edits is None:
+                    raise ValueError("Catalog metadata updates are not available")
+                result_id = await self._catalog_edits.confirm(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog product updated"
+            elif command.action is CallbackAction.CANCEL_CATALOG_ITEM_EDIT:
+                if self._catalog_edits is None:
+                    raise ValueError("Catalog metadata updates are not available")
+                result_id = await self._catalog_edits.cancel(
+                    request_id=command.target_id,
+                    actor_id=actor_id,
+                )
+                message = "Catalog product update cancelled"
             elif command.action is CallbackAction.REVERSE_TRANSACTION:
                 result_id = await self._reversals.begin(
                     transaction_id=command.target_id,

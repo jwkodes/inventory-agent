@@ -24,6 +24,15 @@ class AttributeValue(BaseModel):
     value: str = Field(min_length=1)
 
 
+class CatalogAttributeChange(BaseModel):
+    """Set one catalog attribute, or remove it when value is null."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=100)
+    value: str | None = Field(max_length=1000)
+
+
 class CatalogVariant(BaseModel):
     """Compact inventory record returned to the model."""
 
@@ -48,12 +57,37 @@ class InventoryReadArguments(BaseModel):
     include_zero_stock: bool
     limit: int = Field(ge=1, le=50)
 
+    @field_validator("query", "sku")
+    @classmethod
+    def normalize_optional_search_term(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class CatalogItemEditArguments(BaseModel):
+    """Safe catalog-only changes that always require an external confirmation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    variant_id: str
+    item_name: str | None = Field(default=None, min_length=1, max_length=200)
+    variant_name: str | None = Field(default=None, min_length=1, max_length=200)
+    sku: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    clear_fields: list[Literal["variant_name", "description"]]
+    item_attribute_changes: list[CatalogAttributeChange]
+    variant_attribute_changes: list[CatalogAttributeChange]
+    reason: str = Field(min_length=1, max_length=1000)
+
 
 class NewCatalogItemDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
     sku: str | None
+    sku_deferred: bool = False
     base_unit: str = Field(min_length=1)
     tracking_mode: TrackingMode
     attributes: list[AttributeValue]
@@ -62,6 +96,12 @@ class NewCatalogItemDraft(BaseModel):
     @classmethod
     def normalize_base_unit(cls, value: str) -> str:
         return canonicalize_base_unit(value)
+
+    @model_validator(mode="after")
+    def validate_sku_deferral(self) -> Self:
+        if self.sku is not None and self.sku_deferred:
+            raise ValueError("sku_deferred must be false when an SKU is supplied")
+        return self
 
 
 class StockProposalLine(BaseModel):

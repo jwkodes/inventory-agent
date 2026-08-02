@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from inventory_agent.agent.models import (
     AttributeValue,
+    CatalogItemEditArguments,
     CatalogVariant,
     InventoryReadArguments,
     ReversalProposalArguments,
@@ -26,6 +27,7 @@ from inventory_agent.agent.models import (
 from inventory_agent.agent.prompt import PROMPT_VERSION
 from inventory_agent.agent.repository import AgentReadRepository
 from inventory_agent.agent.tools import new_item_sku_required_result
+from inventory_agent.catalog.edit_repository import CatalogItemEditRepository
 from inventory_agent.extraction.schema import ItemReferenceType
 from inventory_agent.matching.models import InventoryCandidate
 from inventory_agent.matching.repository import InventoryCandidateRepository
@@ -78,7 +80,7 @@ class GroundedAgentCatalogReader:
     ) -> tuple[list[CatalogVariant], dict[UUID, InventoryCandidate]]:
         query = arguments.sku or arguments.query or ""
         search_started = perf_counter()
-        if arguments.sku is not None:
+        if arguments.sku:
             candidates = await self._candidates.find_candidates(
                 organization_id=organization_id,
                 query=arguments.sku,
@@ -165,6 +167,7 @@ class ProductionInventoryAgentTools:
         reads: AgentReadRepository,
         proposals: ProposalRepository,
         reversals: ReversalRepository,
+        catalog_edits: CatalogItemEditRepository | None = None,
         allowed_variant_ids: set[UUID] | None = None,
         preselected_transactions: list[TransactionRecord] | None = None,
     ) -> None:
@@ -173,6 +176,7 @@ class ProductionInventoryAgentTools:
         self._reads = reads
         self._proposals = proposals
         self._reversals = reversals
+        self._catalog_edits = catalog_edits
         self.allowed_variant_ids = set(allowed_variant_ids or set())
         self.allowed_transaction_ids: set[UUID] = set()
         self._candidate_evidence: dict[UUID, InventoryCandidate] = {}
@@ -184,6 +188,7 @@ class ProductionInventoryAgentTools:
         self.stock_proposal_id: UUID | None = None
         self.reversal_request_id: UUID | None = None
         self.reversal_reason: str | None = None
+        self.catalog_edit_request_id: UUID | None = None
 
     async def execute(
         self,
@@ -241,6 +246,10 @@ class ProductionInventoryAgentTools:
             )
         if name == "read_transactions":
             return await self._read_transactions(TransactionReadArguments.model_validate(arguments))
+        if name == "propose_catalog_update":
+            return await self._propose_catalog_update(
+                CatalogItemEditArguments.model_validate(arguments)
+            )
         if name == "propose_reversal":
             return await self._propose_reversal(
                 call_id=call_id,
@@ -293,7 +302,7 @@ class ProductionInventoryAgentTools:
         intent: ProposalIntent,
         arguments: StockProposalArguments,
     ) -> dict[str, object]:
-        if self.stock_proposal_id is not None or self.reversal_request_id is not None:
+        if self._has_mutation_request():
             raise ValueError("only one mutation proposal is allowed per user message")
         for line in arguments.lines:
             if intent is ProposalIntent.ISSUE_STOCK and line.new_item is not None:
@@ -303,7 +312,9 @@ class ProductionInventoryAgentTools:
         missing_sku_items = [
             line.new_item.name
             for line in arguments.lines
-            if line.new_item is not None and not (line.new_item.sku and line.new_item.sku.strip())
+            if line.new_item is not None
+            and line.new_item.sku is None
+            and not line.new_item.sku_deferred
         ]
         if missing_sku_items:
             return new_item_sku_required_result(missing_sku_items)
@@ -482,13 +493,62 @@ class ProductionInventoryAgentTools:
             "transactions": serialized_transactions,
         }
 
+    async def _propose_catalog_update(
+        self,
+        arguments: CatalogItemEditArguments,
+    ) -> dict[str, object]:
+        if self._has_mutation_request():
+            raise ValueError("only one mutation proposal is allowed per user message")
+        if self._catalog_edits is None:
+            raise ValueError("catalog metadata updates are not available")
+        variant_id = UUID(arguments.variant_id)
+        if variant_id not in self.allowed_variant_ids:
+            raise ValueError(
+                f"variant_id {arguments.variant_id!r} was not returned by read_inventory"
+            )
+        if variant_id not in self._candidate_evidence:
+            raise ValueError(
+                "read_inventory must return this variant during the current user message"
+            )
+        for changes in (
+            arguments.item_attribute_changes,
+            arguments.variant_attribute_changes,
+        ):
+            keys = [change.key.casefold() for change in changes]
+            if len(keys) != len(set(keys)):
+                raise ValueError("each catalog attribute can be changed only once")
+        self.catalog_edit_request_id = await self._catalog_edits.begin(
+            variant_id=variant_id,
+            actor_id=self._context.organization_user_id,
+            source_event_id=self._context.source_event_id,
+            chat_id=self._context.chat_id,
+            changes=arguments,
+        )
+        return {
+            "ok": True,
+            "catalog_edit_request_id": str(self.catalog_edit_request_id),
+            "catalog_changed": False,
+            "inventory_changed": False,
+            "confirmation_required": True,
+        }
+
+    def _has_mutation_request(self) -> bool:
+        return any(
+            request_id is not None
+            for request_id in (
+                self.stock_proposal_id,
+                self.reversal_request_id,
+                self.catalog_edit_request_id,
+            )
+        )
+
     async def _propose_reversal(
         self,
         *,
         call_id: str,
         arguments: ReversalProposalArguments,
     ) -> dict[str, object]:
-        if self.stock_proposal_id is not None or self.reversal_request_id is not None:
+        if self._has_mutation_request():
             raise ValueError("only one mutation proposal is allowed per user message")
         transaction_id = self._transaction_ids_by_ref.get(arguments.transaction_ref)
         if transaction_id is None:

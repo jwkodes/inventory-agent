@@ -121,8 +121,8 @@ class DashboardRepository:
                     {
                         "select": (
                             "id,source_event_id,history,estimated_tokens,input_tokens,"
-                            "output_tokens,total_tokens,created_at,compacted_at,"
-                            "compaction_policy"
+                            "cached_input_tokens,cache_write_tokens,output_tokens,total_tokens,"
+                            "created_at,compacted_at,compaction_policy"
                         ),
                         "conversation_id": f"eq.{conversations[0]['id']}",
                         "order": "created_at.desc",
@@ -644,7 +644,10 @@ class DashboardRepository:
         turns = await self._get(
             "inventory_agent_turns",
             {
-                "select": "id,conversation_id,estimated_tokens,created_at,compacted_at",
+                "select": (
+                    "id,conversation_id,estimated_tokens,input_tokens,cached_input_tokens,"
+                    "cache_write_tokens,created_at,compacted_at"
+                ),
                 "conversation_id": f"in.({','.join(conversation_ids)})",
                 "order": "created_at.desc",
                 "limit": "1000",
@@ -666,6 +669,17 @@ class DashboardRepository:
                     "compacted_turns": len(conversation_turns) - len(active_turns),
                     "active_estimated_tokens": sum(
                         int(_as_float(turn.get("estimated_tokens"))) for turn in active_turns
+                    ),
+                    "input_tokens": sum(
+                        int(_as_float(turn.get("input_tokens"))) for turn in conversation_turns
+                    ),
+                    "cached_input_tokens": sum(
+                        int(_as_float(turn.get("cached_input_tokens")))
+                        for turn in conversation_turns
+                    ),
+                    "cache_write_tokens": sum(
+                        int(_as_float(turn.get("cache_write_tokens")))
+                        for turn in conversation_turns
                     ),
                     "user": users_by_id.get(str(conversation["organization_user_id"])),
                 }
@@ -703,8 +717,9 @@ class DashboardRepository:
             "inventory_agent_turns",
             {
                 "select": (
-                    "id,source_event_id,history,estimated_tokens,input_tokens,output_tokens,"
-                    "total_tokens,created_at,compacted_at,compaction_policy"
+                    "id,source_event_id,history,estimated_tokens,input_tokens,"
+                    "cached_input_tokens,cache_write_tokens,output_tokens,total_tokens,"
+                    "created_at,compacted_at,compaction_policy"
                 ),
                 "conversation_id": f"eq.{conversation_id}",
                 "order": "created_at.desc",

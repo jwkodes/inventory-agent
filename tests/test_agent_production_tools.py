@@ -28,6 +28,7 @@ EVENT_ID = UUID("50000000-0000-0000-0000-000000000001")
 PROPOSAL_ID = UUID("40000000-0000-0000-0000-000000000001")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
+CATALOG_EDIT_REQUEST_ID = UUID("73000000-0000-0000-0000-000000000001")
 
 
 class FakeCatalog:
@@ -99,6 +100,31 @@ class AliasCandidateRepository:
         limit: int = 5,
     ) -> list[InventoryCandidate]:
         raise AssertionError("not expected")
+
+
+class NullSkuSemanticRepository:
+    async def find_candidates(
+        self,
+        *,
+        organization_id: UUID,
+        query: str,
+        limit: int = 5,
+    ) -> list[InventoryCandidate]:
+        assert query == "Munchi Peanut Butter Min Jiang Kueh"
+        return [
+            InventoryCandidate(
+                item_variant_id=VARIANT_ID,
+                item_id=UUID("20000000-0000-0000-0000-000000000001"),
+                item_name="Munchi Peanut Butter Min Jiang Kueh",
+                variant_name=None,
+                sku=None,
+                base_unit="each",
+                tracking_mode="simple",
+                match_method="semantic_rerank",
+                match_score=Decimal("1"),
+                match_evidence={},
+            )
+        ]
 
 
 class FakeReads(AgentReadRepository):
@@ -191,6 +217,15 @@ class FakeProposals:
     async def create(self, draft: ProposalDraft) -> UUID:
         self.drafts.append(draft)
         return PROPOSAL_ID
+
+
+class FakeCatalogEdits:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def begin(self, **kwargs: object) -> UUID:
+        self.calls.append(kwargs)
+        return CATALOG_EDIT_REQUEST_ID
 
 
 class FakeReversals:
@@ -302,6 +337,31 @@ async def test_exact_sku_read_preserves_identifier_alias_matches() -> None:
     assert evidence[VARIANT_ID].match_evidence["matched_value"] == "AMOX-500"
 
 
+async def test_name_read_returns_catalog_item_without_sku_when_sku_argument_is_blank() -> None:
+    reader = GroundedAgentCatalogReader(
+        candidates=AliasCandidateRepository(),
+        semantic=NullSkuSemanticRepository(),
+        reads=FakeReads(),
+        strategy=MatchingStrategy.SEMANTIC,
+    )
+
+    records, evidence = await reader.read(
+        organization_id=ORGANIZATION_ID,
+        location_id=LOCATION_ID,
+        arguments=InventoryReadArguments(
+            query="Munchi Peanut Butter Min Jiang Kueh",
+            sku="",
+            attributes=[],
+            include_zero_stock=True,
+            limit=5,
+        ),
+    )
+
+    assert records[0].item_name == "Munchi Peanut Butter Min Jiang Kueh"
+    assert records[0].sku is None
+    assert evidence[VARIANT_ID].sku is None
+
+
 async def test_read_then_add_creates_existing_atomic_proposal_draft() -> None:
     proposals = FakeProposals()
     tools = production_tools(proposals)
@@ -343,7 +403,65 @@ async def test_read_then_add_creates_existing_atomic_proposal_draft() -> None:
     assert proposals.drafts[0].idempotency_key == "telegram:telegram-1:inventory-agent"
 
 
-async def test_new_item_without_sku_is_blocked_before_proposal_persistence() -> None:
+async def test_read_then_catalog_update_creates_confirmation_request_only() -> None:
+    edits = FakeCatalogEdits()
+    tools = ProductionInventoryAgentTools(
+        context=ProductionToolContext(
+            organization_id=ORGANIZATION_ID,
+            organization_user_id=ACTOR_ID,
+            location_id=LOCATION_ID,
+            source_event_id=EVENT_ID,
+            external_event_id="telegram-1",
+            chat_id=123,
+        ),
+        catalog=FakeCatalog(),
+        reads=FakeReads(),
+        proposals=FakeProposals(),
+        reversals=FakeReversals(),
+        catalog_edits=edits,
+    )
+    await tools.execute(
+        call_id="read-edit-target",
+        name="read_inventory",
+        arguments={
+            "query": "Industrial Widget",
+            "sku": None,
+            "attributes": [],
+            "include_zero_stock": True,
+            "limit": 5,
+        },
+    )
+    result = json.loads(
+        await tools.execute(
+            call_id="edit-widget",
+            name="propose_catalog_update",
+            arguments={
+                "variant_id": str(VARIANT_ID),
+                "item_name": None,
+                "variant_name": None,
+                "sku": "WIDGET-001",
+                "description": "Industrial widget",
+                "clear_fields": [],
+                "item_attribute_changes": [{"key": "brand", "value": "Acme"}],
+                "variant_attribute_changes": [],
+                "reason": "Correct the catalog metadata",
+            },
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "catalog_edit_request_id": str(CATALOG_EDIT_REQUEST_ID),
+        "catalog_changed": False,
+        "inventory_changed": False,
+        "confirmation_required": True,
+    }
+    assert tools.catalog_edit_request_id == CATALOG_EDIT_REQUEST_ID
+    assert edits.calls[0]["variant_id"] == VARIANT_ID
+    assert edits.calls[0]["source_event_id"] == EVENT_ID
+
+
+async def test_explicitly_deferred_sku_is_preserved_in_proposal() -> None:
     proposals = FakeProposals()
     tools = production_tools(proposals)
 
@@ -358,6 +476,7 @@ async def test_new_item_without_sku_is_blocked_before_proposal_persistence() -> 
                         "new_item": {
                             "name": "MacBook Air M5",
                             "sku": None,
+                            "sku_deferred": True,
                             "base_unit": "each",
                             "tracking_mode": "simple",
                             "attributes": [],
@@ -372,10 +491,13 @@ async def test_new_item_without_sku_is_blocked_before_proposal_persistence() -> 
         )
     )
 
-    assert result["error_code"] == "new_item_sku_required"
-    assert result["requires_user_input"] is True
-    assert tools.stock_proposal_id is None
-    assert proposals.drafts == []
+    assert result["ok"] is True
+    assert result["confirmation_required"] is True
+    assert tools.stock_proposal_id == PROPOSAL_ID
+    assert proposals.drafts[0].raw_command["lines"][0]["item_reference"]["value"] == (
+        "MacBook Air M5"
+    )
+    assert proposals.drafts[0].lines[0].match_evidence["new_item"]["sku"] is None
 
 
 async def test_inventory_read_exposes_ranked_relevance_and_aggregation_guidance() -> None:

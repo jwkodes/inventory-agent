@@ -19,6 +19,7 @@ from inventory_agent.telegram.confirmation import (
     render_catalog_batch_details_prompt,
     render_catalog_item_confirmation,
     render_catalog_item_details_prompt,
+    render_catalog_item_edit_confirmation,
     render_proposal_confirmation,
     render_reversal_applied,
     render_reversal_confirmation,
@@ -136,6 +137,16 @@ class TelegramOutboxDeliveryWorker:
                 else:
                     message = render_catalog_item_confirmation(catalog_view)
                 text = message.text
+                keyboard = [
+                    [button.model_dump(mode="json") for button in row]
+                    for row in message.inline_keyboard
+                ]
+            elif outcome.outcome_type is ProcessingOutcomeType.CATALOG_ITEM_EDIT_CONFIRMATION:
+                if outcome.aggregate_id is None:
+                    raise ValueError("Catalog edit outcome is missing its request ID")
+                edit_view = await self._repository.get_catalog_item_edit_view(outcome.aggregate_id)
+                message = render_catalog_item_edit_confirmation(edit_view)
+                text = _with_agent_reply(message.text, outcome.payload)
                 keyboard = [
                     [button.model_dump(mode="json") for button in row]
                     for row in message.inline_keyboard

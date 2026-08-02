@@ -48,6 +48,7 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
             "attributes": {},
         },
         "save_catalog_item_creation_draft": str(REQUEST_ID),
+        "defer_catalog_item_creation_sku": str(REQUEST_ID),
         "save_catalog_item_creation_details": str(REQUEST_ID),
         "prepare_catalog_item_creation_confirmation": {"ready": True},
         "confirm_catalog_item_creation": str(PROPOSAL_ID),
@@ -61,6 +62,7 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
             "items": [],
         },
         "save_catalog_batch_creation_draft": str(BATCH_ID),
+        "defer_catalog_batch_skus": str(BATCH_ID),
         "confirm_catalog_batch_and_apply_inventory": {
             "ready": True,
             "proposal_id": str(PROPOSAL_ID),
@@ -122,6 +124,14 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
         )
         == REQUEST_ID
     )
+    assert (
+        await repository.defer_sku(
+            request_id=REQUEST_ID,
+            event_id=EVENT_ID,
+            actor_id=ACTOR_ID,
+        )
+        == REQUEST_ID
+    )
     assert await repository.confirm(request_id=REQUEST_ID, actor_id=ACTOR_ID) == PROPOSAL_ID
     assert await repository.cancel(request_id=REQUEST_ID, actor_id=ACTOR_ID) == REQUEST_ID
     assert (
@@ -156,6 +166,14 @@ async def test_catalog_repository_maps_resolution_and_creation_rpcs() -> None:
                     tracking_mode="simple",
                 )
             ],
+        )
+        == BATCH_ID
+    )
+    assert (
+        await repository.defer_batch_skus(
+            batch_id=BATCH_ID,
+            event_id=EVENT_ID,
+            actor_id=ACTOR_ID,
         )
         == BATCH_ID
     )

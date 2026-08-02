@@ -83,6 +83,8 @@ class AgentConversationRepository(Protocol):
         response_id: str,
         model_name: str,
         input_tokens: int,
+        cached_input_tokens: int,
+        cache_write_tokens: int,
         output_tokens: int,
         total_tokens: int,
     ) -> UUID:
@@ -190,6 +192,8 @@ class SupabaseAgentRepository:
         response_id: str,
         model_name: str,
         input_tokens: int,
+        cached_input_tokens: int,
+        cache_write_tokens: int,
         output_tokens: int,
         total_tokens: int,
     ) -> UUID:
@@ -217,6 +221,8 @@ class SupabaseAgentRepository:
                 "p_response_id": response_id,
                 "p_model_name": model_name,
                 "p_input_tokens": input_tokens,
+                "p_cached_input_tokens": cached_input_tokens,
+                "p_cache_write_tokens": cache_write_tokens,
                 "p_output_tokens": output_tokens,
                 "p_total_tokens": total_tokens,
             },

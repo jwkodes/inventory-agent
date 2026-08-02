@@ -810,8 +810,11 @@ processor; no migration rollback is required.
 For this testing phase, the demo catalog and agent assume `simple` tracking for every
 item. The database retains its lot/serial design for later implementation, but the agent
 must not request lot, batch, expiry, or serial details and new catalog items are constrained
-to simple tracking. New items generally require only a product name and SKU or internal
-code. An individually counted physical item silently defaults to canonical base unit
+to simple tracking. New items generally require only a product name. The agent asks for an
+SKU or internal code once when none was supplied, but an explicit “no SKU for now” choice
+creates the variant with a null SKU and records that the assignment was deferred. The SKU
+can be assigned later through the confirmed catalog-update flow. An individually counted
+physical item silently defaults to canonical base unit
 `each`; `unit`, `units`, `item`, and `items` are equivalent input and never require a user
 choice. The agent asks about units only when packaging or measurement changes the inventory
 meaning, such as boxes versus individual tablets, kilograms, or litres. The agent may
@@ -1493,9 +1496,9 @@ lot-function tests. It is development data only and must never be loaded into pr
     - preserve a company-controlled SKU for each variant while allowing organization
       policy to require, derive, or automatically generate it when only an external
       identifier is provided;
-    - allow an organization policy where SKU is optional, after catalog variants,
-      matching, Telegram reviews, exports, and database uniqueness constraints can all
-      safely identify and display SKU-less products;
+    - add an organization-level policy for whether SKU is optional; the current Telegram
+      flow already supports an explicit per-item deferral, null-SKU variants, matching,
+      reviews, and later SKU assignment through catalog updates;
     - let workers provide whichever real-world code appears on the product, delivery order,
       or invoice without needing to understand the identifier taxonomy; and
     - migrate or review catalog records whose current SKU was originally supplied as an
@@ -1592,45 +1595,36 @@ lot-function tests. It is development data only and must never be loaded into pr
     - test reordered words, brand phrasing, spelling errors, abbreviations, multiple
       discriminator attributes, true product-family differences, and renaming an existing
       family without breaking transaction history.
-17. OpenAI prompt-cache optimization and observability:
-    - assign a stable, privacy-scoped `prompt_cache_key` to each organization, member, and
-      Telegram chat conversation so unrelated tenants or users never share an application
-      cache identity;
-    - keep stable system instructions, tool definitions, and other reusable prompt content
-      at the beginning of requests, while preventing mutable inventory evidence from
-      invalidating the stable prefix unnecessarily;
-    - evaluate implicit caching against explicit cache breakpoints for the configured
-      OpenAI models, without relying on response storage or treating cached prompts as
-      durable conversation memory;
-    - record input, cached-input, cache-write, output, and total token usage per model call,
-      together with latency and estimated cost where provider pricing is configured;
-    - show cache-hit rate, cached-token savings, cache-write overhead, and misses caused by
-      prompt changes or conversation compaction in the development dashboard;
-    - keep cache identities free of Telegram IDs, names, invite codes, secrets, and other
-      direct personal data by deriving opaque keyed identifiers;
-    - verify that `store=False`, context retention, background summarization, retries,
-      model switching, and prompt-version changes interact safely with caching; and
-    - test cache isolation across companies, members, chats, models, and prompt versions,
-      plus cold starts, cache expiry, compaction boundaries, and identical-prefix reuse.
+17. OpenAI prompt-cache optimization and observability — complete for the main agent:
+    - derive a stable opaque `prompt_cache_key` from the durable conversation and prompt
+      version, without exposing company, Telegram, member, or chat identifiers;
+    - keep instructions and ordered tool definitions in a stable prefix, move the mutable
+      compacted summary into model input, and place an explicit GPT-5.6 cache breakpoint
+      after the stable configuration;
+    - place a second explicit breakpoint on the current user message so later tool rounds
+      can reuse the complete current-turn input prefix while `store=False` remains enabled;
+    - fall back to key-assisted automatic caching when an older configured model does not
+      support explicit breakpoints;
+    - log cache reads and writes per model call, persist their per-turn totals, and display
+      cache-hit and cache-write metrics in the development dashboard; and
+    - retain live cost calibration, expiry testing, and wider cache-hit evaluation across
+      representative production conversation patterns as operational follow-up work.
 18. Authorized catalog maintenance:
-    - let authorized users modify existing catalog details from Telegram and the dashboard,
-      including adding, correcting, or removing custom attributes and aliases;
-    - decide and document whether catalog edits require `manager` or `admin`, defaulting to
-      manager-and-above only if the organization accepts that broader permission, otherwise
-      restricting edits to admins;
+    - Telegram manager/admin edits of item-family names, variant names, SKUs, descriptions,
+      and item/variant attributes, with explicit confirmation — complete; dashboard editing
+      and alias/external-identifier maintenance remain;
+    - manager-and-above authorization for this first scope — complete; an organization-level
+      admin-only policy remains;
     - support changes to item-family names, variant names, SKUs, external identifiers, base
       units, and configured attributes through field-specific validation rather than an
       unrestricted record update;
-    - present a clear before-and-after review and require explicit confirmation before
-      applying any catalog change;
-    - retain an immutable audit record containing the editor, confirmer, timestamp, reason,
-      previous values, and new values, while preserving the original catalog identity used
-      by historical transactions;
-    - prevent edits that create duplicate SKUs, identifiers, families, or indistinguishable
-      variants, and require an explicit merge workflow when two records represent the same
-      product;
-    - re-index names, aliases, identifiers, attributes, and semantic embeddings after a
-      confirmed edit so subsequent matching uses the updated catalog;
+    - before-and-after Telegram review and explicit confirmation — complete;
+    - immutable editor/confirmer/timestamp/reason/old/new audit while preserving stable
+      variant identity and all ledger rows — complete for the implemented fields;
+    - case-insensitive duplicate-SKU prevention and stale-confirmation rejection — complete;
+      family/identifier/indistinguishable-variant checks and merge workflow remain;
+    - semantic-embedding invalidation after confirmed name/SKU/attribute changes — complete;
+      explicit alias/identifier re-indexing remains;
     - define how base-unit changes affect existing balances and conversions, blocking unsafe
       changes unless stock is zero or an audited conversion is supplied; and
     - test role enforcement, tenant isolation, concurrent edits, stale confirmations,

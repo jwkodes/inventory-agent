@@ -22,6 +22,7 @@ TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
 REVERSAL_TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000002")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
+CATALOG_EDIT_REQUEST_ID = UUID("73000000-0000-0000-0000-000000000001")
 
 
 class RecordingAnswerer:
@@ -220,6 +221,21 @@ class RecordingCatalog:
         return batch_id
 
 
+class RecordingCatalogEdits:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def confirm(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        assert (request_id, actor_id) == (CATALOG_EDIT_REQUEST_ID, ACTOR_ID)
+        self.events.append("confirm_catalog_edit")
+        return request_id
+
+    async def cancel(self, *, request_id: UUID, actor_id: UUID) -> UUID:
+        assert (request_id, actor_id) == (CATALOG_EDIT_REQUEST_ID, ACTOR_ID)
+        self.events.append("cancel_catalog_edit")
+        return request_id
+
+
 def dispatcher(
     events: list[str],
     *,
@@ -231,6 +247,7 @@ def dispatcher(
         repository=RecordingActions(events),
         reversals=RecordingReversals(events, replacement_proposal_id),
         catalog=RecordingCatalog(events),
+        catalog_edits=RecordingCatalogEdits(events),
     )
 
 
@@ -285,6 +302,31 @@ async def test_confirm_and_cancel_route_to_distinct_actions() -> None:
         )
 
     assert events == ["ack", "confirm", "ack", "cancel"]
+
+
+async def test_catalog_edit_confirm_and_cancel_use_the_audited_lifecycle() -> None:
+    events: list[str] = []
+    callback_dispatcher = dispatcher(events)
+
+    for action in (
+        CallbackAction.CONFIRM_CATALOG_ITEM_EDIT,
+        CallbackAction.CANCEL_CATALOG_ITEM_EDIT,
+    ):
+        outcome = await callback_dispatcher.dispatch(
+            callback_query_id=f"callback-{action}",
+            callback_data=encode_callback(CallbackCommand(action, CATALOG_EDIT_REQUEST_ID)),
+            actor_id=ACTOR_ID,
+            chat_id=-100123,
+        )
+        assert outcome.status is CallbackOutcomeStatus.COMPLETED
+        assert outcome.result_id == CATALOG_EDIT_REQUEST_ID
+
+    assert events == [
+        "ack",
+        "confirm_catalog_edit",
+        "ack",
+        "cancel_catalog_edit",
+    ]
 
 
 async def test_expired_acknowledgement_does_not_block_idempotent_database_action() -> None:

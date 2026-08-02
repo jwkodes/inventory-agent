@@ -7,6 +7,7 @@ import pytest
 
 from inventory_agent.agent.models import (
     CatalogVariant,
+    InventoryReadArguments,
     NewCatalogItemDraft,
     TrackingMode,
     TransactionRecord,
@@ -62,7 +63,7 @@ def test_new_catalog_item_schema_tells_model_not_to_clarify_generic_count_words(
     assert "unit, units, item, and items mean the same thing" in base_unit_schema["description"]
 
 
-def test_new_catalog_item_schema_states_current_sku_requirement() -> None:
+def test_new_catalog_item_schema_documents_explicit_sku_deferral() -> None:
     add_tool = next(
         tool for tool in INVENTORY_TOOL_DEFINITIONS if tool["name"] == "propose_add_inventory"
     )
@@ -70,8 +71,23 @@ def test_new_catalog_item_schema_states_current_sku_requirement() -> None:
         "new_item"
     ]["anyOf"][0]
 
-    assert "mandatory" in new_item_schema["properties"]["sku"]["description"]
-    assert "SKU/internal code is currently mandatory" in add_tool["description"]
+    assert "Prompt for it once" in new_item_schema["properties"]["sku"]["description"]
+    assert "explicitly says" in new_item_schema["properties"]["sku"]["description"]
+    assert "sku_deferred" in new_item_schema["required"]
+    assert "use null if the user explicitly defers it" in add_tool["description"]
+
+
+def test_inventory_read_normalizes_blank_optional_search_terms() -> None:
+    arguments = InventoryReadArguments(
+        query="  Munchi Peanut Butter Min Jiang Kueh  ",
+        sku="  ",
+        attributes=[],
+        include_zero_stock=True,
+        limit=5,
+    )
+
+    assert arguments.query == "Munchi Peanut Butter Min Jiang Kueh"
+    assert arguments.sku is None
 
 
 @pytest.mark.asyncio
@@ -118,7 +134,7 @@ async def test_read_makes_returned_variant_available_to_proposal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_item_without_sku_requests_input_without_saving_proposal() -> None:
+async def test_explicitly_deferred_sku_saves_reviewable_proposal() -> None:
     tools = SimulatedInventoryTools(catalog=[])
 
     result = json.loads(
@@ -132,6 +148,7 @@ async def test_new_item_without_sku_requests_input_without_saving_proposal() -> 
                         "new_item": {
                             "name": "MacBook Air M5",
                             "sku": None,
+                            "sku_deferred": True,
                             "base_unit": "each",
                             "tracking_mode": "simple",
                             "attributes": [],
@@ -146,14 +163,9 @@ async def test_new_item_without_sku_requests_input_without_saving_proposal() -> 
         )
     )
 
-    assert result["ok"] is False
-    assert result["error_code"] == "new_item_sku_required"
-    assert result["requires_user_input"] is True
-    assert result["user_message"] == (
-        "I can't create MacBook Air M5 without an SKU or internal product code yet. "
-        "What code should I use?"
-    )
-    assert tools.proposals == []
+    assert result["ok"] is True
+    assert result["confirmation_required"] is True
+    assert tools.proposals[0].payload["lines"][0]["new_item"]["sku"] is None
 
 
 @pytest.mark.asyncio

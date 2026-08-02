@@ -5,7 +5,11 @@ from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from inventory_agent.catalog.models import CatalogItemCreationView, CatalogTrackingMode
+from inventory_agent.catalog.models import (
+    CatalogItemCreationView,
+    CatalogItemEditView,
+    CatalogTrackingMode,
+)
 from inventory_agent.telegram.callbacks import CallbackAction, decode_callback
 from inventory_agent.telegram.confirmation import (
     CandidateChoice,
@@ -13,6 +17,7 @@ from inventory_agent.telegram.confirmation import (
     render_applied_transaction,
     render_catalog_item_confirmation,
     render_catalog_item_details_prompt,
+    render_catalog_item_edit_confirmation,
     render_proposal_confirmation,
     render_reversal_applied,
     render_reversal_confirmation,
@@ -25,8 +30,71 @@ VARIANT_ID = UUID("21000000-0000-0000-0000-000000000001")
 TRANSACTION_ID = UUID("60000000-0000-0000-0000-000000000001")
 REVERSAL_REQUEST_ID = UUID("70000000-0000-0000-0000-000000000001")
 CATALOG_REQUEST_ID = UUID("71000000-0000-0000-0000-000000000001")
+CATALOG_EDIT_REQUEST_ID = UUID("73000000-0000-0000-0000-000000000001")
 APPLIED_AT = datetime(2026, 7, 24, 11, 42, 19, tzinfo=UTC)
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Singapore")
+
+
+def test_catalog_item_edit_confirmation_is_explicit_and_field_specific() -> None:
+    message = render_catalog_item_edit_confirmation(
+        CatalogItemEditView(
+            request_id=CATALOG_EDIT_REQUEST_ID,
+            item_variant_id=VARIANT_ID,
+            status="awaiting_confirmation",
+            reason="Correct SKU and add description",
+            before_values={
+                "item_name": "Milo 500g",
+                "variant_name": None,
+                "sku": "8873",
+                "description": None,
+                "item_attributes": {},
+                "variant_attributes": {"pack": "old"},
+            },
+            after_values={
+                "item_name": "Milo 500g",
+                "variant_name": None,
+                "sku": "MILO-500",
+                "description": "Chocolate malt drink powder",
+                "item_attributes": {"brand": "Milo"},
+                "variant_attributes": {},
+            },
+        )
+    )
+
+    assert message.text.startswith("📝 **Review catalog product update**")
+    assert "SKU: 8873 → MILO-500" in message.text
+    assert "Description: — → Chocolate malt drink powder" in message.text
+    assert "Item attribute brand: — → Milo" in message.text
+    assert "Variant attribute pack: old → —" in message.text
+    assert "ledger entries" in message.text
+    assert [button.text for button in message.inline_keyboard[0]] == [
+        "Update product",
+        "Cancel",
+    ]
+    assert (
+        decode_callback(message.inline_keyboard[0][0].callback_data).action
+        is CallbackAction.CONFIRM_CATALOG_ITEM_EDIT
+    )
+
+
+def test_catalog_item_confirmation_can_show_explicitly_deferred_sku() -> None:
+    message = render_catalog_item_confirmation(
+        CatalogItemCreationView(
+            request_id=CATALOG_REQUEST_ID,
+            status="awaiting_confirmation",
+            suggested_name="Milo 500g",
+            suggested_sku=None,
+            suggested_base_unit="each",
+            suggested_tracking_mode="simple",
+            name="Milo 500g",
+            sku=None,
+            sku_deferred=True,
+            base_unit="each",
+            tracking_mode="simple",
+        )
+    )
+
+    assert "SKU: Not set yet (can be added later)" in message.text
 
 
 def test_resolved_proposal_has_confirm_and_cancel_buttons() -> None:
